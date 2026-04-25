@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+.git/
+.gitignore
+*.egg-info/
+.uv/
