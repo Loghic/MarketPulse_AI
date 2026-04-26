@@ -1,6 +1,6 @@
 # MarketPulse AI
 
-Stock prediction engine combining k-NN and Linear Regression with news sentiment analysis. Built as a modular system with a clean separation between data layer, model engine, and interface — ready to plug into a web or desktop UI.
+Stock prediction engine combining k-NN, Linear Regression, and LSTM neural networks with VADER sentiment analysis. Built as a modular system with a clean separation between data layer, model engine, and interface — ready to plug into a web or desktop UI.
 
 > **Disclaimer:** This is an educational/research project. Predictions are not financial advice.
 
@@ -17,6 +17,32 @@ uv pip install -e .
 uv run python main.py
 ```
 
+For LSTM model support (optional):
+```bash
+uv pip install torch
+# or install everything: uv pip install -e '.[ai]'
+```
+
+## Supported tickers
+
+Tickers are configured in `config.py`:
+
+**Stocks:** AAPL, MSFT, NVDA, META, GOOGL, AMD, TSM, ASML, AVGO, TSLA, INTC
+
+**Crypto:** BTC-USD, ETH-USD, SOL-USD
+
+Both `main.py` and `backtest.py` support `--stocks`, `--crypto`, `--all`, or `--tickers` flags:
+
+```bash
+uv run python main.py --stocks              # only stocks
+uv run python main.py --crypto              # only crypto
+uv run python main.py --all                 # everything
+uv run python main.py --tickers AAPL NVDA   # specific picks
+uv run python main.py                       # default: first 3 tickers
+```
+
+To add a new ticker, edit `config.py` — no other files need to change.
+
 ## Running with Podman
 
 [Podman](https://podman.io/) is a Docker-compatible container engine that runs without root privileges — useful for university clusters and shared servers where Docker is not available.
@@ -24,315 +50,192 @@ uv run python main.py
 ### First-time setup (macOS)
 
 ```bash
-# Install Podman
 brew install podman
-
-# Create and start the Linux VM (Podman needs Linux under the hood)
 podman machine init
 podman machine start
 ```
 
-On Linux, Podman runs natively — just install it via your package manager (`apt install podman`, `dnf install podman`, etc.) and skip the machine commands.
+On Linux, Podman runs natively — just install via your package manager and skip the machine commands.
 
 ### Build and run
 
 ```bash
-cd marketpulse-ai
-
-# Build the image (downloads Python, installs deps, copies code)
 podman build -t marketpulse .
-
-# Run it
 podman run --rm -v ./data:/app/data:z marketpulse
 ```
 
-What the flags do:
-- `--rm` — automatically remove the container after it finishes (keeps things clean)
-- `-v ./data:/app/data:z` — mount the local `data/` folder into the container so the SQLite database persists between runs
-- `:z` — SELinux relabel (harmless on macOS, may be needed on Linux)
-
-### Useful commands
+### Running on a university cluster (Singularity/Apptainer)
 
 ```bash
-podman images       # list built images
-podman ps           # list running containers
-podman ps -a        # include stopped containers
-podman rmi marketpulse   # delete the image to force a clean rebuild
-```
-
-### Running on a university cluster
-
-If the cluster uses **Singularity/Apptainer** instead of Podman:
-
-```bash
-# On your machine: export the image
 podman save marketpulse -o marketpulse.tar
-
-# On the cluster: convert and run
 singularity build marketpulse.sif docker-archive://marketpulse.tar
 singularity run --bind ./data:/app/data marketpulse.sif
 ```
 
-## What It Does
+## Models
 
-`main.py` generates a strategic report for each configured ticker (default: BTC-USD, AAPL, MSFT). For every ticker it runs predictions across multiple time horizons (1mo, 1y, 2y, max) using two models in several modes:
+### k-NN (Naive + Enhanced)
 
-- **k-NN** — classifies next-day direction (UP/DOWN) from sliding-window return patterns
-- **Linear Regression** — predicts next-day return as a continuous value, derives direction from the sign and confidence from the magnitude
-- **Time-Weighted** variants — prioritize recent data (k-NN trims the training set, LinReg uses native `sample_weight`)
-- **+ News** variants — sentiment score from recent headlines adjusts the base probability post-hoc
+Classifies next-day direction (UP/DOWN) from a sliding window of daily returns. Enhanced mode adds volume, RSI, volatility, and MACD — features are shared with LinReg via `engine/features.py`. All features are auto-scaled via `StandardScaler`.
 
-Example output:
+### Linear Regression (Naive + Enhanced)
 
+Predicts next-day return as a continuous value, derives direction from the sign and confidence via sigmoid mapping. Enhanced mode uses the same feature set as k-NN Enhanced. Supports native `sample_weight` for time-weighting.
+
+### LSTM Neural Network
+
+Recurrent neural network that processes price data as a time series — sees the **order** of features, not just a flat vector. Requires pre-training (via `train.py`), then saved weights are loaded for instant predictions.
+
+Three training presets:
+
+| Preset | Time (CPU) | Use case |
+|---|---|---|
+| `quick` | ~2-5 min | Testing, experiments |
+| `standard` | ~15-30 min | Real use |
+| `cluster` | hours (GPU) | Best accuracy, research |
+
+```bash
+# Train
+uv run python train.py --ticker AAPL --period 1y --preset quick
+uv run python train.py --stocks --preset standard
+uv run python train.py --all --periods 1y 2y max --preset cluster
+
+# List saved models
+uv run python train.py --list
+
+# Predict (auto-loads saved model)
+uv run python main.py --tickers AAPL
 ```
-==========================================================================================
- STRATEGIC REPORT: AAPL
-==========================================================================================
-PERIOD     | MODEL                  | PRED.    | CONF.      | SAMPLES
-------------------------------------------------------------------------------------------
-1mo        | k-NN                   | DOWN     | 60.0%      | 22
-           | k-NN Time-Weighted     | DOWN     | 67.5%      | 22
-           | LinReg                 | DOWN     | 71.9%      | 22
-           | LinReg Time-Weighted   | DOWN     | 73.6%      | 22
-           | k-NN TW + News         | UP       | 52.5%      | 22
-           | LinReg TW + News       | DOWN     | 53.6%      | 22
-------------------------------------------------------------------------------------------
-1y         | k-NN                   | UP       | 80.0%      | 261
-           | k-NN Time-Weighted     | UP       | 58.6%      | 261
-           | LinReg                 | UP       | 53.4%      | 261
-           | LinReg Time-Weighted   | UP       | 51.5%      | 261
-------------------------------------------------------------------------------------------
-  Current Market Price: 198.85 USD
-  Market Sentiment:    POSITIVE (Score: 0.6)
-  Latest News:
-    > Apple Reports Record Q2 Earnings, Revenue Up 12%
-    > Analysts Upgrade AAPL Price Target
-******************************************************************************************
-```
+
+Saved models go to `models/` with naming: `{ticker}_{period}_{preset}.pt`. Auto-loaded in order cluster → standard → quick (best available). See [docs/lstm.md](docs/lstm.md) for details.
+
+### Sentiment adjustment
+
+All models predict from price patterns first, then sentiment shifts the probability post-hoc. VADER is the default scorer (handles negation, intensifiers, caps), with naive keyword fallback.
 
 ## Backtesting
 
-`backtest.py` evaluates model accuracy using walk-forward testing: it hides the last N trading days, then predicts each one at a time using only the data available *before* that day — no look-ahead bias.
-
-If news headlines are available for the ticker, news-informed model variants (`k-NN TW + News`, `LinReg TW + News`) are automatically included in the comparison.
+Walk-forward testing: hides the last N days, predicts each one using only prior data — no look-ahead bias. Tracks simulated trading P/L, profit factor, win/loss streaks. LSTM variants are included automatically when a trained model exists.
 
 ```bash
-uv run python backtest.py                            # default: BTC-USD, AAPL, MSFT, 5 days, all history
-uv run python backtest.py --days 10                  # hold out 10 days instead of 5
-uv run python backtest.py --tickers AAPL --days 20   # single ticker, 20 days
-uv run python backtest.py --period 1y                # train on last year only (not full history)
-uv run python backtest.py --full                     # detailed consensus + stats
-uv run python backtest.py --full --period 1y --days 10 --tickers AAPL
+uv run python backtest.py --stocks --days 20
+uv run python backtest.py --crypto --full
+uv run python backtest.py --all --compare-periods --output results.csv
+uv run python backtest.py --tickers NVDA TSLA --compare-periods --days 50
 ```
 
-### Basic output
+### Output modes
 
-```
-======================================================================
- BACKTEST: AAPL (last 10 trading days, period=1y)
-======================================================================
-  Training data: 261 rows (2025-04-25 → 2026-04-24)
-  News sentiment: POSITIVE (+0.60)
+| Flag | Terminal output | CSV content |
+|---|---|---|
+| (none) | Summary table per model | One row per model (accuracy, return, PF, streaks) |
+| `--full` | Summary + consensus + profit analysis + streaks | One row per day per model |
+| `--compare-periods` | Period × model matrix + top 5 + streaks | One row per model × period |
 
-  MODEL                     | ACCURACY     | CORRECT
-  -------------------------------------------------------
-  k-NN                      | 80.0%        | 8/10
-  k-NN Time-Weighted        | 70.0%        | 7/10
-  LinReg                    | 50.0%        | 5/10
-  LinReg Time-Weighted      | 50.0%        | 5/10
-  k-NN TW + News            | 70.0%        | 7/10
-  LinReg TW + News          | 40.0%        | 4/10
-```
-
-### Full output (`--full`)
-
-The `--full` flag adds four extra sections:
-
-**Day-by-day consensus** — what each model predicted vs reality for every test day. Unanimous days (all models agree) are marked — these are the strongest signals for day trading.
-
-```
-  DATE         | k-NN     | k-NN TW  | LinReg   | LinReg TW | ACTUAL   | AGREE
-  --------------------------------------------------------------------------
-  2026-04-17   | UP   ✓  | UP   ✓  | UP   ✓  | UP   ✓  | UP       | 100% ✓ ◄ unanimous
-  2026-04-22   | UP   ✗  | UP   ✗  | UP   ✗  | UP   ✗  | DOWN     | 100% ✗ ◄ unanimous
-```
-
-**Direction accuracy** — is the model better at predicting UP or DOWN? If a model is 80% accurate on DOWN but 40% on UP, you'd only trust it for short signals.
-
-```
-  MODEL                     | UP acc.      | DOWN acc.
-  -------------------------------------------------------
-  k-NN Time-Weighted        | 4/6 (67%)    | 4/4 (100%)
-```
-
-**Confidence calibration** — are high-confidence predictions actually more accurate? If not, the confidence score is meaningless.
-
-```
-  MODEL                     | High (>65%)      | Low (≤65%)
-  --------------------------------------------------------------
-  k-NN Time-Weighted        | 83% (6 pred)     | 75% (4 pred)
-```
-
-**Next-day signal** — what each model would have predicted for the most recent holdout day (closest to "live" usage), with a consensus vote across all models.
-
-```
-  k-NN                       DOWN   (conf: 80.0%)  ✓
-  k-NN Time-Weighted         DOWN   (conf: 62.6%)  ✓
-  LinReg                     DOWN   (conf: 53.1%)  ✓
-  LinReg Time-Weighted       DOWN   (conf: 56.9%)  ✓
-
-  Consensus: DOWN (100% of models agree)
-```
-
-### The `--period` flag
-
-By default the backtest trains on the full price history (`max`). The `--period` flag limits training data to a recent window: `1mo`, `1y`, `2y`, `5y`, or `max`.
-
-This lets you test whether shorter training windows improve accuracy — old price patterns (e.g. from the 90s) may not be relevant for tomorrow's prediction.
-
-### Cross-period comparison (`--compare-periods`)
-
-Instead of testing one period at a time, `--compare-periods` runs the backtest across all periods (1mo, 1y, 2y, 5y, max) and shows a side-by-side accuracy matrix. This reveals which training window works best for each ticker — for example, BTC-USD might peak at 1y while MSFT does better with 5y.
-
-```bash
-uv run python backtest.py --compare-periods
-uv run python backtest.py --compare-periods --days 10 --tickers AAPL BTC-USD
-uv run python backtest.py --compare-periods --output results.csv
-uv run python backtest.py --compare-periods --output results.json
-```
-
-Example output:
-
-```
-================================================================================
- PERIOD COMPARISON: AAPL (holdout=5 days)
-================================================================================
-  Total data: 11234 rows (1980-12-12 → 2026-04-24)
-
-  Accuracy by period × model (holdout=5 days):
-
-  MODEL                     |    1mo   |    1y    |    2y    |    5y    |   max    |
-  ----------------------------------------------------------------------------------
-  k-NN                      |    60%   |    80%   |    60%   |    60%   |    60%   |  ◄ best: 1y
-  k-NN Time-Weighted        |    60%   |    60%   |    40%   |    60%   |    60%   |  ◄ best: 1mo
-  LinReg                    |    40%   |    80%   |    60%   |   100%   |   100%   |  ◄ best: 5y
-  LinReg Time-Weighted      |    60%   |    60%   |    80%   |   100%   |   100%   |  ◄ best: 5y
-  k-NN TW + News            |    60%   |    60%   |    60%   |    40%   |    40%   |  ◄ best: 1mo
-  LinReg TW + News          |    80%   |    60%   |    60%   |    60%   |    60%   |  ◄ best: 1mo
-
-  ====================RECOMMENDED PERIODS=====================
-  k-NN                      → 1y     (80%)
-  k-NN Time-Weighted        → 1mo    (60%)
-  LinReg                    → 5y     (100%)
-  LinReg Time-Weighted      → 5y     (100%)
-  k-NN TW + News            → 1mo    (60%)
-  LinReg TW + News          → 1mo    (80%)
-
-  Overall best period for AAPL: 1mo (3/6 models peak here)
-
-********************************************************************************
-```
-
-The `--output` flag exports results to CSV or JSON (auto-detected from extension). Each row contains: ticker, period, model, accuracy, correct/total, up/down accuracy and prediction counts — ready for analysis in pandas, Excel, or any data tool.
+`--output` works in all modes. CSV for non-programmers, JSON for further analysis.
 
 ## Project Structure
 
 ```
 marketpulse-ai/
-├── main.py                  # CLI entry point — prediction reports
-├── backtest.py              # CLI entry point — model evaluation
-├── pyproject.toml           # Dependencies & build config (uv/pip)
+├── config.py                # ★ Tickers, periods, defaults — edit this to add assets
+├── main.py                  # CLI — prediction reports
+├── backtest.py              # CLI — model evaluation
+├── train.py                 # CLI — LSTM model training
+├── test_pipeline.py         # 13 offline tests
+├── pyproject.toml           # Dependencies & build config
 ├── Containerfile            # Podman/Docker build
-├── .containerignore         # Excludes .venv, .db etc. from Podman build context
-├── test_pipeline.py         # Integration test (runs with mock data, no network)
+├── .containerignore         # Build context excludes
+├── AGENTS.md                # AI assistant context file
 │
 ├── interface/
 │   ├── __init__.py
-│   └── api.py               # StockAppAPI facade — single entry point for all UI layers
+│   └── api.py               # StockAppAPI facade
 │
 ├── engine/
 │   ├── __init__.py
-│   ├── data_downloader.py   # Yahoo Finance historical data via yfinance
-│   ├── db_manager.py        # SQLite storage (prices + news sentiment)
-│   ├── knn_model.py         # k-Nearest Neighbors classifier
-│   ├── lin_reg_model.py     # Linear Regression model
+│   ├── features.py          # Shared feature engineering (RSI, MACD, volatility, volume)
+│   ├── knn_model.py         # k-NN classifier (naive + enhanced)
+│   ├── lin_reg_model.py     # Linear Regression (naive + enhanced)
+│   ├── ai_model.py          # LSTM neural network (train, save, load, predict)
 │   ├── backtester.py        # Walk-forward backtest engine
-│   └── news_scraper.py      # News fetching + keyword sentiment scoring
+│   ├── data_downloader.py   # Yahoo Finance data via yfinance
+│   ├── db_manager.py        # SQLite storage
+│   └── news_scraper.py      # VADER/naive sentiment scoring
 │
-└── data/
-    └── market_data.db       # SQLite database (auto-created on first run)
+├── models/                  # Saved LSTM weights (auto-created, gitignored)
+│   └── AAPL_1y_quick.pt
+│
+├── data/
+│   └── market_data.db       # SQLite database (auto-created)
+│
+└── docs/                    # In-depth documentation
+    ├── README.md            # Documentation index
+    ├── knn.md               # k-NN deep dive
+    ├── linear-regression.md # LinReg deep dive
+    ├── lstm.md              # LSTM: training, presets, cluster deployment
+    ├── features.md          # Technical indicators
+    ├── sentiment.md         # Sentiment analysis
+    ├── backtesting.md       # Backtesting methodology + metrics
+    └── api.md               # API, architecture, DB schema
 ```
-
-### Architecture
-
-```
-┌──────────────────┐     ┌──────────────────────────────────────────┐
-│  CLI             │     │  StockAppAPI  (interface/api.py)         │
-│  main.py         │────▶│  - get_prediction(config) → result       │
-│  backtest.py     │     │  - get_data(ticker, period) → DataFrame  │
-└──────────────────┘     └──────┬───────┬──────────┬───────────────┘
-                                │       │          │
-                  ┌─────────────▼──┐ ┌──▼────┐ ┌───▼──────────┐
-                  │ Models         │ │ News  │ │ DB Manager   │
-                  │  KNNModel      │ │Scraper│ │ (SQLite)     │
-                  │  LinRegModel   │ └───────┘ └──────┬───────┘
-                  └─────────────┬──┘                  │
-                                │              ┌──────▼───────┐
-                  ┌─────────────▼──┐           │ data/        │
-                  │ Backtester     │           │ market_data  │
-                  │ (walk-forward) │           │ .db          │
-                  └────────────────┘           └──────────────┘
-```
-
-`StockAppAPI` acts as a facade. All model calls, data fetching, caching, and sentiment analysis go through it — making it straightforward to swap the CLI for a Flask/FastAPI backend or a desktop GUI without touching the engine layer.
-
-All models share the same `.predict(df, use_time_weights, sentiment_score)` interface, so the backtester and API work with any model without special-casing.
 
 ## Configuration
 
-Predictions are configured via `PredictionConfig`:
+All tickers and periods live in `config.py`:
+
+```python
+STOCKS = ["AAPL", "MSFT", "NVDA", ...]
+CRYPTO = ["BTC-USD", "ETH-USD", "SOL-USD"]
+ALL_TICKERS = STOCKS + CRYPTO
+ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
+```
+
+Predictions are requested via `PredictionConfig`:
 
 ```python
 from interface.api import StockAppAPI, PredictionConfig
 
 api = StockAppAPI()
-
 config = PredictionConfig(
-    ticker="AAPL",          # Stock or crypto ticker
-    period="1y",            # 1mo, 1y, 2y, 5y, max
-    model_type="knn",       # "knn" or "linreg"
-    use_time_weights=True,  # Prioritize recent patterns
-    include_news=True,      # Fetch & score news sentiment
+    ticker="NVDA",
+    period="1y",
+    model_type="knn_enhanced",   # "knn", "knn_enhanced", "linreg", "linreg_enhanced", "lstm"
+    use_time_weights=True,
+    include_news=True,
 )
-
 result = api.get_prediction(config)
-print(result.prediction)   # "UP" or "DOWN"
-print(result.confidence)   # "80.0%"
-print(result.sentiment)    # "POSITIVE" / "NEUTRAL" / "NEGATIVE"
 ```
 
-## Testing
+## Documentation
 
-Runs entirely offline with mock data — no Yahoo Finance access needed:
+`docs/` has in-depth explanations of every component — models, features, sentiment, backtesting, API. `AGENTS.md` is a compact context file for AI assistants (Claude, GPT, Gemini) — upload it when working on the codebase.
+
+## Testing
 
 ```bash
 uv run python test_pipeline.py
 ```
 
+13 tests covering all models (including LSTM when PyTorch is available), features, sentiment, backtesting, and error handling. Runs offline with mock data.
+
 ## Roadmap
 
-- [x] Data layer (yfinance download + SQLite caching)
-- [x] k-NN model (standard + time-weighted + news-adjusted)
-- [x] Linear Regression model (standard + time-weighted + news-adjusted)
-- [x] News sentiment (keyword scoring via yfinance news)
+- [x] Data layer (yfinance + SQLite caching)
+- [x] k-NN model — naive + enhanced (RSI, MACD, volume, volatility)
+- [x] Linear Regression — naive + enhanced
+- [x] LSTM neural network (training presets, save/load, cluster-ready)
+- [x] Shared feature engineering (`engine/features.py`)
+- [x] News sentiment — VADER + naive fallback
 - [x] API facade (`StockAppAPI`)
-- [x] CLI interface
-- [x] Walk-forward backtesting (`--full`, `--period`, `--compare-periods`, `--output`)
-- [ ] Neural network model — LSTM/Transformer (`engine/ai_model.py`)
-- [ ] NLP sentiment upgrade (VADER or BERT instead of keyword matching)
+- [x] CLI with `--stocks` / `--crypto` / `--all` filtering
+- [x] Walk-forward backtesting (P/L, profit factor, streaks, CSV/JSON export)
+- [x] Centralized config (`config.py`)
+- [x] In-depth documentation (`docs/`)
+- [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Visualization layer (Plotly/Matplotlib)
 - [ ] Web UI (Flask/FastAPI)
 
 ## Tech Stack
 
-Python 3.12 · pandas · yfinance · scikit-learn · NumPy · SQLite · uv
+Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · SQLite · uv

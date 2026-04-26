@@ -4,34 +4,40 @@ backtest.py – CLI script for running walk-forward backtests.
 Trains each model on all data except the last N days, then predicts
 each held-out day one at a time and reports accuracy.
 
+--output works in ALL modes:
+    basic:            one row per model (summary: accuracy, return, PF, streaks)
+    --full:           one row per DAY per model (day-by-day predictions + P/L)
+    --compare-periods: one row per model × period (accuracy, return, PF, streaks)
+
 Usage:
     uv run python backtest.py
     uv run python backtest.py --days 10
     uv run python backtest.py --tickers AAPL MSFT
-    uv run python backtest.py --full                          # detailed stats
-    uv run python backtest.py --full --period 1y              # train on last year only
-    uv run python backtest.py --compare-periods               # run all periods, show comparison
-    uv run python backtest.py --compare-periods --output results.csv
-    uv run python backtest.py --compare-periods --days 10 --tickers AAPL BTC-USD
+    uv run python backtest.py --full --output full_results.csv
+    uv run python backtest.py --full --period 1y --output details.csv
+    uv run python backtest.py --compare-periods --output comparison.csv
+    uv run python backtest.py --compare-periods --output comparison.json
 """
 
 import argparse
 import csv
 import json
 from datetime import datetime, timedelta, date
-from typing import Optional
+from typing import Optional, List
 
 import pandas as pd
 
 from interface.api import StockAppAPI
 from engine.backtester import Backtester, BacktestResult
+from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS, DEFAULT_PERIOD, DEFAULT_BACKTEST_DAYS
 
 
-DEFAULT_TICKERS = ["BTC-USD", "AAPL", "MSFT"]
-DEFAULT_DAYS = 5
-ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
 VALID_PERIODS = ALL_PERIODS
 
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
 
 def period_to_start_date(period: str) -> date:
     """Convert a period string to the earliest date to include."""
@@ -50,7 +56,6 @@ def filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
     """Trim a price DataFrame to only include rows within the given period."""
     if period == "max":
         return df
-
     start = period_to_start_date(period)
     df = df.copy()
     df["_date"] = pd.to_datetime(df["date"]).dt.date
@@ -67,8 +72,77 @@ def direction_accuracy(result: BacktestResult):
     return up_c, up_t, dn_c, dn_t
 
 
+def export_rows(rows: list, output: str):
+    """Export a list of dicts to CSV or JSON."""
+    if not rows:
+        print("  No data to export.")
+        return
+
+    if output.endswith(".json"):
+        with open(output, "w") as f:
+            json.dump(rows, f, indent=2)
+    else:
+        if not output.endswith(".csv"):
+            output += ".csv"
+        with open(output, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    print(f"\nResults exported to {output}")
+
+
+def result_to_summary_row(r: BacktestResult, ticker: str, period: str) -> dict:
+    """Convert a BacktestResult to a summary export row."""
+    up_c, up_t, dn_c, dn_t = direction_accuracy(r)
+    return {
+        "ticker": ticker,
+        "period": period,
+        "model": r.model_name,
+        "accuracy": round(r.accuracy, 4),
+        "correct": r.correct,
+        "total": r.test_days,
+        "total_return": round(r.total_return, 6),
+        "profit_factor": round(r.profit_factor, 4),
+        "win_trades": r.win_trades,
+        "loss_trades": r.loss_trades,
+        "avg_win": round(r.avg_win, 6) if r.win_trades > 0 else None,
+        "avg_loss": round(r.avg_loss, 6) if r.loss_trades > 0 else None,
+        "best_day": round(r.best_day, 6),
+        "worst_day": round(r.worst_day, 6),
+        "longest_win_streak": r.longest_win_streak,
+        "longest_loss_streak": r.longest_loss_streak,
+        "avg_win_streak": round(r.avg_win_streak, 2),
+        "avg_loss_streak": round(r.avg_loss_streak, 2),
+        "up_accuracy": round(up_c / up_t, 4) if up_t > 0 else None,
+        "up_predictions": up_t,
+        "down_accuracy": round(dn_c / dn_t, 4) if dn_t > 0 else None,
+        "down_predictions": dn_t,
+    }
+
+
+def result_to_daily_rows(r: BacktestResult, ticker: str, period: str) -> List[dict]:
+    """Convert a BacktestResult to per-day export rows (for --full)."""
+    rows = []
+    for d in r.days:
+        rows.append({
+            "ticker": ticker,
+            "period": period,
+            "model": r.model_name,
+            "date": d.date,
+            "predicted": d.predicted,
+            "actual": d.actual,
+            "correct": d.correct,
+            "confidence": round(d.confidence, 4),
+            "trade_pnl": round(d.trade_pnl, 6),
+            "close_before": round(d.close_before, 4),
+            "close_actual": round(d.close_actual, 4),
+        })
+    return rows
+
+
 # ------------------------------------------------------------------
-# Display helpers (single-period mode)
+# Display helpers
 # ------------------------------------------------------------------
 
 def print_consensus(all_results, n_days):
@@ -177,6 +251,43 @@ def print_next_day_forecast(all_results):
         print(f"\n  Consensus: {signal} ({strength:.0%} of models agree)")
 
 
+def print_profit_analysis(all_results):
+    """Detailed profit metrics + streaks."""
+    print(f"\n  {'PROFIT ANALYSIS':=^66}")
+    print(f"  {'MODEL':<25} | {'RETURN':<10} | {'P.FACTOR':<10} | {'AVG WIN':<10} | {'AVG LOSS':<10}")
+    print(f"  {'-' * 70}")
+
+    for r in all_results:
+        pf_str = f"{r.profit_factor:.2f}" if r.profit_factor < 100 else "∞"
+        avg_w = f"{r.avg_win:+.2%}" if r.win_trades > 0 else "n/a"
+        avg_l = f"{r.avg_loss:+.2%}" if r.loss_trades > 0 else "n/a"
+        print(f"  {r.model_name:<25} | {r.total_return:<+10.2%} | {pf_str:<10} | {avg_w:<10} | {avg_l:<10}")
+
+    # Streaks table
+    print(f"\n  {'STREAKS':=^66}")
+    print(f"  {'MODEL':<25} | {'MAX WIN':<10} | {'MAX LOSS':<10} | {'AVG WIN':<10} | {'AVG LOSS':<10}")
+    print(f"  {'-' * 70}")
+
+    for r in all_results:
+        print(f"  {r.model_name:<25} | {r.longest_win_streak:<10} | {r.longest_loss_streak:<10} "
+              f"| {r.avg_win_streak:<10.1f} | {r.avg_loss_streak:<10.1f}")
+
+    if all_results:
+        best_model = max(all_results, key=lambda r: r.total_return)
+        worst_model = min(all_results, key=lambda r: r.total_return)
+        print(f"\n  Most profitable:      {best_model.model_name} ({best_model.total_return:+.2%})")
+        print(f"  Least profitable:     {worst_model.model_name} ({worst_model.total_return:+.2%})")
+
+        best_pf = max(all_results, key=lambda r: r.profit_factor)
+        pf_str = f"{best_pf.profit_factor:.2f}" if best_pf.profit_factor < 100 else "∞"
+        print(f"  Best profit factor:   {best_pf.model_name} ({pf_str})")
+
+        best_streak = max(all_results, key=lambda r: r.longest_win_streak)
+        worst_streak = max(all_results, key=lambda r: r.longest_loss_streak)
+        print(f"  Longest win streak:   {best_streak.model_name} ({best_streak.longest_win_streak} days)")
+        print(f"  Longest loss streak:  {worst_streak.model_name} ({worst_streak.longest_loss_streak} days)")
+
+
 # ------------------------------------------------------------------
 # Single-period backtest
 # ------------------------------------------------------------------
@@ -188,23 +299,39 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     if len(filtered) < n_days + 20:
         return []
 
-    # Fetch current news sentiment
     sentiment_score, headlines = api._process_news_with_db(ticker)
     has_news = len(headlines) > 0
 
-    # Model variants
     variants = [
-        (api.knn,    "k-NN",                  False, 0.0),
-        (api.knn,    "k-NN Time-Weighted",     True,  0.0),
-        (api.linreg, "LinReg",                 False, 0.0),
-        (api.linreg, "LinReg Time-Weighted",   True,  0.0),
+        (api.knn,              "k-NN",                  False, 0.0),
+        (api.knn,              "k-NN Time-Weighted",     True,  0.0),
+        (api.knn_enhanced,     "k-NN Enhanced",          False, 0.0),
+        (api.knn_enhanced,     "k-NN Enh. TW",           True,  0.0),
+        (api.linreg,           "LinReg",                 False, 0.0),
+        (api.linreg,           "LinReg Time-Weighted",   True,  0.0),
+        (api.linreg_enhanced,  "LinReg Enhanced",        False, 0.0),
+        (api.linreg_enhanced,  "LinReg Enh. TW",         True,  0.0),
     ]
 
     if has_news:
         variants.extend([
-            (api.knn,    "k-NN TW + News",     True,  sentiment_score),
-            (api.linreg, "LinReg TW + News",   True,  sentiment_score),
+            (api.knn,              "k-NN TW + News",       True,  sentiment_score),
+            (api.knn_enhanced,     "k-NN Enh. TW + News",  True,  sentiment_score),
+            (api.linreg,           "LinReg TW + News",     True,  sentiment_score),
+            (api.linreg_enhanced,  "LinReg Enh. TW + News", True,  sentiment_score),
         ])
+
+    # Add LSTM if a trained model exists for this ticker+period
+    if api.lstm_available:
+        lstm_model = api._load_lstm(ticker, period)
+        if lstm_model:
+            variants.append((lstm_model, "LSTM", False, 0.0))
+            if has_news:
+                variants.append((lstm_model, "LSTM + News", False, sentiment_score))
+        else:
+            # Log once per ticker+period (not per variant)
+            print(f"  NOTE: No trained LSTM model for {ticker} (period={period}). "
+                  f"Train with: uv run python train.py --ticker {ticker} --period {period}")
 
     results = []
     for model, name, tw, sent in variants:
@@ -221,10 +348,12 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     return results
 
 
-def run_backtest(tickers: list[str], n_days: int, full: bool = False, period: str = "max"):
+def run_backtest(tickers: list[str], n_days: int, full: bool = False,
+                 period: str = "max", output: Optional[str] = None):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
     backtester = Backtester(n_days=n_days)
+    all_export_rows = []
 
     for ticker in tickers:
         print(f"\n{'=' * 70}")
@@ -258,10 +387,12 @@ def run_backtest(tickers: list[str], n_days: int, full: bool = False, period: st
             continue
 
         # Summary table
-        print(f"\n  {'MODEL':<25} | {'ACCURACY':<12} | {'CORRECT':<10}")
-        print(f"  {'-' * 55}")
+        print(f"\n  {'MODEL':<25} | {'ACCURACY':<10} | {'RETURN':<10} | {'P.FACTOR':<10} | {'W/L':<8}")
+        print(f"  {'-' * 73}")
         for r in results:
-            print(f"  {r.model_name:<25} | {r.accuracy:<12.1%} | {r.correct}/{r.test_days}")
+            pf_str = f"{r.profit_factor:.2f}" if r.profit_factor < 100 else "∞"
+            print(f"  {r.model_name:<25} | {r.accuracy:<10.1%} | {r.total_return:<+10.2%} "
+                  f"| {pf_str:<10} | {r.win_trades}/{r.loss_trades}")
 
         if has_news:
             print(f"\n  News headlines used for sentiment ({sentiment_score:+.2f}):")
@@ -272,6 +403,7 @@ def run_backtest(tickers: list[str], n_days: int, full: bool = False, period: st
             print_consensus(results, n_days)
             print_direction_accuracy(results)
             print_confidence_calibration(results)
+            print_profit_analysis(results)
             print_next_day_forecast(results)
         else:
             best = max(results, key=lambda r: (r.accuracy, r.correct))
@@ -280,7 +412,21 @@ def run_backtest(tickers: list[str], n_days: int, full: bool = False, period: st
             print(f"\n  (use --full for consensus view, direction stats, "
                   f"and confidence calibration)")
 
+        # Collect export rows
+        if output:
+            for r in results:
+                if full:
+                    # --full: export day-by-day rows
+                    all_export_rows.extend(result_to_daily_rows(r, ticker, period))
+                else:
+                    # basic: export summary rows
+                    all_export_rows.append(result_to_summary_row(r, ticker, period))
+
         print(f"\n{'*' * 70}")
+
+    # Export
+    if output and all_export_rows:
+        export_rows(all_export_rows, output)
 
 
 # ------------------------------------------------------------------
@@ -291,9 +437,7 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
     """Run backtest across all periods for each ticker, find the optimal period."""
     api = StockAppAPI()
     backtester = Backtester(n_days=n_days)
-
-    # Collect all rows for CSV/JSON export
-    all_rows = []
+    all_export_rows = []
 
     for ticker in tickers:
         print(f"\n{'=' * 80}")
@@ -309,8 +453,7 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
         print(f"  Total data: {total_rows} rows "
               f"({df['date'].iloc[0]} → {df['date'].iloc[-1]})")
 
-        # Run all periods
-        period_results = {}  # period -> list of BacktestResult
+        period_results = {}
 
         for period in ALL_PERIODS:
             results = run_single_backtest(
@@ -344,9 +487,8 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
         print(header)
         print(f"  {'-' * (28 + sum(11 for p in ALL_PERIODS if p in period_results))}")
 
-        # Track best period per model + all combinations for ranking
         best_per_model = {}
-        all_combos = []  # (model_name, period, accuracy, correct, total)
+        all_combos = []
 
         for model_name in model_names:
             row = f"  {model_name:<25} |"
@@ -363,23 +505,15 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
                     acc = r.accuracy
                     row += f" {acc:>6.0%}   |"
 
-                    up_c, up_t, dn_c, dn_t = direction_accuracy(r)
-
-                    all_combos.append((model_name, period, acc, r.correct, r.test_days))
+                    all_combos.append((
+                        model_name, period, acc, r.correct, r.test_days,
+                        r.total_return, r.profit_factor,
+                        r.longest_win_streak, r.longest_loss_streak,
+                        r.avg_win_streak, r.avg_loss_streak,
+                    ))
 
                     # Collect for export
-                    all_rows.append({
-                        "ticker": ticker,
-                        "period": period,
-                        "model": model_name,
-                        "accuracy": round(acc, 4),
-                        "correct": r.correct,
-                        "total": r.test_days,
-                        "up_accuracy": round(up_c / up_t, 4) if up_t > 0 else None,
-                        "up_predictions": up_t,
-                        "down_accuracy": round(dn_c / dn_t, 4) if dn_t > 0 else None,
-                        "down_predictions": dn_t,
-                    })
+                    all_export_rows.append(result_to_summary_row(r, ticker, period))
 
                     if acc > best_acc:
                         best_acc = acc
@@ -396,7 +530,6 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
         for model_name, (bp, ba) in best_per_model.items():
             print(f"  {model_name:<25} → {bp:<6} ({ba:.0%})")
 
-        # Find overall best period (most models peak there)
         period_votes = {}
         for model_name, (bp, ba) in best_per_model.items():
             period_votes[bp] = period_votes.get(bp, 0) + 1
@@ -405,72 +538,108 @@ def run_compare_periods(tickers: list[str], n_days: int, output: Optional[str] =
               f"({period_votes[overall_best]}/{len(best_per_model)} models peak here)")
 
         # --- Overall top combinations ---
-        print(f"\n  {'TOP COMBINATIONS (model + period)':=^60}")
+        print(f"\n  {'TOP COMBINATIONS (model + period)':=^70}")
 
-        # Sort by accuracy desc, then by correct count desc (tiebreaker)
-        all_combos.sort(key=lambda x: (x[2], x[3]), reverse=True)
+        all_combos.sort(key=lambda x: (x[5], x[2]), reverse=True)
 
-        top_acc = all_combos[0][2]
-        top_combos = [c for c in all_combos if c[2] == top_acc]
+        top_return = all_combos[0][5]
+        top_combos = [c for c in all_combos if c[5] == top_return]
 
         if len(top_combos) == 1:
-            name, period, acc, correct, total = top_combos[0]
-            print(f"\n  ★ BEST: {name} + {period} → {acc:.0%} ({correct}/{total})")
+            c = top_combos[0]
+            pf_str = f"{c[6]:.2f}" if c[6] < 100 else "∞"
+            print(f"\n  ★ BEST: {c[0]} + {c[1]} → return {c[5]:+.2%}, "
+                  f"accuracy {c[2]:.0%} ({c[3]}/{c[4]}), PF {pf_str}")
         else:
-            print(f"\n  ★ TIED AT {top_acc:.0%}:")
-            for name, period, acc, correct, total in top_combos:
-                print(f"    • {name} + {period} ({correct}/{total})")
+            print(f"\n  ★ TIED AT {top_return:+.2%} return:")
+            for c in top_combos:
+                pf_str = f"{c[6]:.2f}" if c[6] < 100 else "∞"
+                print(f"    • {c[0]} + {c[1]} (acc {c[2]:.0%}, PF {pf_str})")
 
-        # Show top 5 overall (skip if all tied at the same score)
-        unique_scores = len(set(c[2] for c in all_combos))
-        if unique_scores > 1:
-            print(f"\n  Top 5 overall:")
-            print(f"  {'#':<4} {'MODEL':<25} {'PERIOD':<8} {'ACCURACY':<10} {'CORRECT':<10}")
-            print(f"  {'-' * 60}")
+        # Top 5 by return
+        unique_returns = len(set(round(c[5], 6) for c in all_combos))
+        if unique_returns > 1:
+            print(f"\n  Top 5 by return:")
+            print(f"  {'#':<4} {'MODEL':<25} {'PERIOD':<8} {'RETURN':<10} {'ACC.':<8} {'P.FACTOR':<10}")
+            print(f"  {'-' * 70}")
             shown = set()
             rank = 0
-            for name, period, acc, correct, total in all_combos:
-                key = (name, period)
+            for c in all_combos:
+                key = (c[0], c[1])
                 if key in shown:
                     continue
                 shown.add(key)
                 rank += 1
-                marker = " ★" if acc == top_acc else ""
-                print(f"  {rank:<4} {name:<25} {period:<8} {acc:<10.0%} {correct}/{total}{marker}")
+                pf_str = f"{c[6]:.2f}" if c[6] < 100 else "∞"
+                marker = " ★" if c[5] == top_return else ""
+                print(f"  {rank:<4} {c[0]:<25} {c[1]:<8} {c[5]:<+10.2%} {c[2]:<8.0%} {pf_str:<10}{marker}")
                 if rank >= 5:
                     break
 
+        # --- Streak summary ---
+        print(f"\n  {'STREAK ANALYSIS':=^70}")
+        print(f"  {'MODEL + PERIOD':<35} | {'MAX W':<7} | {'MAX L':<7} | {'AVG W':<7} | {'AVG L':<7}")
+        print(f"  {'-' * 70}")
+
+        def streak_score(c):
+            avg_w = c[9] if c[9] > 0 else 0.1
+            avg_l = c[10] if c[10] > 0 else 0.1
+            return avg_w / avg_l
+
+        combos_by_streak = sorted(all_combos, key=streak_score, reverse=True)
+        shown = set()
+        count = 0
+        for c in combos_by_streak:
+            key = (c[0], c[1])
+            if key in shown:
+                continue
+            shown.add(key)
+            label = f"{c[0]} + {c[1]}"
+            print(f"  {label:<35} | {c[7]:<7} | {c[8]:<7} | {c[9]:<7.1f} | {c[10]:<7.1f}")
+            count += 1
+            if count >= 5:
+                break
+
+        worst_loss_streak = max(all_combos, key=lambda c: c[8])
+        best_win_streak = max(all_combos, key=lambda c: c[7])
+        print(f"\n  Best win streak:    {best_win_streak[0]} + {best_win_streak[1]} "
+              f"({best_win_streak[7]} consecutive wins)")
+        print(f"  Worst loss streak:  {worst_loss_streak[0]} + {worst_loss_streak[1]} "
+              f"({worst_loss_streak[8]} consecutive losses)")
+
         print(f"\n{'*' * 80}")
 
-    # --- Export ---
-    if output and all_rows:
-        if output.endswith(".json"):
-            with open(output, "w") as f:
-                json.dump(all_rows, f, indent=2)
-            print(f"\nResults exported to {output}")
-        else:
-            if not output.endswith(".csv"):
-                output += ".csv"
-            with open(output, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=all_rows[0].keys())
-                writer.writeheader()
-                writer.writerows(all_rows)
-            print(f"\nResults exported to {output}")
+    # Export
+    if output and all_export_rows:
+        export_rows(all_export_rows, output)
 
 
 def main():
     parser = argparse.ArgumentParser(description="MarketPulse AI – Backtest")
     parser.add_argument(
-        "--tickers", nargs="+", default=DEFAULT_TICKERS,
-        help=f"Tickers to backtest (default: {DEFAULT_TICKERS})"
+        "--tickers", nargs="+", default=None,
+        help="Specific tickers to backtest (overrides --stocks/--crypto)"
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--stocks", action="store_true",
+        help=f"Backtest only stocks: {STOCKS}"
+    )
+    group.add_argument(
+        "--crypto", action="store_true",
+        help=f"Backtest only crypto: {CRYPTO}"
     )
     parser.add_argument(
-        "--days", type=int, default=DEFAULT_DAYS,
-        help=f"Number of days to hold out for testing (default: {DEFAULT_DAYS})"
+        "--all", action="store_true",
+        help="Backtest all tickers (stocks + crypto)"
     )
     parser.add_argument(
-        "--period", default="max", choices=VALID_PERIODS,
-        help="How much historical data to train on (default: max)"
+        "--days", type=int, default=DEFAULT_BACKTEST_DAYS,
+        help=f"Number of days to hold out for testing (default: {DEFAULT_BACKTEST_DAYS})"
+    )
+    parser.add_argument(
+        "--period", default=DEFAULT_PERIOD, choices=VALID_PERIODS,
+        help=f"How much historical data to train on (default: {DEFAULT_PERIOD})"
     )
     parser.add_argument(
         "--full", action="store_true",
@@ -479,20 +648,32 @@ def main():
     )
     parser.add_argument(
         "--compare-periods", action="store_true",
-        help="Run backtest across all periods (1mo, 1y, 2y, 5y, max) "
-             "and show which period works best for each ticker/model"
+        help="Run backtest across all periods and show which period works best"
     )
     parser.add_argument(
         "--output", type=str, default=None,
-        help="Export results to CSV or JSON file (e.g. results.csv, results.json). "
-             "Only works with --compare-periods"
+        help="Export results to CSV or JSON. Content depends on mode: "
+             "basic → summary per model, --full → day-by-day per model, "
+             "--compare-periods → summary per model × period"
     )
     args = parser.parse_args()
 
-    if args.compare_periods:
-        run_compare_periods(args.tickers, args.days, args.output)
+    # Determine tickers
+    if args.tickers:
+        tickers = args.tickers
+    elif args.stocks:
+        tickers = STOCKS
+    elif args.crypto:
+        tickers = CRYPTO
+    elif args.all:
+        tickers = ALL_TICKERS
     else:
-        run_backtest(args.tickers, args.days, args.full, args.period)
+        tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
+
+    if args.compare_periods:
+        run_compare_periods(tickers, args.days, args.output)
+    else:
+        run_backtest(tickers, args.days, args.full, args.period, args.output)
 
 
 if __name__ == "__main__":

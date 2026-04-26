@@ -8,6 +8,7 @@ dependencies = [
     "yfinance>=1.3",
     "scikit-learn>=1.4",
     "numpy>=1.26",
+    "nltk>=3.8",
 ]
 
 [project.optional-dependencies]

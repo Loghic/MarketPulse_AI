@@ -1,16 +1,16 @@
 """
 main.py – CLI entry point for MarketPulse AI.
+
+Tickers and periods are configured in config.py.
 """
 
+import argparse
 from interface.api import StockAppAPI, PredictionConfig
-
-
-TICKERS = ["BTC-USD", "AAPL", "MSFT"]
-PERIODS = ["1mo", "1y", "2y", "max"]  # Smallest to largest
+from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
 
 
 def run_prediction(api: StockAppAPI, ticker: str, period: str,
-                   model: str, time_weighted: bool, news: bool) -> str:
+                   model: str, time_weighted: bool, news: bool):
     """Run a single prediction and return a formatted table row (or error)."""
     cfg = PredictionConfig(
         ticker=ticker,
@@ -44,31 +44,51 @@ def print_report(api: StockAppAPI, ticker: str):
 
     last_res = None
 
-    for p in PERIODS:
+    for p in ALL_PERIODS:
 
-        # --- k-NN block ---
+        # --- k-NN naive ---
         row, _ = run_prediction(api, ticker, p, "knn", False, False)
         print(f"{p:<10} | {'k-NN':<22} | {row}")
 
         row, _ = run_prediction(api, ticker, p, "knn", True, False)
         print(f"{'':<10} | {'k-NN Time-Weighted':<22} | {row}")
 
-        # --- Linear Regression block ---
+        # --- k-NN enhanced ---
+        row, _ = run_prediction(api, ticker, p, "knn_enhanced", False, False)
+        print(f"{'':<10} | {'k-NN Enhanced':<22} | {row}")
+
+        row, _ = run_prediction(api, ticker, p, "knn_enhanced", True, False)
+        print(f"{'':<10} | {'k-NN Enh. TW':<22} | {row}")
+
+        # --- LinReg naive ---
         row, _ = run_prediction(api, ticker, p, "linreg", False, False)
         print(f"{'':<10} | {'LinReg':<22} | {row}")
 
         row, _ = run_prediction(api, ticker, p, "linreg", True, False)
         print(f"{'':<10} | {'LinReg Time-Weighted':<22} | {row}")
 
-        # --- News-enhanced variants (only for 1mo to avoid repeated fetches) ---
+        # --- LinReg enhanced ---
+        row, _ = run_prediction(api, ticker, p, "linreg_enhanced", False, False)
+        print(f"{'':<10} | {'LinReg Enhanced':<22} | {row}")
+
+        row, _ = run_prediction(api, ticker, p, "linreg_enhanced", True, False)
+        print(f"{'':<10} | {'LinReg Enh. TW':<22} | {row}")
+
+        # --- News-enhanced variants (only for 1mo) ---
         if p == "1mo":
             row, res = run_prediction(api, ticker, p, "knn", True, True)
             print(f"{'':<10} | {'k-NN TW + News':<22} | {row}")
 
+            row, res_enh = run_prediction(api, ticker, p, "knn_enhanced", True, True)
+            print(f"{'':<10} | {'k-NN Enh. TW + News':<22} | {row}")
+
             row, res_lr = run_prediction(api, ticker, p, "linreg", True, True)
             print(f"{'':<10} | {'LinReg TW + News':<22} | {row}")
 
-            last_res = res_lr or res  # Keep whichever succeeded
+            row, res_lr_enh = run_prediction(api, ticker, p, "linreg_enhanced", True, True)
+            print(f"{'':<10} | {'LinReg Enh. TW + News':<22} | {row}")
+
+            last_res = res_lr_enh or res_lr or res_enh or res
 
         print("-" * 90)
 
@@ -88,8 +108,43 @@ def print_report(api: StockAppAPI, ticker: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="MarketPulse AI – Predictions")
+    parser.add_argument(
+        "--tickers", nargs="+", default=None,
+        help="Specific tickers to analyze (overrides --stocks/--crypto)"
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--stocks", action="store_true",
+        help=f"Run only stocks: {STOCKS}"
+    )
+    group.add_argument(
+        "--crypto", action="store_true",
+        help=f"Run only crypto: {CRYPTO}"
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Run all tickers (stocks + crypto)"
+    )
+    args = parser.parse_args()
+
+    # Determine tickers
+    if args.tickers:
+        tickers = args.tickers
+    elif args.stocks:
+        tickers = STOCKS
+    elif args.crypto:
+        tickers = CRYPTO
+    elif args.all:
+        tickers = ALL_TICKERS
+    else:
+        # Default: first 3 (BTC, AAPL, MSFT equivalent) for quick runs
+        tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
+
+    print(f"Tickers: {tickers}")
+
     api = StockAppAPI()
-    for ticker in TICKERS:
+    for ticker in tickers:
         print_report(api, ticker)
 
 
