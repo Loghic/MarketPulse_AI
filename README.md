@@ -20,132 +20,107 @@ uv run python main.py
 For LSTM model support (optional):
 ```bash
 uv pip install torch
-# or install everything: uv pip install -e '.[ai]'
 ```
 
 ## Supported tickers
 
-Tickers are configured in `config.py`:
+Configured in `config.py`. To add a new ticker, edit that file — nothing else changes.
 
 **Stocks:** AAPL, MSFT, NVDA, META, GOOGL, AMD, TSM, ASML, AVGO, TSLA, INTC
 
 **Crypto:** BTC-USD, ETH-USD, SOL-USD
 
-Both `main.py` and `backtest.py` support `--stocks`, `--crypto`, `--all`, or `--tickers` flags:
+All CLI scripts support `--stocks`, `--crypto`, `--all`, or `--tickers`:
 
 ```bash
-uv run python main.py --stocks              # only stocks
-uv run python main.py --crypto              # only crypto
-uv run python main.py --all                 # everything
-uv run python main.py --tickers AAPL NVDA   # specific picks
-uv run python main.py                       # default: first 3 tickers
-```
-
-To add a new ticker, edit `config.py` — no other files need to change.
-
-## Running with Podman
-
-[Podman](https://podman.io/) is a Docker-compatible container engine that runs without root privileges — useful for university clusters and shared servers where Docker is not available.
-
-### First-time setup (macOS)
-
-```bash
-brew install podman
-podman machine init
-podman machine start
-```
-
-On Linux, Podman runs natively — just install via your package manager and skip the machine commands.
-
-### Build and run
-
-```bash
-podman build -t marketpulse .
-podman run --rm -v ./data:/app/data:z marketpulse
-```
-
-### Running on a university cluster (Singularity/Apptainer)
-
-```bash
-podman save marketpulse -o marketpulse.tar
-singularity build marketpulse.sif docker-archive://marketpulse.tar
-singularity run --bind ./data:/app/data marketpulse.sif
+uv run python main.py --stocks
+uv run python main.py --crypto
+uv run python main.py --all
+uv run python main.py --tickers AAPL NVDA BTC-USD
 ```
 
 ## Models
 
-### k-NN (Naive + Enhanced)
+**k-NN** (naive + enhanced) — classifies next-day direction from return patterns. Enhanced adds volume, RSI, volatility, MACD.
 
-Classifies next-day direction (UP/DOWN) from a sliding window of daily returns. Enhanced mode adds volume, RSI, volatility, and MACD — features are shared with LinReg via `engine/features.py`. All features are auto-scaled via `StandardScaler`.
+**Linear Regression** (naive + enhanced) — predicts next-day return, derives direction from sign. Confidence via sigmoid mapping.
 
-### Linear Regression (Naive + Enhanced)
+**LSTM** — recurrent neural network for sequential patterns. Requires pre-training via `train.py`. Three presets: `quick` (~1-5 min), `standard` (~5-15 min), `cluster` (hours on GPU). Early stopping prevents overfitting.
 
-Predicts next-day return as a continuous value, derives direction from the sign and confidence via sigmoid mapping. Enhanced mode uses the same feature set as k-NN Enhanced. Supports native `sample_weight` for time-weighting.
+**Sentiment** — all models predict from price first, then VADER sentiment shifts the probability post-hoc.
 
-### LSTM Neural Network
-
-Recurrent neural network that processes price data as a time series — sees the **order** of features, not just a flat vector. Requires pre-training (via `train.py`), then saved weights are loaded for instant predictions.
-
-Three training presets:
-
-| Preset | Time (CPU) | Use case |
-|---|---|---|
-| `quick` | ~2-5 min | Testing, experiments |
-| `standard` | ~15-30 min | Real use |
-| `cluster` | hours (GPU) | Best accuracy, research |
+## LSTM Training
 
 ```bash
-# Train
 uv run python train.py --ticker AAPL --period 1y --preset quick
 uv run python train.py --stocks --preset standard
 uv run python train.py --all --periods 1y 2y max --preset cluster
-
-# List saved models
-uv run python train.py --list
-
-# Predict (auto-loads saved model)
-uv run python main.py --tickers AAPL
+uv run python train.py --list                             # show saved models
 ```
 
-Saved models go to `models/` with naming: `{ticker}_{period}_{preset}.pt`. Auto-loaded in order cluster → standard → quick (best available). See [docs/lstm.md](docs/lstm.md) for details.
-
-### Sentiment adjustment
-
-All models predict from price patterns first, then sentiment shifts the probability post-hoc. VADER is the default scorer (handles negation, intensifiers, caps), with naive keyword fallback.
+Models saved to `models/{ticker}_{period}_{preset}.pt`. Auto-loaded in predictions (cluster > standard > quick priority).
 
 ## Backtesting
 
-Walk-forward testing: hides the last N days, predicts each one using only prior data — no look-ahead bias. Tracks simulated trading P/L, profit factor, win/loss streaks. LSTM variants are included automatically when a trained model exists.
+Walk-forward testing with simulated trading P/L, configurable fees, and buy-and-hold benchmark.
 
 ```bash
-uv run python backtest.py --stocks --days 20
-uv run python backtest.py --crypto --full
-uv run python backtest.py --all --compare-periods --output results.csv
-uv run python backtest.py --tickers NVDA TSLA --compare-periods --days 50
+# Basic
+uv run python backtest.py --tickers AAPL --days 20
+
+# With trading fees (0.1% per side) and buy-and-hold comparison
+uv run python backtest.py --stocks --days 20 --fees 0.1 --buy-hold
+
+# Detailed output
+uv run python backtest.py --full --period 1y --buy-hold
+
+# Cross-period comparison + export
+uv run python backtest.py --compare-periods --output results.csv --buy-hold
+
+# Batch runner: one CSV per ticker
+uv run python run_all.py --days 50 --fees 0.05 --buy-hold
 ```
+
+### Trading fees
+
+Configurable via `--fees` (percentage per side, default from `config.py`). Covers commission + spread + slippage. Applied twice per trade (buy + sell = round-trip). A model with +5% gross return and 50 trades at 0.1% per side loses 10% to fees → net -5%.
+
+### Buy-and-hold benchmark
+
+`--buy-hold` compares each model's active trading return against simply buying on day 1 and holding. If buy-and-hold beats most models, active trading doesn't add value for that ticker.
 
 ### Output modes
 
-| Flag | Terminal output | CSV content |
+| Flag | Terminal | CSV rows |
 |---|---|---|
-| (none) | Summary table per model | One row per model (accuracy, return, PF, streaks) |
-| `--full` | Summary + consensus + profit analysis + streaks | One row per day per model |
-| `--compare-periods` | Period × model matrix + top 5 + streaks | One row per model × period |
+| (none) | Summary per model | 1 per model |
+| `--full` | Summary + consensus + profit + streaks | 1 per day per model |
+| `--compare-periods` | Period × model matrix + top 5 | 1 per model × period |
 
-`--output` works in all modes. CSV for non-programmers, JSON for further analysis.
+### Batch runner (`run_all.py`)
+
+Runs `--compare-periods` for each ticker separately, saves individual CSVs with descriptive filenames:
+
+```
+results/
+├── AAPL_50d_fee005_bh.csv              # AAPL, 50 days, 0.05% fee, with B&H
+├── BTC-USD_50d_fee005_bh.csv
+├── ...
+└── _summary_50d_fee005_bh_20260427.csv # best model per ticker
+```
 
 ## Project Structure
 
 ```
 marketpulse-ai/
-├── config.py                # ★ Tickers, periods, defaults — edit this to add assets
+├── config.py                # ★ Tickers, periods, fees, defaults
 ├── main.py                  # CLI — prediction reports
 ├── backtest.py              # CLI — model evaluation
-├── train.py                 # CLI — LSTM model training
+├── train.py                 # CLI — LSTM training
+├── run_all.py               # CLI — batch backtest (one CSV per ticker)
 ├── test_pipeline.py         # 13 offline tests
 ├── pyproject.toml           # Dependencies & build config
 ├── Containerfile            # Podman/Docker build
-├── .containerignore         # Build context excludes
 ├── AGENTS.md                # AI assistant context file
 │
 ├── interface/
@@ -154,62 +129,43 @@ marketpulse-ai/
 │
 ├── engine/
 │   ├── __init__.py
-│   ├── features.py          # Shared feature engineering (RSI, MACD, volatility, volume)
-│   ├── knn_model.py         # k-NN classifier (naive + enhanced)
-│   ├── lin_reg_model.py     # Linear Regression (naive + enhanced)
-│   ├── ai_model.py          # LSTM neural network (train, save, load, predict)
-│   ├── backtester.py        # Walk-forward backtest engine
-│   ├── data_downloader.py   # Yahoo Finance data via yfinance
+│   ├── features.py          # Shared feature engineering
+│   ├── knn_model.py         # k-NN (naive + enhanced)
+│   ├── lin_reg_model.py     # LinReg (naive + enhanced)
+│   ├── ai_model.py          # LSTM (train, save/load, predict, early stopping)
+│   ├── backtester.py        # Walk-forward engine (P/L, fees, B&H, streaks)
+│   ├── backtest_helpers.py  # Shared helpers (display, export, period filtering)
+│   ├── data_downloader.py   # Yahoo Finance data
 │   ├── db_manager.py        # SQLite storage
-│   └── news_scraper.py      # VADER/naive sentiment scoring
+│   └── news_scraper.py      # VADER/naive sentiment
 │
-├── models/                  # Saved LSTM weights (auto-created, gitignored)
-│   └── AAPL_1y_quick.pt
-│
-├── data/
-│   └── market_data.db       # SQLite database (auto-created)
+├── models/                  # Saved LSTM weights (gitignored)
+├── results/                 # Backtest CSV outputs (gitignored)
+├── data/                    # SQLite database (auto-created)
 │
 └── docs/                    # In-depth documentation
-    ├── README.md            # Documentation index
-    ├── knn.md               # k-NN deep dive
-    ├── linear-regression.md # LinReg deep dive
-    ├── lstm.md              # LSTM: training, presets, cluster deployment
-    ├── features.md          # Technical indicators
-    ├── sentiment.md         # Sentiment analysis
-    ├── backtesting.md       # Backtesting methodology + metrics
-    └── api.md               # API, architecture, DB schema
+    ├── README.md            # Index
+    ├── knn.md, linear-regression.md, lstm.md
+    ├── features.md, sentiment.md
+    ├── backtesting.md       # Methodology, fees, B&H, streaks, metrics
+    └── api.md               # Architecture, DB schema, model contract
 ```
 
 ## Configuration
 
-All tickers and periods live in `config.py`:
+`config.py` is the single source of truth:
 
 ```python
 STOCKS = ["AAPL", "MSFT", "NVDA", ...]
 CRYPTO = ["BTC-USD", "ETH-USD", "SOL-USD"]
 ALL_TICKERS = STOCKS + CRYPTO
 ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
-```
-
-Predictions are requested via `PredictionConfig`:
-
-```python
-from interface.api import StockAppAPI, PredictionConfig
-
-api = StockAppAPI()
-config = PredictionConfig(
-    ticker="NVDA",
-    period="1y",
-    model_type="knn_enhanced",   # "knn", "knn_enhanced", "linreg", "linreg_enhanced", "lstm"
-    use_time_weights=True,
-    include_news=True,
-)
-result = api.get_prediction(config)
+DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per side
 ```
 
 ## Documentation
 
-`docs/` has in-depth explanations of every component — models, features, sentiment, backtesting, API. `AGENTS.md` is a compact context file for AI assistants (Claude, GPT, Gemini) — upload it when working on the codebase.
+`docs/` has in-depth explanations of every component. `AGENTS.md` is a compact context file for AI assistants — upload it when working on the codebase in any AI chat.
 
 ## Testing
 
@@ -217,21 +173,20 @@ result = api.get_prediction(config)
 uv run python test_pipeline.py
 ```
 
-13 tests covering all models (including LSTM when PyTorch is available), features, sentiment, backtesting, and error handling. Runs offline with mock data.
+13 tests covering all models, features, sentiment, backtesting, fees, and error handling.
 
 ## Roadmap
 
-- [x] Data layer (yfinance + SQLite caching)
-- [x] k-NN model — naive + enhanced (RSI, MACD, volume, volatility)
+- [x] k-NN model — naive + enhanced
 - [x] Linear Regression — naive + enhanced
-- [x] LSTM neural network (training presets, save/load, cluster-ready)
-- [x] Shared feature engineering (`engine/features.py`)
-- [x] News sentiment — VADER + naive fallback
-- [x] API facade (`StockAppAPI`)
-- [x] CLI with `--stocks` / `--crypto` / `--all` filtering
-- [x] Walk-forward backtesting (P/L, profit factor, streaks, CSV/JSON export)
-- [x] Centralized config (`config.py`)
-- [x] In-depth documentation (`docs/`)
+- [x] LSTM neural network (presets, early stopping, save/load)
+- [x] Shared feature engineering (RSI, MACD, volume, volatility)
+- [x] VADER sentiment + naive fallback
+- [x] Walk-forward backtesting (P/L, profit factor, streaks)
+- [x] Trading fees + buy-and-hold benchmark
+- [x] Batch runner (`run_all.py`)
+- [x] Centralized config, CLI filtering, CSV/JSON export
+- [x] Documentation (`docs/` + `AGENTS.md`)
 - [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Visualization layer (Plotly/Matplotlib)
 - [ ] Web UI (Flask/FastAPI)

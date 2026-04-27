@@ -9,167 +9,147 @@ For `--days 5`:
 ```
 Day 1:  Train on [day_1 ... day_N-5]  →  Predict day_N-4  →  Compare with reality
 Day 2:  Train on [day_1 ... day_N-4]  →  Predict day_N-3  →  Compare with reality
-Day 3:  Train on [day_1 ... day_N-3]  →  Predict day_N-2  →  Compare with reality
-Day 4:  Train on [day_1 ... day_N-2]  →  Predict day_N-1  →  Compare with reality
+...
 Day 5:  Train on [day_1 ... day_N-1]  →  Predict day_N    →  Compare with reality
 ```
 
-Each step, the model is retrained from scratch with one more day of data. This is expensive (5 full train cycles for 5 test days) but realistic.
+Each step, the model is retrained from scratch. Walk-forward is the gold standard for time-series evaluation because it respects temporal order.
 
-## Why not train/test split?
+## Trading simulation
 
-A simple 80/20 split trains once and tests on the last 20% of data. This is faster but problematic:
-- The model never sees recent data during training
-- It doesn't simulate the real workflow where you retrain daily
-- Results are sensitive to where you split
+Each day, the model's prediction becomes a trade:
+- **UP** → Long (buy at open, sell at close). P/L = `(close_actual - close_before) / close_before`
+- **DOWN** → Short (sell at open, buy at close). P/L = `(close_before - close_actual) / close_before`
 
-Walk-forward testing is the gold standard for time-series evaluation because it respects the temporal order of data.
+### Trading fees
+
+Configurable via `--fees` (default from `config.py`, 0.05% per side). Each trade has two legs (entry + exit), so the round-trip cost is `2 × fee_pct`:
+
+```
+Raw P/L:   +1.50%
+Fee:       -0.10%  (0.05% × 2 sides)
+Net P/L:   +1.40%
+```
+
+Fees matter more than you'd think. With 50 trades at 0.1% per side, you lose 10% to fees alone. A model needs to generate >10% gross return just to break even.
+
+Typical fee ranges:
+- Stocks (commission-free brokers): 0.01-0.05% per side (spread + slippage only)
+- Stocks (traditional brokers): 0.05-0.15% per side
+- Crypto (Binance, Coinbase): 0.05-0.20% per side
+
+### Buy-and-hold benchmark
+
+`--buy-hold` computes what you'd earn by simply buying on day 1 of the test period and holding through the last day. No trades, no fees (except entry/exit once).
+
+This is the baseline any active strategy must beat. If buy-and-hold returns +8% over 20 days and your best model returns +6% after fees, active trading is destroying value — you'd be better off doing nothing.
 
 ## Metrics
 
 ### Accuracy
 
-```
-accuracy = correct_predictions / total_predictions
-```
-
-For `--days 20`: accuracy of 60% means 12/20 days predicted correctly. With a 50% baseline (coin flip), anything consistently above 55% is meaningful.
-
-### Direction accuracy
-
-Breaks down accuracy by predicted direction:
-
-```
-UP accuracy:   correct_UP_calls / total_UP_calls
-DOWN accuracy: correct_DOWN_calls / total_DOWN_calls
-```
-
-Critical for day trading. If a model is 80% accurate on DOWN but 40% on UP, you'd only trade its DOWN signals.
-
-### Confidence calibration
-
-Splits predictions into high-confidence (>65%) and low-confidence (≤65%), then compares accuracy in each bucket. If high-confidence predictions aren't more accurate than low-confidence ones, the confidence score is noise and shouldn't influence your trading decisions.
-
-### Consensus
-
-When running multiple models, consensus shows what percentage of models agree on each day. Unanimous days (100% agreement) are the strongest signals. From backtesting, unanimous predictions are correct more often than split-vote days — but they're not infallible.
+Percentage of correct direction predictions. With a 50% baseline (coin flip), anything consistently above 55% is meaningful. Professional quant funds aim for 52-55% and profit through position sizing.
 
 ### Profit metrics
 
-Accuracy alone doesn't tell you if a model makes money. A model with 60% accuracy that wins big and loses small is more profitable than one with 80% accuracy that wins small and occasionally loses huge. The backtest tracks simulated trades:
+**Total return** — sum of net daily P/L. Positive = the model made money.
 
-- If the model predicts **UP** → simulated Long (buy). P/L = `(close_actual - close_before) / close_before`
-- If the model predicts **DOWN** → simulated Short (sell). P/L = `(close_before - close_actual) / close_before`
+**Profit factor** — `gross_profits / gross_losses`. The single most important number:
+- PF < 1.0 → losing money
+- PF 1.0-1.5 → marginally profitable
+- PF 1.5-2.0 → solid
+- PF > 2.0 → strong
+- PF = ∞ → no losing trades (suspicious on small samples)
 
-From this we compute:
-
-**Total return** — sum of all daily P/L. Positive = the model made money over the test period.
-
-**Profit factor** — `gross_profits / gross_losses`. This is the single most important number:
-- PF < 1.0 → losing money (losses outweigh wins)
-- PF = 1.0 → breakeven
-- PF 1.0–1.5 → marginally profitable
-- PF 1.5–2.0 → solid strategy
-- PF > 2.0 → strong strategy
-- PF = ∞ → no losing trades (too good to be true on small samples)
-
-**Average win / average loss** — how big are wins vs losses? If avg_win = +1.5% and avg_loss = -0.5%, the model needs only 25% accuracy to break even.
-
-**W/L** — win/loss count. Together with profit factor, tells you the risk profile: many small wins + few big losses (trend-following) vs few big wins + many small losses (mean-reversion).
+**Average win / average loss** — size of wins vs losses. If avg_win = +1.5% and avg_loss = -0.5%, you need only 25% accuracy to break even.
 
 ### Streak metrics
 
-Streaks measure consecutive wins or losses. E.g. the sequence `[W, W, W, L, L, W, W]` has win streaks of [3, 2] and a loss streak of [2].
+Streaks measure consecutive wins or losses. E.g. `[W, W, W, L, L, W, W]` → win streaks [3, 2], loss streak [2].
 
-**Longest win streak** — maximum consecutive correct predictions. A model with a long win streak is "hot" during certain market conditions. Useful for identifying when the model is in sync with the market regime.
+**Longest win/loss streak** — extremes. A max loss streak of 6 means six losing trades in a row at some point.
 
-**Longest loss streak** — maximum consecutive wrong predictions. Critical for risk management: if you're trading with real money, you need to survive the worst drawdown. A model with max loss streak of 6 means you'd see 6 losing trades in a row at some point.
+**Average win/loss streak** — typical run length. You want avg_win_streak > avg_loss_streak. If avg_loss = 3.0 and avg_win = 1.5, the model tends to lose in long runs and recover slowly.
 
-**Average win/loss streak** — typical length of a winning or losing run. If avg_win_streak = 1.5 and avg_loss_streak = 3.0, the model tends to get one or two right, then enters extended losing periods — a red flag even if overall accuracy looks decent.
+### Direction accuracy
 
-How to use streaks:
-- Compare avg_win_streak vs avg_loss_streak. You want avg_win > avg_loss.
-- Long max loss streak + high accuracy = the model goes through "regimes" where it works and doesn't. Consider combining with a regime detection mechanism.
-- If all models have similar max loss streaks but different avg loss streaks, prefer the one with the lower average — it recovers faster.
+Breaks down accuracy by predicted direction. If a model is 80% on DOWN but 40% on UP, only trust its short signals.
+
+### Confidence calibration
+
+Splits predictions into high-confidence (>65%) and low-confidence (≤65%). If high-confidence predictions aren't more accurate, the confidence score is noise.
+
+### Consensus
+
+When running multiple models, consensus shows agreement per day. Unanimous days (100%) are the strongest signals.
 
 ## CLI flags
 
 ### `--days N`
 
-Number of test days. More days = more reliable accuracy estimate, but also more computation. Recommended values:
-- 5: quick check, unreliable (one miss = 20% swing)
-- 20: solid for comparison
-- 50: most reliable, takes longer to run
+Number of test days. 5 = quick check (unreliable), 20 = solid, 50 = most reliable.
 
 ### `--period`
 
-How much historical data to train on. Options: `1mo`, `1y`, `2y`, `5y`, `max`.
+Training data window: `1mo`, `1y`, `2y`, `5y`, `max`. Shorter = more recent patterns. Use `--compare-periods` to find the optimal period.
 
-Shorter periods train only on recent data (more relevant patterns, fewer samples). Longer periods have more samples but include old patterns that may not apply anymore. The optimal period depends on the asset — use `--compare-periods` to find it.
+### `--fees FLOAT`
+
+Fee percentage per side. Default: `DEFAULT_TRADING_FEE_PCT` from config.py (0.05%). Set to 0 for gross returns.
+
+### `--buy-hold`
+
+Add buy-and-hold return to all outputs. Shows how many models beat passive investing.
 
 ### `--full`
 
-Adds four extra sections to the output:
-1. **Day-by-day consensus** — full prediction table for every model × every day
-2. **Direction accuracy** — UP vs DOWN accuracy per model
-3. **Confidence calibration** — are confident predictions actually better?
-4. **Next-day signal** — what each model predicted for the most recent day
+Detailed output: day-by-day consensus, direction accuracy, confidence calibration, profit analysis with streaks, next-day signal.
 
 ### `--compare-periods`
 
-Runs the backtest across all periods (1mo, 1y, 2y, 5y, max) and produces:
-- Accuracy matrix: period × model
-- Best period per model
-- Overall best model + period combination (with ties)
-- Top 5 leaderboard
-
-This is the most useful mode for finding the optimal configuration for a specific ticker.
+Runs all periods, shows accuracy matrix, top 5 by return, streak analysis. The most useful mode for finding the best model + period for a specific ticker.
 
 ### `--output FILE`
 
-Export results to CSV or JSON (detected from extension). Works in ALL modes — the content matches what you see in the terminal:
+Export to CSV or JSON. Content depends on mode:
 
-| Mode | What each row contains |
+| Mode | CSV rows |
 |---|---|
-| Basic (no flags) | One row per model: accuracy, return, PF, streaks, direction accuracy |
-| `--full` | One row per day per model: date, predicted, actual, confidence, trade P/L, prices |
-| `--compare-periods` | One row per model × period: accuracy, return, PF, streaks, direction accuracy |
+| Basic | 1 per model (22 columns: accuracy, return, PF, fees, B&H, streaks, direction) |
+| `--full` | 1 per day per model (13 columns: date, predicted, actual, pnl_net, fee) |
+| `--compare-periods` | 1 per model × period (same 22 columns as basic) |
+
+## Batch runner (`run_all.py`)
+
+Runs `--compare-periods` for each ticker separately, saves individual CSVs with descriptive filenames:
 
 ```bash
-# Summary per model
-uv run python backtest.py --output summary.csv
-
-# Day-by-day detail (for charting or manual review)
-uv run python backtest.py --full --output daily.csv
-
-# Cross-period comparison (for finding optimal model + period)
-uv run python backtest.py --compare-periods --output comparison.csv
-uv run python backtest.py --compare-periods --output comparison.json
+uv run python run_all.py --days 50 --fees 0.05 --buy-hold
 ```
 
-The full-mode CSV is the most useful for sharing with non-programmers — open it in Excel, filter by model, and sort by trade_pnl to see which days made or lost money.
+Output:
+```
+results/
+├── AAPL_50d_fee005_bh.csv
+├── BTC-USD_50d_fee005_bh.csv
+├── ...
+└── _summary_50d_fee005_bh_20260427.csv
+```
+
+Filename encodes the parameters so results don't overwrite each other when re-run with different settings.
+
+The summary CSV has one row per ticker with the best model+period combination.
 
 ## Interpreting results
 
-### What's a good accuracy?
-
-On daily stock prediction:
-- **50%** — coin flip (random baseline)
-- **52-55%** — could be noise or slight edge
-- **55-60%** — meaningful if consistent across many test days
-- **60%+** — strong signal, verify it's not overfitting
-
-For context: professional quant funds aim for 52-55% accuracy on high-frequency trades and make money through volume and position sizing, not raw accuracy.
-
 ### Accuracy vs profit
 
-A model with 55% accuracy but profit factor 2.0 is better than one with 70% accuracy and PF 0.8. Why? The 55% model wins slightly more than half the time, but its wins are twice as large as its losses. The 70% model wins more often, but when it loses, it loses big.
+A model with 55% accuracy and PF 2.0 is better than 70% accuracy with PF 0.8. The 55% model wins more than it loses in dollar terms.
 
-Always check both accuracy AND profit factor. The `--compare-periods` top 5 leaderboard is sorted by total return, not accuracy, for exactly this reason.
+### Models vs buy-and-hold
 
-### Common pitfalls
+If no model beats buy-and-hold after fees, active trading doesn't work for that ticker/period. This is common — markets are efficient for a reason. The value of backtesting is figuring out **where** active models add value, not assuming they always do.
 
-- **Small sample bias.** With `--days 5`, one lucky/unlucky day swings accuracy by 20%. Use `--days 20+` for reliable results.
-- **Period sensitivity.** A model that scores 80% on `1y` and 40% on `2y` is probably catching a temporary pattern, not a real edge.
-- **News contamination.** `+ News` variants use today's sentiment for all backtest days. Their accuracy is less trustworthy than non-news variants.
-- **Overfitting to the test set.** If you keep tweaking model parameters to improve backtest results, you're overfitting to the test period. The real test is out-of-sample performance (future days you haven't seen yet).
+### Small sample bias
+
+With 5 days, one lucky prediction swings accuracy by 20%. Use 20+ days. Profit factor ∞ on 5 days means nothing — it's 5 correct guesses.

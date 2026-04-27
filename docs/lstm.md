@@ -2,142 +2,100 @@
 
 ## How it works
 
-LSTM (Long Short-Term Memory) is a recurrent neural network designed for sequential data. Unlike k-NN and LinReg which see a flat feature vector, LSTM processes data as a time series — it reads through each day in order and maintains an internal "memory" of the sequence.
-
-The architecture:
+LSTM (Long Short-Term Memory) is a recurrent neural network for sequential data. Unlike k-NN/LinReg which see a flat feature vector, LSTM reads through each day in order and maintains internal "memory."
 
 ```
-Input sequence (20 days × 5 features)
-        ↓
-    LSTM layers (1-3 layers depending on preset)
-        ↓
-    Last hidden state
-        ↓
-    Fully connected layers
-        ↓
-    Sigmoid → probability of UP ∈ [0, 1]
+Input sequence (20 days × 5 features)  →  LSTM layers  →  FC layers  →  Sigmoid → P(UP)
 ```
 
-Each timestep has these features (same as k-NN/LinReg enhanced):
-- Daily return
-- Volume change
-- RSI
-- Volatility
-- MACD histogram
+Each timestep has: daily return, volume change, RSI, volatility, MACD histogram (shared with k-NN/LinReg via `features.py`).
 
-The key difference from k-NN/LinReg: LSTM sees the **order** of the features. It can learn patterns like "RSI was rising for 5 days then suddenly dropped" — something a flat feature vector can't express.
+The key advantage: LSTM sees the **order** — it can learn "RSI rising for 5 days then dropping" as a pattern, which flat vectors can't express.
 
-## Training vs prediction
+## Training presets
 
-Unlike k-NN and LinReg (which train from scratch on every prediction), LSTM is trained **once** and the weights are saved to disk. This is necessary because:
-- Training takes minutes to hours (vs milliseconds for k-NN)
-- The trained model is reusable across many predictions
-- GPU training on a cluster produces a model that runs on CPU for inference
+| Preset | Hidden | Layers | Max epochs | Patience | Approx. time |
+|---|---|---|---|---|---|
+| `quick` | 32 | 1 | 50 | 10 | ~1-5 min (CPU) |
+| `standard` | 64 | 2 | 200 | 20 | ~5-15 min (CPU) |
+| `cluster` | 128 | 3 | 1000 | 50 | hours (GPU) |
 
-### Workflow
+"Patience" = early stopping parameter (see below).
+
+## Early stopping
+
+Without early stopping, LSTM overfits heavily. Typical pattern:
+
+```
+Epoch  10: train_loss=0.68  val_loss=0.70  ← model is learning
+Epoch  20: train_loss=0.65  val_loss=0.70  ← val plateaus
+Epoch  50: train_loss=0.40  val_loss=1.20  ← memorizing training data
+Epoch 200: train_loss=0.22  val_loss=2.00  ← completely overfit
+```
+
+Early stopping monitors `val_loss`. If it doesn't improve for `patience` epochs, training stops and restores the best model weights:
+
+```
+Epoch  20: val_loss=0.6949  (best so far)
+Epoch  25: val_loss=0.7010  (no improvement: 5/20)
+Epoch  40: val_loss=0.7200  (no improvement: 20/20 → STOP)
+→ Restored model from epoch 20 (val_loss=0.6949)
+```
+
+This saves time (standard stops at ~30-40 epochs instead of 200) and produces a better model.
+
+## Workflow
 
 ```bash
-# 1. Train (once)
+# 1. Train (once per ticker × period)
 uv run python train.py --ticker AAPL --period 1y --preset quick
 
-# 2. Predict (reuses saved model, instant)
+# 2. Verify
+uv run python train.py --list
+
+# 3. Use (auto-loads saved model)
 uv run python main.py --tickers AAPL
 uv run python backtest.py --tickers AAPL --days 20
 ```
 
-## Training presets
-
-| Preset | Hidden size | Layers | Epochs | Approx. time | Use case |
-|---|---|---|---|---|---|
-| `quick` | 32 | 1 | 50 | ~2-5 min (CPU) | Testing, quick experiments |
-| `standard` | 64 | 2 | 200 | ~15-30 min (CPU) | Real use, decent accuracy |
-| `cluster` | 128 | 3 | 1000 | hours (GPU) | Best accuracy, research |
-
-The `cluster` preset also uses learning rate scheduling (ReduceLROnPlateau) which automatically lowers the learning rate when validation loss stops improving.
-
-### Training on a cluster
-
+Train multiple at once:
 ```bash
-# Build the container
-podman build -t marketpulse .
-
-# Run training inside the container (with GPU if available)
-podman run --rm -v ./data:/app/data:z -v ./models:/app/models:z \
-    marketpulse python train.py --all --preset cluster
-
-# Models are saved to the mounted models/ directory
+uv run python train.py --stocks --preset standard
+uv run python train.py --all --periods 1y 2y max --preset cluster
 ```
 
-For Singularity/Apptainer:
+## Saved models
+
+Saved to `models/{ticker}_{period}_{preset}.pt`. Each file contains: weights, config, training metrics (accuracy, epochs completed, early stop info, duration).
+
+Auto-loaded by priority: cluster > standard > quick. If no model exists for a ticker+period, backtest logs a NOTE with the exact training command.
+
+## Cluster deployment
+
 ```bash
+# With Podman (GPU passthrough)
+podman run --rm --gpus all -v ./data:/app/data:z -v ./models:/app/models:z \
+    marketpulse python train.py --all --preset cluster
+
+# With Singularity (--nv for NVIDIA)
 singularity run --nv --bind ./data:/app/data,./models:/app/models \
     marketpulse.sif python train.py --all --preset cluster
 ```
 
-The `--nv` flag passes through NVIDIA GPUs. PyTorch automatically detects and uses them.
-
-## Saved models
-
-Models are saved to `models/` with the naming convention:
-
-```
-models/{ticker}_{period}_{preset}.pt
-```
-
-Examples:
-```
-models/AAPL_1y_quick.pt
-models/BTC-USD_max_standard.pt
-models/NVDA_2y_cluster.pt
-```
-
-Each `.pt` file contains:
-- Model weights (state dict)
-- Training config (hidden size, layers, epochs, etc.)
-- Training metrics (final accuracy, best validation loss, duration)
-- Metadata (features used, window size, timestamp)
-
-List all saved models:
-```bash
-uv run python train.py --list
-```
-
-### Auto-loading
-
-When you request `model_type="lstm"` in a prediction, the API automatically searches for the best available saved model:
-1. Tries `cluster` preset first (highest quality)
-2. Falls back to `standard`
-3. Falls back to `quick`
-
-If no model exists, it returns a clear error with the exact training command needed.
-
-## Window size
-
-LSTM uses `window_size=20` by default (vs 5 for k-NN/LinReg). Longer windows let the LSTM see more history per prediction, which helps it learn longer-term patterns. The tradeoff is more data needed for training.
-
-## Sentiment adjustment
-
-Same post-hoc approach as k-NN and LinReg. The LSTM predicts probability of UP, then sentiment shifts it. `use_time_weights` is ignored for LSTM since time awareness is built into the architecture.
+PyTorch auto-detects GPU. The `cluster` preset also uses learning rate scheduling (ReduceLROnPlateau).
 
 ## When to use LSTM vs k-NN/LinReg
 
-**LSTM is better when:**
-- You have lots of training data (1000+ rows)
-- Patterns are sequential (momentum, mean-reversion over multiple days)
-- You can afford to train once and reuse
+**LSTM better:** lots of data (1000+ rows), sequential patterns, you can afford one-time training.
 
-**k-NN/LinReg are better when:**
-- Data is limited (< 200 rows)
-- You want instant results without pre-training
-- You're experimenting with different tickers/periods frequently
+**k-NN/LinReg better:** limited data, instant results needed, frequent ticker/period experimentation.
 
-**The backtest will tell you.** After training, run `--compare-periods` and check if LSTM actually beats the simpler models for your specific ticker.
+**The backtest tells you.** Train, then run `--compare-periods`. If LSTM doesn't beat simpler models, the extra complexity isn't worth it — which is common for daily stock prediction.
 
 ## Limitations
 
-- Requires PyTorch (`uv pip install torch` or `uv pip install -e '.[ai]'`)
-- Must be trained before use (no cold-start prediction)
-- One trained model per ticker × period × preset (not transferable between tickers)
-- CPU training is slow for `standard` and `cluster` presets
-- Risk of overfitting on small datasets — monitor validation loss during training
-- No early stopping in `quick` preset (to keep it simple)
+- Requires PyTorch (`uv pip install torch`)
+- Must be trained before use (no cold-start)
+- One model per ticker × period × preset (not transferable)
+- CPU training slow for `standard`/`cluster`
+- Daily price data is inherently noisy — even with early stopping, LSTM often converges to ~50% accuracy (coin flip)

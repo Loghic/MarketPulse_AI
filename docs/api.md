@@ -2,7 +2,7 @@
 
 ## Design philosophy
 
-The system is built around the **Facade pattern**: one class (`StockAppAPI`) that exposes a simple interface while hiding the complexity of data fetching, caching, model selection, and sentiment analysis.
+One class (`StockAppAPI`) exposes a simple interface while hiding the complexity of data fetching, caching, model selection, and sentiment analysis.
 
 ```
 ┌──────────────────┐     ┌──────────────────────────────┐
@@ -14,9 +14,10 @@ The system is built around the **Facade pattern**: one class (`StockAppAPI`) tha
                     ┌─────────┬───────┴───────┬──────────┐
                     ▼         ▼               ▼          ▼
                  Models    NewsScraper    DBManager   DataDownloader
+                 k-NN ×2   VADER/naive   SQLite      yfinance
+                 LinReg ×2
+                 LSTM (optional)
 ```
-
-This means: to build a web UI, you import `StockAppAPI`, call `get_prediction()`, and display the result. No need to know about k-NN internals, DB schema, or yfinance API quirks.
 
 ## StockAppAPI
 
@@ -26,135 +27,93 @@ This means: to build a web UI, you import `StockAppAPI`, call `get_prediction()`
 api = StockAppAPI()
 ```
 
-Creates instances of all models and supporting services:
-- `api.knn` — KNNModel with returns only
-- `api.knn_enhanced` — KNNModel with all features
-- `api.linreg` — LinearRegressionModel with returns only
-- `api.linreg_enhanced` — LinearRegressionModel with all features
-- `api.news_scraper` — NewsScraper (VADER + naive fallback)
-- `api.db` — DatabaseManager (SQLite)
+Creates all models:
+- `api.knn` / `api.knn_enhanced` — KNNModel (returns only / all features)
+- `api.linreg` / `api.linreg_enhanced` — LinearRegressionModel
+- LSTM models loaded on-demand from `models/` directory (cached per ticker+period)
 
 ### get_prediction(config) → PredictionResult
 
-The main entry point. Takes a `PredictionConfig`, returns a `PredictionResult`.
+The main entry point:
+1. Data fetch (DB → yfinance if stale)
+2. Period filter
+3. News fetch + VADER scoring (if `include_news=True`)
+4. Model routing via `model_type` (including LSTM auto-load)
+5. Result packaging
 
-```python
-config = PredictionConfig(
-    ticker="AAPL",
-    period="1y",
-    model_type="knn",            # "knn", "knn_enhanced", "linreg", "linreg_enhanced"
-    use_time_weights=True,
-    include_news=True,
-)
-result = api.get_prediction(config)
-```
+### LSTM auto-loading
 
-What happens internally:
-1. **Data fetch** — checks DB for cached prices, downloads from yfinance if missing or stale
-2. **Period filter** — trims data to the requested period (1mo, 1y, etc.)
-3. **News fetch** (if `include_news=True`) — checks DB cache, downloads from yfinance if needed, scores with VADER
-4. **Model predict** — routes to the correct model via `model_type`, passes sentiment score
-5. **Result packaging** — wraps everything in a `PredictionResult` dataclass
+When `model_type="lstm"`, the API searches `models/` for saved weights:
+1. Tries `{ticker}_{period}_cluster.pt`
+2. Falls back to `_standard.pt`
+3. Falls back to `_quick.pt`
 
-### get_data(ticker, period) → DataFrame
-
-Fetches price data with automatic caching and staleness detection:
-- First call: downloads from yfinance, saves to SQLite
-- Subsequent calls: returns from SQLite (fast)
-- If data is stale (>1 day for crypto, >1 business day for stocks): refreshes automatically
-
-Returns a DataFrame with columns: `ticker, asset_type, date, open, high, low, close, volume`.
-
-### Data staleness logic
-
-```
-Crypto (BTC-USD, ETH-USD, ...):
-    → Update if last data point is >1 day old (trades 24/7)
-
-Stocks (AAPL, MSFT, ...):
-    → Update if it's a weekday and data is >1 day old
-    → OR if data is >3 days old (covers weekends)
-```
+Returns clear error with training command if no model exists.
 
 ## PredictionConfig
 
-| Field | Type | Default | Description |
+| Field | Type | Default | Options |
 |---|---|---|---|
-| `ticker` | str | required | Asset symbol ("AAPL", "BTC-USD") |
-| `period` | str | "1y" | Training data window: "1mo", "1y", "2y", "5y", "max" |
-| `model_type` | str | "knn" | Model to use: "knn", "knn_enhanced", "linreg", "linreg_enhanced" |
-| `use_time_weights` | bool | False | Prioritize recent data in training |
-| `include_news` | bool | True | Fetch and apply news sentiment |
+| `ticker` | str | required | Any yfinance symbol |
+| `period` | str | "1y" | "1mo", "1y", "2y", "5y", "max" |
+| `model_type` | str | "knn" | "knn", "knn_enhanced", "linreg", "linreg_enhanced", "lstm" |
+| `use_time_weights` | bool | False | Ignored for LSTM |
+| `include_news` | bool | True | |
 
 ## PredictionResult
 
-| Field | Type | Example | Description |
-|---|---|---|---|
-| `ticker` | str | "AAPL" | Asset symbol |
-| `prediction` | str | "UP" | Direction: "UP" or "DOWN" |
-| `confidence` | str | "73.5%" | Model confidence as formatted string |
-| `last_price` | float | 198.85 | Most recent closing price in the data |
-| `analysis_period` | str | "1y" | Period used for training |
-| `model_type` | str | "knn" | Model that produced this result |
-| `sentiment` | str | "POSITIVE" | "POSITIVE", "NEUTRAL", or "NEGATIVE" |
-| `sentiment_score` | float | 0.42 | Raw score in [-1, 1] |
-| `headlines` | List[str] | [...] | Up to 5 news headlines |
-| `data_points` | int | 261 | Number of rows used for training |
-| `timestamp` | str | "2026-04-25 14:30" | When the prediction was made |
+| Field | Type | Example |
+|---|---|---|
+| `prediction` | str | "UP" |
+| `confidence` | str | "73.5%" |
+| `last_price` | float | 198.85 |
+| `sentiment` | str | "POSITIVE" |
+| `sentiment_score` | float | 0.42 |
+| `headlines` | List[str] | [...] |
+| `data_points` | int | 261 |
+
+## Module structure
+
+The engine is split into focused modules:
+
+| Module | Responsibility |
+|---|---|
+| `backtester.py` | Core engine: walk-forward loop, P/L with fees, buy-and-hold, streaks |
+| `backtest_helpers.py` | Shared utilities: period filtering, direction accuracy, export builders, display functions |
+| `features.py` | Technical indicators + feature matrix building |
+| `knn_model.py` / `lin_reg_model.py` / `ai_model.py` | Model implementations |
+| `data_downloader.py` + `db_manager.py` | Data layer |
+| `news_scraper.py` | Sentiment scoring |
+
+`backtest.py` (CLI) is a thin wrapper (~240 lines) that imports from `backtest_helpers.py` and `backtester.py`. Same for `run_all.py`.
 
 ## Database schema
-
-Two tables in `data/market_data.db`:
 
 ### stock_prices
 ```sql
 CREATE TABLE stock_prices (
-    ticker TEXT,
-    asset_type TEXT,        -- "stock" or "crypto"
-    date TEXT,              -- "2026-04-25"
-    open REAL, high REAL, low REAL, close REAL,
-    volume INTEGER,
+    ticker TEXT, asset_type TEXT, date TEXT,
+    open REAL, high REAL, low REAL, close REAL, volume INTEGER,
     PRIMARY KEY (ticker, date)
 );
 ```
 
-Upsert via `INSERT OR REPLACE`. This means re-downloading data for the same date overwrites the old values (handles corrections/adjustments).
-
 ### news_sentiment
 ```sql
 CREATE TABLE news_sentiment (
-    ticker TEXT,
-    date TEXT,
-    headline TEXT,
-    sentiment_score REAL,
+    ticker TEXT, date TEXT, headline TEXT, sentiment_score REAL,
     PRIMARY KEY (ticker, date, headline)
 );
 ```
 
-Insert via `INSERT OR IGNORE`. Same headline on the same date for the same ticker is not re-inserted. The score is the same for all headlines in a batch (it's the average VADER compound score).
-
 ## Model interface contract
 
-Every model must implement:
-
 ```python
-def predict(
-    self,
-    df: pd.DataFrame,
-    use_time_weights: bool = False,
-    sentiment_score: float = 0.0,
-) -> Tuple[str, float]:
-    """
-    Returns: ("UP" or "DOWN", confidence_between_0_and_1)
-    May also return: ("Insufficient data", 0.0) or ("Data error", 0.0)
-    """
+def predict(self, df, use_time_weights=False, sentiment_score=0.0) -> Tuple[str, float]:
+    """Returns ("UP"/"DOWN", confidence) or ("Insufficient data"/"Model not trained", 0.0)"""
 ```
 
-This is the only requirement. The model can use any algorithm internally. The API and backtester only call this method.
-
 ## Adding a web UI
-
-The API is designed for this. A minimal Flask example:
 
 ```python
 from flask import Flask, jsonify, request
@@ -175,8 +134,5 @@ def predict():
         "prediction": result.prediction,
         "confidence": result.confidence,
         "price": result.last_price,
-        "sentiment": result.sentiment,
     })
 ```
-
-No changes to the engine layer required.

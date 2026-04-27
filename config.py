@@ -45,3 +45,22 @@ DEFAULT_PERIOD = "max"
 # ------------------------------------------------------------------
 
 DEFAULT_BACKTEST_DAYS = 5
+
+# ------------------------------------------------------------------
+# Trading costs (applied per trade in backtesting)
+# ------------------------------------------------------------------
+
+# Total cost per trade as a percentage of trade value.
+# Covers: broker commission + bid-ask spread + slippage.
+#
+# Typical values:
+#   Stocks (commission-free brokers like IBKR Lite, Robinhood):
+#       0.01-0.05%  (spread + slippage only, no commission)
+#   Stocks (traditional brokers):
+#       0.05-0.15%  (commission + spread + slippage)
+#   Crypto (exchanges like Binance, Coinbase):
+#       0.05-0.20%  (maker/taker fee + spread)
+#
+# We buy AND sell each day → fee is applied TWICE per round-trip.
+# Default 0.05% per side = 0.10% round-trip.
+DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)

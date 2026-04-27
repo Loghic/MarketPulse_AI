@@ -6,3 +6,5 @@ data/*.db
 .uv/
 results.*
 models/
+results/
+.DS_Store

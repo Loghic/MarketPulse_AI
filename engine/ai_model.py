@@ -48,7 +48,8 @@ TRAINING_PRESETS = {
         "epochs": 50,
         "batch_size": 32,
         "learning_rate": 0.001,
-        "description": "~2-5 min on CPU. Small model, good for testing.",
+        "early_stopping_patience": 10,
+        "description": "~1-5 min on CPU. Small model, good for testing.",
     },
     "standard": {
         "hidden_size": 64,
@@ -57,7 +58,8 @@ TRAINING_PRESETS = {
         "epochs": 200,
         "batch_size": 64,
         "learning_rate": 0.001,
-        "description": "~15-30 min on CPU. Medium model, good for real use.",
+        "early_stopping_patience": 20,
+        "description": "~5-15 min on CPU. Medium model, good for real use.",
     },
     "cluster": {
         "hidden_size": 128,
@@ -66,6 +68,7 @@ TRAINING_PRESETS = {
         "epochs": 1000,
         "batch_size": 128,
         "learning_rate": 0.0005,
+        "early_stopping_patience": 50,
         "description": "Hours on GPU. Large model, best accuracy.",
     },
 }
@@ -300,6 +303,9 @@ class AIModel:
         loss_history = []
         best_val_loss = float("inf")
         best_state = None
+        epochs_without_improvement = 0
+        patience = self.config["early_stopping_patience"]
+        stopped_early = False
         start_time = datetime.now()
 
         for epoch in range(self.config["epochs"]):
@@ -331,10 +337,13 @@ class AIModel:
                 "val_accuracy": val_acc,
             })
 
-            # Save best model
+            # Save best model + early stopping check
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_state = {k: v.cpu().clone() for k, v in self.network.state_dict().items()}
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
             if scheduler:
                 scheduler.step(val_loss)
@@ -343,7 +352,17 @@ class AIModel:
             if verbose and (epoch + 1) % max(1, self.config["epochs"] // 10) == 0:
                 print(f"    Epoch {epoch + 1:>5}/{self.config['epochs']}  "
                       f"train_loss={avg_train_loss:.4f}  "
-                      f"val_loss={val_loss:.4f}  val_acc={val_acc:.1%}")
+                      f"val_loss={val_loss:.4f}  val_acc={val_acc:.1%}"
+                      f"  (no improvement: {epochs_without_improvement}/{patience})")
+
+            # Early stopping
+            if epochs_without_improvement >= patience:
+                stopped_early = True
+                if verbose:
+                    print(f"    Early stopping at epoch {epoch + 1} "
+                          f"(no improvement for {patience} epochs, "
+                          f"best val_loss={best_val_loss:.4f})")
+                break
 
         # Restore best model
         if best_state:
@@ -369,13 +388,19 @@ class AIModel:
             "val_samples": len(X_val),
             "final_val_accuracy": final_acc,
             "best_val_loss": best_val_loss,
+            "epochs_completed": len(loss_history),
+            "epochs_max": self.config["epochs"],
+            "stopped_early": stopped_early,
             "duration_seconds": round(duration, 1),
             "device": str(self.device),
             "timestamp": datetime.now().isoformat(),
         }
 
         if verbose:
-            print(f"  Training complete: {duration:.1f}s, "
+            stop_info = (f"early stop at epoch {len(loss_history)}"
+                         if stopped_early
+                         else f"all {self.config['epochs']} epochs")
+            print(f"  Training complete: {duration:.1f}s ({stop_info}), "
                   f"val_accuracy={final_acc:.1%}, "
                   f"best_val_loss={best_val_loss:.4f}")
 

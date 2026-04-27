@@ -4,20 +4,20 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Models
 
-- **[k-NN](knn.md)** — k-Nearest Neighbors classifier. Covers naive vs enhanced mode, time-weighting, sentiment adjustment, parameters, and when it works well vs when it struggles.
-- **[Linear Regression](linear-regression.md)** — Continuous return prediction with sigmoid confidence mapping. Covers naive vs enhanced, time-weighting via sample_weight, and comparison with k-NN.
-- **[LSTM Neural Network](lstm.md)** — Recurrent neural network for sequential pattern recognition. Covers training presets (quick/standard/cluster), model saving/loading, cluster deployment, and when to use LSTM vs simpler models.
+- **[k-NN](knn.md)** — Nearest Neighbors classifier. Naive vs enhanced, time-weighting, parameters.
+- **[Linear Regression](linear-regression.md)** — Return prediction with sigmoid confidence. Naive vs enhanced, comparison with k-NN.
+- **[LSTM Neural Network](lstm.md)** — Recurrent network for sequential patterns. Training presets, early stopping, save/load, cluster deployment.
 
 ## Engine
 
-- **[Technical Indicators](features.md)** — Shared feature engineering: returns, volume, RSI, MACD, volatility. How each indicator works, the feature vector structure, scaling, warmup requirements, and how to add new features.
-- **[Sentiment Analysis](sentiment.md)** — VADER vs naive scoring, the two-stage integration approach, the math behind probability adjustment, caching, and limitations.
+- **[Technical Indicators](features.md)** — Shared features: RSI, MACD, volatility, volume. How to add new features.
+- **[Sentiment Analysis](sentiment.md)** — VADER vs naive scoring, two-stage integration, limitations.
 
 ## Evaluation
 
-- **[Backtesting](backtesting.md)** — Walk-forward methodology, all CLI flags (`--days`, `--period`, `--full`, `--compare-periods`, `--output`), metrics (accuracy, direction accuracy, confidence calibration, consensus, profit factor, streaks), and how to interpret results.
+- **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees, buy-and-hold benchmark, profit factor, streaks, all CLI flags, batch runner (`run_all.py`), CSV export, interpreting results.
 
 ## Architecture
 
-- **[API & Architecture](api.md)** — StockAppAPI facade, data flow, PredictionConfig/PredictionResult types, database schema, model interface contract, and how to add a web UI.
-- **[AGENTS.md](../AGENTS.md)** — Quick-reference context file for AI assistants (compact, not for deep reading).
+- **[API & Architecture](api.md)** — StockAppAPI facade, module structure, database schema, model contract, LSTM auto-loading, web UI example.
+- **[AGENTS.md](../AGENTS.md)** — Compact context file for AI assistants.

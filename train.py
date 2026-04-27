@@ -55,6 +55,8 @@ def train_model(api: StockAppAPI, ticker: str, period: str, preset: str):
     model.save(path)
 
     print(f"  Accuracy: {info['final_val_accuracy']:.1%}")
+    print(f"  Epochs:   {info['epochs_completed']}/{info['epochs_max']}"
+          f"{' (early stop)' if info['stopped_early'] else ''}")
     print(f"  Duration: {info['duration_seconds']:.1f}s")
     print(f"  Saved to: {path}")
 
