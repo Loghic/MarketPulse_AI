@@ -100,4 +100,4 @@ For `window_size=5`:
 
 ## Scaling
 
-When features have different magnitudes (returns ≈ 0.01, volume changes ≈ 1.0, RSI ≈ 0.5), distance-based models like k-NN would be dominated by the largest features. Both models apply `StandardScaler` (zero mean, unit variance) before training. This is done per-training-run, not globally, so there's no data leakage between train and test.
+When features have different magnitudes (returns ≈ 0.01, volume changes ≈ 1.0, RSI ≈ 0.5), distance-based models like k-NN would be dominated by the largest features. All three models (k-NN, LinReg, LSTM) apply `StandardScaler` (zero mean, unit variance) before training. For k-NN and LinReg this is done per prediction run. For LSTM the scaler is fitted once on training data and saved with the model weights, so it can be reapplied consistently during prediction.

@@ -35,7 +35,7 @@ Sample:  [ret_1..5, vol_chg_1..5, rsi, volatility, macd_histogram]
 ### Why these features?
 
 - **Volume change** — a price move on high volume is more significant than on low volume. If AAPL drops 2% on 3x average volume, that's a stronger signal than the same drop on normal volume.
-- **RSI (Relative Strength Index)** — measures if a stock is overbought (RSI > 0.7) or oversold (RSI < 0.3). Mean-reversion traders buy oversold and sell overbought.
+- **RSI (Relative Strength Index)** [118;1:3u— measures if a stock is overbought (RSI > 0.7) or oversold (RSI < 0.3). Mean-reversion traders buy oversold and sell overbought.
 - **Volatility** — rolling standard deviation of returns. High volatility = uncertain market, patterns may be less reliable.
 - **MACD histogram** — momentum indicator. Positive = bullish momentum, negative = bearish. Crossovers from negative to positive are classic buy signals.
 
@@ -49,12 +49,17 @@ MACD needs ~34 data points before producing valid values (26-period EMA + 9-peri
 
 ## Time-weighting
 
-Standard k-NN treats all training samples equally — a pattern from 2020 has the same weight as one from yesterday. Time-weighted mode addresses this by:
+Standard k-NN treats all training samples equally — a pattern from 2020 has the same weight as one from yesterday. Time-weighted mode uses exponential decay combined with distance weighting:
 
-1. Keeping only the more recent half of training data (dropping older patterns)
-2. Using `weights='distance'` in scikit-learn, which gives closer neighbors more vote weight
+```
+time_weight = e^(position / n × 3.0)     → newest sample is ~20× heavier than oldest
+dist_weight = 1 / (distance + ε)          → closer neighbors count more
+final_weight = time_weight × dist_weight
+```
 
-This is an approximation. Ideally we'd use `sample_weight` in `.fit()`, but scikit-learn's `KNeighborsClassifier` doesn't support it. The trimming approach is a practical workaround.
+The algorithm finds the `k` nearest neighbors as usual, then weights their votes by this combined score. A recent, similar pattern dominates over an old, similar pattern — but a very close old pattern can still outweigh a distant recent one.
+
+This is better than the naive approach of simply discarding the older half of the training data, because no information is lost — old patterns still contribute, just with less influence.
 
 ## Sentiment adjustment
 

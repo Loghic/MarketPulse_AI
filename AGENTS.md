@@ -26,6 +26,7 @@ engine/
   ai_model.py               → LSTM (train/save/load/predict + early stopping)
   backtester.py             → Walk-forward engine (P/L, fees, buy-and-hold, streaks)
   backtest_helpers.py       → Shared: period filter, display, export row builders
+  utils.py                  → Common helpers (period_to_start_date) shared across layers
   data_downloader.py        → yfinance fetching
   db_manager.py             → SQLite (prices + news)
   news_scraper.py           → VADER + naive fallback
@@ -108,8 +109,12 @@ uv run python run_all.py --days 50 --fees 0.05 --buy-hold
 ## Architecture notes
 
 - `backtest.py` is a thin CLI wrapper (~240 lines). All logic is in `engine/backtester.py` and `engine/backtest_helpers.py`.
+- `engine/utils.py` holds shared helpers (e.g. `period_to_start_date`) used by both engine and interface layers.
 - Fees are applied per trade as round-trip (2 × fee_pct). Deducted from raw P/L → net P/L.
 - Buy-and-hold = (last close - first close) / first close over the test period.
 - LSTM auto-loads best available model (cluster > standard > quick).
+- LSTM normalizes input via StandardScaler (fitted on train data only, saved with model).
+- k-NN time-weighting uses exponential decay × distance (newer + closer = higher weight), not data trimming.
 - Early stopping in LSTM: patience 10/20/50 for quick/standard/cluster.
 - All numeric outputs rounded to 8 decimal places max, streaks to 1.
+- `sys.stdout.reconfigure(encoding="utf-8")` in main.py for Windows Unicode compatibility.

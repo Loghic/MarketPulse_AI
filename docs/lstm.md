@@ -12,6 +12,10 @@ Each timestep has: daily return, volume change, RSI, volatility, MACD histogram 
 
 The key advantage: LSTM sees the **order** — it can learn "RSI rising for 5 days then dropping" as a pattern, which flat vectors can't express.
 
+## Input normalization
+
+Like k-NN and LinReg, LSTM uses `StandardScaler` to normalize features before training. The scaler is fitted only on training data (no data leakage to validation), then applied to validation data and to input sequences during prediction. The fitted scaler is saved alongside model weights, so loaded models produce consistent predictions.
+
 ## Training presets
 
 | Preset | Hidden | Layers | Max epochs | Patience | Approx. time |

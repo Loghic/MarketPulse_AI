@@ -80,6 +80,7 @@ The engine is split into focused modules:
 |---|---|
 | `backtester.py` | Core engine: walk-forward loop, P/L with fees, buy-and-hold, streaks |
 | `backtest_helpers.py` | Shared utilities: period filtering, direction accuracy, export builders, display functions |
+| `utils.py` | Common helpers shared across engine and interface (e.g. `period_to_start_date`) |
 | `features.py` | Technical indicators + feature matrix building |
 | `knn_model.py` / `lin_reg_model.py` / `ai_model.py` | Model implementations |
 | `data_downloader.py` + `db_manager.py` | Data layer |

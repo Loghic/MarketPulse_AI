@@ -135,6 +135,7 @@ marketpulse-ai/
 │   ├── ai_model.py          # LSTM (train, save/load, predict, early stopping)
 │   ├── backtester.py        # Walk-forward engine (P/L, fees, B&H, streaks)
 │   ├── backtest_helpers.py  # Shared helpers (display, export, period filtering)
+│   ├── utils.py             # Common helpers shared across engine and interface
 │   ├── data_downloader.py   # Yahoo Finance data
 │   ├── db_manager.py        # SQLite storage
 │   └── news_scraper.py      # VADER/naive sentiment
