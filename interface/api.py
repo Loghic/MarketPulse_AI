@@ -8,7 +8,7 @@ no changes to the engine layer.
 
 from dataclasses import dataclass, field
 from typing import List, Tuple
-from datetime import datetime, timedelta, date
+from datetime import datetime
 
 import pandas as pd
 
@@ -18,6 +18,7 @@ from engine.knn_model import KNNModel
 from engine.lin_reg_model import LinearRegressionModel
 from engine.features import ALL_FEATURES
 from engine.news_scraper import NewsScraper
+from engine.utils import period_to_start_date
 
 # AI model is optional (requires torch)
 try:
@@ -107,19 +108,6 @@ class StockAppAPI:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _get_required_start_date(period: str) -> date:
-        """Map a period string to the earliest date we need from the DB."""
-        today = datetime.now().date()
-        mapping = {
-            "1mo": today - timedelta(days=30),
-            "1y":  today - timedelta(days=365),
-            "2y":  today - timedelta(days=730),
-            "5y":  today - timedelta(days=1825),
-            "max": date(1900, 1, 1),
-        }
-        return mapping.get(period, today - timedelta(days=365))
 
     def _get_model(self, model_type: str, ticker: str = "", period: str = ""):
         """Return the model instance for the given type string."""
@@ -243,7 +231,7 @@ class StockAppAPI:
         if data.empty:
             raise RuntimeError(f"No data available for {ticker}")
 
-        required_start = self._get_required_start_date(config.period)
+        required_start = period_to_start_date(config.period)
         data["_date"] = pd.to_datetime(data["date"]).dt.date
         filtered = data[data["_date"] >= required_start].copy().drop(columns=["_date"])
 

@@ -87,19 +87,9 @@ class KNNModel:
         if X is None or len(X) < self.k:
             return "Insufficient data", 0.0
 
-        # --- Scale + train ---
+        # --- Scale on full dataset ---
         scaler = StandardScaler()
-        weights = "distance" if use_time_weights else "uniform"
-        model = KNeighborsClassifier(n_neighbors=self.k, weights=weights)
-
-        if use_time_weights and len(X) > self.k * 3:
-            cutoff = len(X) // 2
-            X_train, y_train = X[cutoff:], y[cutoff:]
-        else:
-            X_train, y_train = X, y
-
-        X_train_scaled = scaler.fit_transform(X_train)
-        model.fit(X_train_scaled, y_train)
+        X_scaled = scaler.fit_transform(X)
 
         # --- Build prediction vector from last window ---
         df_feat = compute_feature_columns(df, self.features, self.window_size)
@@ -112,8 +102,34 @@ class KNNModel:
 
         last_vec_scaled = scaler.transform(last_vec.reshape(1, -1))
 
-        raw_prediction = model.predict(last_vec_scaled)[0]
-        raw_prob = float(np.max(model.predict_proba(last_vec_scaled)))
+        if use_time_weights and len(X) > self.k * 3:
+            # Exponential time decay × inverse distance: older samples get less weight.
+            # λ=3 means the most recent sample is ~e^3 ≈ 20× more important than
+            # the oldest. Combined with distance so similar patterns still matter.
+            model = KNeighborsClassifier(n_neighbors=self.k, weights="uniform")
+            model.fit(X_scaled, y)
+
+            neigh_dist, neigh_idx = model.kneighbors(last_vec_scaled)
+            positions = neigh_idx[0]
+            n = len(X)
+
+            time_w = np.exp(positions / n * 3.0)
+            dist_w = 1.0 / (neigh_dist[0] + 1e-10)
+            combined = time_w * dist_w
+
+            labels = y[positions]
+            up_w = combined[labels == 1].sum()
+            down_w = combined[labels == 0].sum()
+            total_w = up_w + down_w
+
+            prob_up = up_w / total_w if total_w > 0 else 0.5
+            raw_prediction = 1 if prob_up >= 0.5 else 0
+            raw_prob = float(prob_up if raw_prediction == 1 else 1.0 - prob_up)
+        else:
+            model = KNeighborsClassifier(n_neighbors=self.k, weights="uniform")
+            model.fit(X_scaled, y)
+            raw_prediction = model.predict(last_vec_scaled)[0]
+            raw_prob = float(np.max(model.predict_proba(last_vec_scaled)))
 
         # --- Sentiment adjustment ---
         final_pred, final_prob = self._apply_sentiment(

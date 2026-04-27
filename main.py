@@ -4,7 +4,10 @@ main.py – CLI entry point for MarketPulse AI.
 Tickers and periods are configured in config.py.
 """
 
+import sys
 import argparse
+
+sys.stdout.reconfigure(encoding="utf-8")
 from interface.api import StockAppAPI, PredictionConfig
 from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
 

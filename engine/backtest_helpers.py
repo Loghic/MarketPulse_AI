@@ -7,29 +7,13 @@ and display/print functions.
 
 import csv
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime
 from typing import Optional, List
 
 import pandas as pd
 from engine.backtester import BacktestResult
+from engine.utils import period_to_start_date
 from config import ALL_PERIODS
-
-
-# ------------------------------------------------------------------
-# Data helpers
-# ------------------------------------------------------------------
-
-def period_to_start_date(period: str) -> date:
-    """Convert a period string to the earliest date to include."""
-    today = datetime.now().date()
-    mapping = {
-        "1mo": today - timedelta(days=30),
-        "1y":  today - timedelta(days=365),
-        "2y":  today - timedelta(days=730),
-        "5y":  today - timedelta(days=1825),
-        "max": date(1900, 1, 1),
-    }
-    return mapping.get(period, today - timedelta(days=365))
 
 
 def filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
