@@ -47,8 +47,21 @@ DEFAULT_PERIOD = "max"
 DEFAULT_BACKTEST_DAYS = 5
 
 # ------------------------------------------------------------------
-# Trading costs (applied per trade in backtesting)
+# Benchmarks (for comparison in backtesting)
 # ------------------------------------------------------------------
+
+# Stocks are compared against broad market indices
+STOCK_BENCHMARKS = ["SPY", "QQQ"]  # S&P 500, Nasdaq 100
+
+# Crypto is compared against Bitcoin
+CRYPTO_BENCHMARKS = ["BTC-USD"]
+
+# Returns the relevant benchmarks for a ticker
+def get_benchmarks(ticker: str) -> list[str]:
+    """Return benchmark tickers for comparison, excluding the ticker itself."""
+    if "-USD" in ticker:
+        return [b for b in CRYPTO_BENCHMARKS if b != ticker]
+    return STOCK_BENCHMARKS
 
 # Total cost per trade as a percentage of trade value.
 # Covers: broker commission + bid-ask spread + slippage.

@@ -35,11 +35,13 @@ from datetime import datetime
 from interface.api import StockAppAPI
 from engine.backtester import Backtester
 from engine.backtest_helpers import (
-    filter_by_period, run_single_backtest, result_to_summary_row, pf_str,
+    filter_by_period, run_single_backtest, result_to_summary_row,
+    compute_benchmarks, pf_str,
 )
 from config import (
     ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS,
     DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
+    STOCK_BENCHMARKS, CRYPTO_BENCHMARKS,
 )
 
 
@@ -80,6 +82,7 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
                             stop_loss_pct=stop_loss_pct)
     all_rows = []
     all_combos = []
+    bench = None
 
     for period in ALL_PERIODS:
         results = run_single_backtest(
@@ -90,9 +93,13 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
             print(f"  {ticker} period={period}: skipped ({len(filtered)} rows)")
             continue
 
+        # Compute benchmarks once (same test dates across periods)
+        if bench is None and buy_hold:
+            bench = compute_benchmarks(api, ticker, results[0].days)
+
         for r in results:
-            all_rows.append(result_to_summary_row(r, ticker, period))
-            all_combos.append({
+            all_rows.append(result_to_summary_row(r, ticker, period, benchmarks=bench))
+            combo = {
                 "ticker": ticker,
                 "period": period,
                 "model": r.model_name,
@@ -115,7 +122,11 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
                 "longest_loss_streak": r.longest_loss_streak,
                 "avg_win_streak": r.avg_win_streak,
                 "avg_loss_streak": r.avg_loss_streak,
-            })
+            }
+            if bench:
+                for bname, bret in bench.items():
+                    combo[f"bench_{bname}"] = bret
+            all_combos.append(combo)
 
     if not all_rows:
         return None
@@ -139,6 +150,10 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
         bh = best["buy_hold_return"]
         beats = "✓" if best["total_return"] > bh else "✗"
         line += f"  B&H={bh:+.4%} {beats}"
+    if bench:
+        for bname, bret in bench.items():
+            marker = "✓" if best["total_return"] > bret else "✗"
+            line += f"  {bname}={bret:+.2%}{marker}"
     if best.get("stopped_out", 0) > 0:
         line += f"  SL={best['stopped_out']}×"
     print(line)
@@ -205,7 +220,8 @@ def main():
     api = StockAppAPI()
 
     if not args.no_refresh:
-        api.refresh_tickers(tickers)
+        all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
+        api.refresh_tickers(all_to_refresh)
 
     best_per_ticker = []
 

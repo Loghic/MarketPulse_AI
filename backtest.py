@@ -16,7 +16,7 @@ from interface.api import StockAppAPI
 from engine.backtester import Backtester
 from engine.backtest_helpers import (
     filter_by_period, run_single_backtest, result_to_summary_row,
-    result_to_daily_rows, export_rows, pf_str,
+    result_to_daily_rows, export_rows, pf_str, compute_benchmarks,
     print_summary_table, print_consensus, print_direction_accuracy,
     print_confidence_calibration, print_profit_analysis,
     print_next_day_forecast,
@@ -24,6 +24,7 @@ from engine.backtest_helpers import (
 from config import (
     ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS, DEFAULT_PERIOD,
     DEFAULT_BACKTEST_DAYS, DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
+    STOCK_BENCHMARKS, CRYPTO_BENCHMARKS,
 )
 
 
@@ -40,7 +41,9 @@ def run_backtest(tickers, n_days, full=False, period="max",
     all_export_rows = []
 
     if not no_refresh:
-        api.refresh_tickers(tickers)
+        # Also refresh benchmark tickers (SPY, QQQ, BTC-USD)
+        all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
+        api.refresh_tickers(all_to_refresh)
 
     for ticker in tickers:
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
@@ -75,8 +78,11 @@ def run_backtest(tickers, n_days, full=False, period="max",
         if not results:
             continue
 
+        # Compute benchmark returns (SPY/QQQ for stocks, BTC for crypto)
+        bench = compute_benchmarks(api, ticker, results[0].days) if buy_hold else None
+
         print()
-        print_summary_table(results, show_buy_hold=buy_hold)
+        print_summary_table(results, show_buy_hold=buy_hold, benchmarks=bench)
 
         if has_news:
             print(f"\n  News ({sentiment_score:+.2f}):")
@@ -87,7 +93,7 @@ def run_backtest(tickers, n_days, full=False, period="max",
             print_consensus(results, n_days)
             print_direction_accuracy(results)
             print_confidence_calibration(results)
-            print_profit_analysis(results, show_buy_hold=buy_hold)
+            print_profit_analysis(results, show_buy_hold=buy_hold, benchmarks=bench)
             print_next_day_forecast(results)
         else:
             best = max(results, key=lambda r: (r.total_return, r.accuracy))
@@ -100,7 +106,9 @@ def run_backtest(tickers, n_days, full=False, period="max",
                 if full:
                     all_export_rows.extend(result_to_daily_rows(r, ticker, period))
                 else:
-                    all_export_rows.append(result_to_summary_row(r, ticker, period))
+                    all_export_rows.append(
+                        result_to_summary_row(r, ticker, period, benchmarks=bench)
+                    )
 
         print(f"\n{'*' * 70}")
 
@@ -120,7 +128,8 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
     all_export_rows = []
 
     if not no_refresh:
-        api.refresh_tickers(tickers)
+        all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
+        api.refresh_tickers(all_to_refresh)
 
     for ticker in tickers:
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
@@ -153,6 +162,10 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
         if not period_results:
             print(f"  No periods had enough data.")
             continue
+
+        # Compute benchmark returns (same test dates across all periods)
+        first_results = next(iter(period_results.values()))
+        bench = compute_benchmarks(api, ticker, first_results[0].days) if buy_hold else None
 
         # Collect model names
         model_names = []
@@ -196,7 +209,7 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
                         r.buy_hold_max_drawdown,
                     ))
                     all_export_rows.append(
-                        result_to_summary_row(r, ticker, period)
+                        result_to_summary_row(r, ticker, period, benchmarks=bench)
                     )
                     if r.accuracy > best_acc:
                         best_acc = r.accuracy
@@ -308,6 +321,14 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
             print(f"  Buy & Hold return:    {bh:+.4%}  (max DD: {bh_dd:+.4%})")
             print(f"  Models beating B&H:   {beat}/{total} "
                   f"({beat/total:.0%})")
+
+            if bench:
+                best_return = max(c[5] for c in all_combos)
+                for bname, bret in bench.items():
+                    b_beat = sum(1 for c in all_combos if c[5] > bret)
+                    marker = "✓" if best_return > bret else "✗"
+                    print(f"  {bname:<10} return:     {bret:+.4%}  "
+                          f"| Models beating: {b_beat}/{total} {marker}")
 
         # Risk-adjusted ranking (by Sharpe)
         if len(all_combos) > 1:
