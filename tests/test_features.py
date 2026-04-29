@@ -2,9 +2,13 @@
 
 import numpy as np
 import pytest
+
 from engine.features import (
-    ALL_FEATURES, DEFAULT_FEATURES, build_feature_matrix,
-    compute_feature_columns, min_rows_needed, validate_features,
+    ALL_FEATURES,
+    DEFAULT_FEATURES,
+    build_feature_matrix,
+    min_rows_needed,
+    validate_features,
 )
 
 
@@ -41,9 +45,11 @@ class TestFeatureMatrix:
     def test_fewer_rows_than_window(self, tiny_prices):
         """With 10 rows and window 5+MACD warmup, should return None or tiny."""
         from unittest.mock import patch
+
         with patch("engine.data_downloader.yf") as m:
             m.Ticker.return_value.history.return_value = tiny_prices
             from interface.api import StockAppAPI
+
             api = StockAppAPI()
             df = api.get_data("TINY", period="max")
             result = build_feature_matrix(df, ALL_FEATURES, 5, "binary")

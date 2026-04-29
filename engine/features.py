@@ -8,22 +8,19 @@ KNNModel and LinearRegressionModel to avoid code duplication.
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from typing import List, Tuple
-
 
 DEFAULT_FEATURES = ["returns"]
 ALL_FEATURES = ["returns", "volume", "rsi", "volatility", "macd"]
 
 
-def validate_features(features: List[str]):
+def validate_features(features: list[str]):
     """Raise ValueError if any feature name is unknown."""
     for f in features:
         if f not in ALL_FEATURES:
             raise ValueError(f"Unknown feature '{f}'. Available: {ALL_FEATURES}")
 
 
-def feature_label(features: List[str]) -> str:
+def feature_label(features: list[str]) -> str:
     """Human-readable label describing the active feature set."""
     if features == DEFAULT_FEATURES:
         return "naive"
@@ -31,19 +28,20 @@ def feature_label(features: List[str]) -> str:
     return "returns+" + "+".join(extras)
 
 
-def min_rows_needed(features: List[str], window_size: int) -> int:
+def min_rows_needed(features: list[str], window_size: int) -> int:
     """Minimum DataFrame rows needed for the given feature set."""
     n = window_size + 2
     if "rsi" in features:
-        n = max(n, 16 + window_size)   # RSI needs 14 warmup
+        n = max(n, 16 + window_size)  # RSI needs 14 warmup
     if "macd" in features:
-        n = max(n, 35 + window_size)   # MACD needs ~34 warmup
+        n = max(n, 35 + window_size)  # MACD needs ~34 warmup
     return n
 
 
 # ------------------------------------------------------------------
 # Technical indicators
 # ------------------------------------------------------------------
+
 
 def compute_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
     """
@@ -60,8 +58,8 @@ def compute_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
     if len(close) <= period:
         return rsi
 
-    avg_gain = np.mean(gains[1:period + 1])
-    avg_loss = np.mean(losses[1:period + 1])
+    avg_gain = np.mean(gains[1 : period + 1])
+    avg_loss = np.mean(losses[1 : period + 1])
 
     for i in range(period, len(close)):
         if i > period:
@@ -83,6 +81,7 @@ def compute_macd_histogram(close: np.ndarray) -> np.ndarray:
     Uses standard 12/26/9 EMA parameters.
     Returns array of same length, with NaN for warmup period.
     """
+
     def ema(data, span):
         alpha = 2.0 / (span + 1)
         result = np.full_like(data, np.nan, dtype=float)
@@ -110,8 +109,10 @@ def compute_macd_histogram(close: np.ndarray) -> np.ndarray:
 # Feature column computation
 # ------------------------------------------------------------------
 
-def compute_feature_columns(df: pd.DataFrame, features: List[str],
-                            window_size: int) -> pd.DataFrame:
+
+def compute_feature_columns(
+    df: pd.DataFrame, features: list[str], window_size: int
+) -> pd.DataFrame:
     """
     Add all requested indicator columns to the DataFrame.
     Column names are prefixed with '_' to avoid collisions.
@@ -138,8 +139,9 @@ def compute_feature_columns(df: pd.DataFrame, features: List[str],
     return df
 
 
-def build_feature_vector(df: pd.DataFrame, idx: int,
-                         features: List[str], window_size: int) -> np.ndarray | None:
+def build_feature_vector(
+    df: pd.DataFrame, idx: int, features: list[str], window_size: int
+) -> np.ndarray | None:
     """
     Build a single feature vector for the window ending at `idx`.
     Returns None if any values are NaN.
@@ -147,13 +149,13 @@ def build_feature_vector(df: pd.DataFrame, idx: int,
     parts = []
 
     # Returns window (always included)
-    ret_window = df["_ret"].iloc[idx: idx + window_size].values
+    ret_window = df["_ret"].iloc[idx : idx + window_size].values
     if np.isnan(ret_window).any():
         return None
     parts.append(ret_window)
 
     if "volume" in features:
-        vol_window = df["_vol_chg"].iloc[idx: idx + window_size].values
+        vol_window = df["_vol_chg"].iloc[idx : idx + window_size].values
         if np.isnan(vol_window).any():
             return None
         parts.append(vol_window)
@@ -183,12 +185,13 @@ def build_feature_vector(df: pd.DataFrame, idx: int,
 # Full feature matrix builder
 # ------------------------------------------------------------------
 
+
 def build_feature_matrix(
     df: pd.DataFrame,
-    features: List[str],
+    features: list[str],
     window_size: int,
     target_type: str = "binary",
-) -> Tuple[np.ndarray | None, np.ndarray | None]:
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """
     Build feature matrix X and target vector y from a price DataFrame.
 

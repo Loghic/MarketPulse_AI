@@ -3,8 +3,9 @@ db_manager.py – SQLite správce pro cenová data a news sentiment.
 """
 
 import sqlite3
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
 
 
 class DatabaseManager:
@@ -57,12 +58,25 @@ class DatabaseManager:
 
             # Ošetření timezone → naive string
             if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None).dt.strftime("%Y-%m-%d")
+                df["date"] = (
+                    pd.to_datetime(df["date"], utc=True)
+                    .dt.tz_localize(None)
+                    .dt.strftime("%Y-%m-%d")
+                )
 
             df["ticker"] = ticker
             df["asset_type"] = asset_type
 
-            valid_columns = ["ticker", "asset_type", "date", "open", "high", "low", "close", "volume"]
+            valid_columns = [
+                "ticker",
+                "asset_type",
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
             # Ponecháme jen sloupce, které existují
             existing = [c for c in valid_columns if c in df.columns]
             df = df[existing]
@@ -105,7 +119,7 @@ class DatabaseManager:
             conn.execute("DROP TABLE IF EXISTS _temp_news")
             conn.commit()
 
-    def get_news(self, ticker: str, date: str = None) -> pd.DataFrame:
+    def get_news(self, ticker: str, date: str | None = None) -> pd.DataFrame:
         with sqlite3.connect(self.db_path) as conn:
             if date:
                 query = "SELECT * FROM news_sentiment WHERE ticker = ? AND date = ?"

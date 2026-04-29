@@ -13,19 +13,19 @@ Training presets:
 Saved models go to: models/{ticker}_{period}_{preset}.pt
 """
 
-import os
-import json
-import numpy as np
-import pandas as pd
-from pathlib import Path
-from typing import Tuple, List, Optional
 from datetime import datetime
+from pathlib import Path
+
+import numpy as np
 
 from engine.features import (
-    ALL_FEATURES, DEFAULT_FEATURES, validate_features, feature_label,
-    compute_feature_columns, build_feature_vector, min_rows_needed,
+    ALL_FEATURES,
+    compute_feature_columns,
+    feature_label,
+    min_rows_needed,
+    validate_features,
 )
-from engine.logger import get_logger, epoch_progress
+from engine.logger import epoch_progress, get_logger
 
 log = get_logger(__name__)
 
@@ -34,6 +34,7 @@ try:
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
+
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -88,11 +89,11 @@ SENTIMENT_WEIGHT = 0.20
 # ------------------------------------------------------------------
 
 if TORCH_AVAILABLE:
+
     class _LSTMNetwork(nn.Module):
         """Simple LSTM → FC → Sigmoid for binary classification."""
 
-        def __init__(self, input_size: int, hidden_size: int, num_layers: int,
-                     dropout: float):
+        def __init__(self, input_size: int, hidden_size: int, num_layers: int, dropout: float):
             super().__init__()
             self.lstm = nn.LSTM(
                 input_size=input_size,
@@ -121,6 +122,7 @@ if TORCH_AVAILABLE:
 # Public model class
 # ------------------------------------------------------------------
 
+
 class AIModel:
     """
     LSTM-based model for next-day price direction prediction.
@@ -139,7 +141,7 @@ class AIModel:
     def __init__(
         self,
         window_size: int = 20,
-        features: List[str] | None = None,
+        features: list[str] | None = None,
         preset: str = "quick",
     ):
         if not TORCH_AVAILABLE:
@@ -190,7 +192,7 @@ class AIModel:
     # Data preparation (sequential format for LSTM)
     # ------------------------------------------------------------------
 
-    def _prepare_sequences(self, df) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    def _prepare_sequences(self, df) -> tuple[np.ndarray | None, np.ndarray | None]:
         """
         Build sequential data for LSTM training.
 
@@ -229,7 +231,7 @@ class AIModel:
         targets = df_feat["_target"].values
 
         for i in range(len(df_feat) - self.window_size):
-            window = values[i: i + self.window_size]
+            window = values[i : i + self.window_size]
             if np.isnan(window).any():
                 continue
             X.append(window)
@@ -265,9 +267,11 @@ class AIModel:
         y_train, y_val = y[:split_idx], y[split_idx:]
 
         if verbose:
-            log.info(f"Training LSTM ({self.preset}): {len(X_train)} train, "
-                     f"{len(X_val)} val, shape=({self.window_size}, {X.shape[2]}), "
-                     f"device={self.device}")
+            log.info(
+                f"Training LSTM ({self.preset}): {len(X_train)} train, "
+                f"{len(X_val)} val, shape=({self.window_size}, {X.shape[2]}), "
+                f"device={self.device}"
+            )
 
         # Create network
         self.network = _LSTMNetwork(
@@ -282,17 +286,13 @@ class AIModel:
             torch.tensor(X_train).to(self.device),
             torch.tensor(y_train).to(self.device),
         )
-        train_loader = DataLoader(
-            train_ds, batch_size=self.config["batch_size"], shuffle=True
-        )
+        train_loader = DataLoader(train_ds, batch_size=self.config["batch_size"], shuffle=True)
 
         X_val_t = torch.tensor(X_val).to(self.device)
         y_val_t = torch.tensor(y_val).to(self.device)
 
         # Training loop
-        optimizer = torch.optim.Adam(
-            self.network.parameters(), lr=self.config["learning_rate"]
-        )
+        optimizer = torch.optim.Adam(self.network.parameters(), lr=self.config["learning_rate"])
         criterion = nn.BCELoss()
 
         # Learning rate scheduler for cluster preset
@@ -310,8 +310,9 @@ class AIModel:
         stopped_early = False
         start_time = datetime.now()
 
-        pbar = epoch_progress(self.config["epochs"],
-                              desc=f"LSTM {self.preset}") if verbose else None
+        pbar = (
+            epoch_progress(self.config["epochs"], desc=f"LSTM {self.preset}") if verbose else None
+        )
 
         for epoch in range(self.config["epochs"]):
             # Train
@@ -335,12 +336,14 @@ class AIModel:
                 val_preds = (val_output > 0.5).float()
                 val_acc = (val_preds == y_val_t).float().mean().item()
 
-            loss_history.append({
-                "epoch": epoch + 1,
-                "train_loss": avg_train_loss,
-                "val_loss": val_loss,
-                "val_accuracy": val_acc,
-            })
+            loss_history.append(
+                {
+                    "epoch": epoch + 1,
+                    "train_loss": avg_train_loss,
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc,
+                }
+            )
 
             # Save best model + early stopping check
             if val_loss < best_val_loss:
@@ -366,9 +369,11 @@ class AIModel:
                 stopped_early = True
                 if pbar:
                     pbar.close()
-                log.info(f"Early stopping at epoch {epoch + 1} "
-                         f"(no improvement for {patience} epochs, "
-                         f"best val_loss={best_val_loss:.4f})")
+                log.info(
+                    f"Early stopping at epoch {epoch + 1} "
+                    f"(no improvement for {patience} epochs, "
+                    f"best val_loss={best_val_loss:.4f})"
+                )
                 break
         else:
             # Loop completed without break
@@ -408,12 +413,16 @@ class AIModel:
         }
 
         if verbose:
-            stop_info = (f"early stop at epoch {len(loss_history)}"
-                         if stopped_early
-                         else f"all {self.config['epochs']} epochs")
-            log.info(f"Training complete: {duration:.1f}s ({stop_info}), "
-                     f"val_accuracy={final_acc:.1%}, "
-                     f"best_val_loss={best_val_loss:.4f}")
+            stop_info = (
+                f"early stop at epoch {len(loss_history)}"
+                if stopped_early
+                else f"all {self.config['epochs']} epochs"
+            )
+            log.info(
+                f"Training complete: {duration:.1f}s ({stop_info}), "
+                f"val_accuracy={final_acc:.1%}, "
+                f"best_val_loss={best_val_loss:.4f}"
+            )
 
         return self.training_info
 
@@ -422,8 +431,7 @@ class AIModel:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def model_path(ticker: str, period: str, preset: str,
-                   models_dir: Path = MODELS_DIR) -> Path:
+    def model_path(ticker: str, period: str, preset: str, models_dir: Path = MODELS_DIR) -> Path:
         """Generate standard model file path."""
         models_dir.mkdir(parents=True, exist_ok=True)
         return models_dir / f"{ticker}_{period}_{preset}.pt"
@@ -436,14 +444,17 @@ class AIModel:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        torch.save({
-            "model_state": self.network.state_dict(),
-            "config": self.config,
-            "training_info": self.training_info,
-            "features": self.features,
-            "window_size": self.window_size,
-            "preset": self.preset,
-        }, path)
+        torch.save(
+            {
+                "model_state": self.network.state_dict(),
+                "config": self.config,
+                "training_info": self.training_info,
+                "features": self.features,
+                "window_size": self.window_size,
+                "preset": self.preset,
+            },
+            path,
+        )
 
         log.info(f"Model saved to {path}")
 
@@ -493,7 +504,7 @@ class AIModel:
         prob: float,
         sentiment_score: float,
         weight: float = SENTIMENT_WEIGHT,
-    ) -> Tuple[int, float]:
+    ) -> tuple[int, float]:
         """Shift probability using sentiment. Can flip the prediction."""
         if sentiment_score == 0.0:
             return prediction, prob
@@ -515,7 +526,7 @@ class AIModel:
         df,
         use_time_weights: bool = False,
         sentiment_score: float = 0.0,
-    ) -> Tuple[str, float]:
+    ) -> tuple[str, float]:
         """
         Predict next-day direction using the trained LSTM.
 
@@ -553,7 +564,7 @@ class AIModel:
             return "Insufficient data", 0.0
 
         # Take the last window_size rows as the input sequence
-        last_seq = df_feat[step_cols].iloc[-self.window_size:].values
+        last_seq = df_feat[step_cols].iloc[-self.window_size :].values
         if np.isnan(last_seq).any():
             return "Data error", 0.0
 
@@ -570,8 +581,6 @@ class AIModel:
             raw_pred, raw_prob = 0, 1.0 - prob_up
 
         # Sentiment adjustment
-        final_pred, final_prob = self._apply_sentiment(
-            raw_pred, raw_prob, sentiment_score
-        )
+        final_pred, final_prob = self._apply_sentiment(raw_pred, raw_prob, sentiment_score)
 
         return ("UP" if final_pred == 1 else "DOWN"), final_prob

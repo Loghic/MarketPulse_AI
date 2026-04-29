@@ -5,15 +5,17 @@ Tickers and periods are configured in config.py.
 """
 
 import argparse
-from interface.api import StockAppAPI, PredictionConfig
+
+from config import ALL_PERIODS, ALL_TICKERS, CRYPTO, STOCKS
 from engine.logger import get_logger, progress_bar
-from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
+from interface.api import PredictionConfig, StockAppAPI
 
 log = get_logger("main")
 
 
-def run_prediction(api: StockAppAPI, ticker: str, period: str,
-                   model: str, time_weighted: bool, news: bool):
+def run_prediction(
+    api: StockAppAPI, ticker: str, period: str, model: str, time_weighted: bool, news: bool
+):
     """Run a single prediction and return a formatted table row (or error)."""
     cfg = PredictionConfig(
         ticker=ticker,
@@ -24,9 +26,7 @@ def run_prediction(api: StockAppAPI, ticker: str, period: str,
     )
     try:
         r = api.get_prediction(cfg)
-        return (
-            f"{r.prediction:<8} | {r.confidence:<10} | {r.data_points:<8}"
-        ), r
+        return (f"{r.prediction:<8} | {r.confidence:<10} | {r.data_points:<8}"), r
     except RuntimeError as e:
         return f"{'ERROR':<8} | {str(e)[:24]:<10} |", None
 
@@ -37,15 +37,12 @@ def print_report(api: StockAppAPI, ticker: str):
     print(f"\n{'=' * 90}")
     print(f" STRATEGIC REPORT: {ticker}")
     print(f"{'=' * 90}")
-    print(
-        f"{'PERIOD':<10} | {'MODEL':<22} | {'PRED.':<8} | {'CONF.':<10} | {'SAMPLES':<8}"
-    )
+    print(f"{'PERIOD':<10} | {'MODEL':<22} | {'PRED.':<8} | {'CONF.':<10} | {'SAMPLES':<8}")
     print("-" * 90)
 
     last_res = None
 
     for p in ALL_PERIODS:
-
         # --- k-NN naive ---
         row, _ = run_prediction(api, ticker, p, "knn", False, False)
         print(f"{p:<10} | {'k-NN':<22} | {row}")
@@ -100,8 +97,10 @@ def print_report(api: StockAppAPI, ticker: str):
     if last_res:
         print(f"  Current Market Price: {last_res.last_price:.2f} USD")
         if last_res.headlines:
-            print(f"  Market Sentiment:    {last_res.sentiment} (Score: {last_res.sentiment_score})")
-            print(f"  Latest News:")
+            print(
+                f"  Market Sentiment:    {last_res.sentiment} (Score: {last_res.sentiment_score})"
+            )
+            print("  Latest News:")
             for title in last_res.headlines[:3]:
                 print(f"    > {title}")
     print("*" * 90)
@@ -110,25 +109,17 @@ def print_report(api: StockAppAPI, ticker: str):
 def main():
     parser = argparse.ArgumentParser(description="MarketPulse AI – Predictions")
     parser.add_argument(
-        "--tickers", nargs="+", default=None,
-        help="Specific tickers to analyze (overrides --stocks/--crypto)"
+        "--tickers",
+        nargs="+",
+        default=None,
+        help="Specific tickers to analyze (overrides --stocks/--crypto)",
     )
     group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--stocks", action="store_true",
-        help=f"Run only stocks: {STOCKS}"
-    )
-    group.add_argument(
-        "--crypto", action="store_true",
-        help=f"Run only crypto: {CRYPTO}"
-    )
+    group.add_argument("--stocks", action="store_true", help=f"Run only stocks: {STOCKS}")
+    group.add_argument("--crypto", action="store_true", help=f"Run only crypto: {CRYPTO}")
+    parser.add_argument("--all", action="store_true", help="Run all tickers (stocks + crypto)")
     parser.add_argument(
-        "--all", action="store_true",
-        help="Run all tickers (stocks + crypto)"
-    )
-    parser.add_argument(
-        "--no-refresh", action="store_true",
-        help="Skip data download, use only cached data from DB"
+        "--no-refresh", action="store_true", help="Skip data download, use only cached data from DB"
     )
     args = parser.parse_args()
 

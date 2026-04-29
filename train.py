@@ -13,11 +13,10 @@ Usage:
 """
 
 import argparse
-from pathlib import Path
 
+from config import ALL_PERIODS, ALL_TICKERS, CRYPTO, DEFAULT_PERIOD, STOCKS
+from engine.ai_model import MODELS_DIR, TRAINING_PRESETS, AIModel
 from interface.api import StockAppAPI
-from engine.ai_model import AIModel, TRAINING_PRESETS, MODELS_DIR
-from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS, DEFAULT_PERIOD
 
 
 def train_model(api: StockAppAPI, ticker: str, period: str, preset: str):
@@ -34,11 +33,14 @@ def train_model(api: StockAppAPI, ticker: str, period: str, preset: str):
 
     # Filter to period
     from backtest import filter_by_period
+
     filtered = filter_by_period(df, period)
 
     if len(filtered) < 60:
-        print(f"  ERROR: Not enough data for {ticker} period={period} "
-              f"({len(filtered)} rows, need 60+)")
+        print(
+            f"  ERROR: Not enough data for {ticker} period={period} "
+            f"({len(filtered)} rows, need 60+)"
+        )
         return False
 
     # Train
@@ -55,8 +57,10 @@ def train_model(api: StockAppAPI, ticker: str, period: str, preset: str):
     model.save(path)
 
     print(f"  Accuracy: {info['final_val_accuracy']:.1%}")
-    print(f"  Epochs:   {info['epochs_completed']}/{info['epochs_max']}"
-          f"{' (early stop)' if info['stopped_early'] else ''}")
+    print(
+        f"  Epochs:   {info['epochs_completed']}/{info['epochs_max']}"
+        f"{' (early stop)' if info['stopped_early'] else ''}"
+    )
     print(f"  Duration: {info['duration_seconds']:.1f}s")
     print(f"  Saved to: {path}")
 
@@ -88,42 +92,29 @@ def list_models():
 def main():
     parser = argparse.ArgumentParser(description="MarketPulse AI – Train LSTM Models")
     parser.add_argument(
-        "--ticker", type=str, default=None,
-        help="Single ticker to train (e.g. AAPL, BTC-USD)"
+        "--ticker", type=str, default=None, help="Single ticker to train (e.g. AAPL, BTC-USD)"
     )
-    parser.add_argument(
-        "--tickers", nargs="+", default=None,
-        help="Multiple tickers to train"
-    )
+    parser.add_argument("--tickers", nargs="+", default=None, help="Multiple tickers to train")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--stocks", action="store_true",
-        help=f"Train all stocks: {STOCKS}"
-    )
-    group.add_argument(
-        "--crypto", action="store_true",
-        help=f"Train all crypto: {CRYPTO}"
-    )
-    group.add_argument(
-        "--all", action="store_true",
-        help="Train all tickers"
+    group.add_argument("--stocks", action="store_true", help=f"Train all stocks: {STOCKS}")
+    group.add_argument("--crypto", action="store_true", help=f"Train all crypto: {CRYPTO}")
+    group.add_argument("--all", action="store_true", help="Train all tickers")
+    parser.add_argument(
+        "--period",
+        default=DEFAULT_PERIOD,
+        choices=ALL_PERIODS,
+        help=f"Training data period (default: {DEFAULT_PERIOD})",
     )
     parser.add_argument(
-        "--period", default=DEFAULT_PERIOD, choices=ALL_PERIODS,
-        help=f"Training data period (default: {DEFAULT_PERIOD})"
+        "--periods", nargs="+", default=None, choices=ALL_PERIODS, help="Train on multiple periods"
     )
     parser.add_argument(
-        "--periods", nargs="+", default=None, choices=ALL_PERIODS,
-        help="Train on multiple periods"
+        "--preset",
+        default="quick",
+        choices=list(TRAINING_PRESETS.keys()),
+        help="Training preset: quick (~5min), standard (~30min), cluster (hours)",
     )
-    parser.add_argument(
-        "--preset", default="quick", choices=list(TRAINING_PRESETS.keys()),
-        help="Training preset: quick (~5min), standard (~30min), cluster (hours)"
-    )
-    parser.add_argument(
-        "--list", action="store_true",
-        help="List all saved models"
-    )
+    parser.add_argument("--list", action="store_true", help="List all saved models")
     args = parser.parse_args()
 
     if args.list:
@@ -173,11 +164,11 @@ def main():
     print(f"{'=' * 60}")
 
     if success > 0:
-        print(f"\nUse trained models:")
+        print("\nUse trained models:")
         print(f"  uv run python main.py --tickers {tickers[0]}")
         print(f"  uv run python backtest.py --tickers {tickers[0]} --days 20")
-        print(f"\nList all models:")
-        print(f"  uv run python train.py --list")
+        print("\nList all models:")
+        print("  uv run python train.py --list")
 
 
 if __name__ == "__main__":

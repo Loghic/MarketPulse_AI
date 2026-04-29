@@ -30,20 +30,27 @@ Usage:
 import argparse
 import csv
 from pathlib import Path
-from datetime import datetime
 
-from interface.api import StockAppAPI
+from config import (
+    ALL_PERIODS,
+    ALL_TICKERS,
+    CRYPTO,
+    CRYPTO_BENCHMARKS,
+    DEFAULT_STOP_LOSS_PCT,
+    DEFAULT_TRADING_FEE_PCT,
+    STOCK_BENCHMARKS,
+    STOCKS,
+)
+from engine.backtest_helpers import (
+    compute_benchmarks,
+    filter_by_period,
+    pf_str,
+    result_to_summary_row,
+    run_single_backtest,
+)
 from engine.backtester import Backtester
 from engine.logger import get_logger, progress_bar
-from engine.backtest_helpers import (
-    filter_by_period, run_single_backtest, result_to_summary_row,
-    compute_benchmarks, pf_str,
-)
-from config import (
-    ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS,
-    DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
-    STOCK_BENCHMARKS, CRYPTO_BENCHMARKS,
-)
+from interface.api import StockAppAPI
 
 log = get_logger("run_all")
 
@@ -51,8 +58,9 @@ log = get_logger("run_all")
 RESULTS_DIR = Path("results")
 
 
-def build_dir_name(scope: str, n_days: int, fee_pct: float,
-                   stop_loss_pct: float, buy_hold: bool) -> str:
+def build_dir_name(
+    scope: str, n_days: int, fee_pct: float, stop_loss_pct: float, buy_hold: bool
+) -> str:
     """
     Build subdirectory name from run parameters.
 
@@ -72,8 +80,7 @@ def build_dir_name(scope: str, n_days: int, fee_pct: float,
     return "_".join(parts)
 
 
-def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
-                          buy_hold, run_dir):
+def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct, buy_hold, run_dir):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
     df = api.get_data(ticker, period="max")
@@ -81,16 +88,13 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
         print(f"  Skipping {ticker}: no data")
         return None
 
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct,
-                            stop_loss_pct=stop_loss_pct)
+    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_rows = []
     all_combos = []
     bench = None
 
     for period in ALL_PERIODS:
-        results = run_single_backtest(
-            api, backtester, ticker, df, period, n_days, full=False
-        )
+        results = run_single_backtest(api, backtester, ticker, df, period, n_days, full=False)
         if not results:
             filtered = filter_by_period(df, period)
             print(f"  {ticker} period={period}: skipped ({len(filtered)} rows)")
@@ -139,11 +143,10 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
     if all_rows:
         all_keys = {}
         for row in all_rows:
-            for k in row.keys():
+            for k in row:
                 all_keys[k] = None
         with open(ticker_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()),
-                                    extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(all_rows)
 
@@ -151,10 +154,12 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
     best = max(all_combos, key=lambda c: (c["total_return"], c["accuracy"]))
     pf = best["profit_factor"]
 
-    line = (f"  {ticker:<10} → {best['model']:<25} {best['period']:<6} "
-            f"return={best['total_return']:+.4%}  PF={pf_str(pf)}  "
-            f"DD={best['max_drawdown']:+.2%}  Sharpe={best['sharpe_ratio']:.2f}  "
-            f"W{best['longest_win_streak']}/L{best['longest_loss_streak']}")
+    line = (
+        f"  {ticker:<10} → {best['model']:<25} {best['period']:<6} "
+        f"return={best['total_return']:+.4%}  PF={pf_str(pf)}  "
+        f"DD={best['max_drawdown']:+.2%}  Sharpe={best['sharpe_ratio']:.2f}  "
+        f"W{best['longest_win_streak']}/L{best['longest_loss_streak']}"
+    )
     if buy_hold:
         bh = best["buy_hold_return"]
         beats = "✓" if best["total_return"] > bh else "✗"
@@ -180,16 +185,22 @@ def main():
     group.add_argument("--crypto", action="store_true")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--days", type=int, default=20)
-    parser.add_argument("--fees", type=float, default=DEFAULT_TRADING_FEE_PCT,
-                        help=f"Fee %% per side (default: {DEFAULT_TRADING_FEE_PCT})")
-    parser.add_argument("--stop-loss", type=float, default=DEFAULT_STOP_LOSS_PCT,
-                        help="Stop-loss %% (0=disabled)")
-    parser.add_argument("--buy-hold", action="store_true",
-                        help="Include buy-and-hold comparison")
-    parser.add_argument("--no-refresh", action="store_true",
-                        help="Skip data download, use only cached data from DB")
-    parser.add_argument("--dir", type=str, default="results",
-                        help="Root output directory (default: results/)")
+    parser.add_argument(
+        "--fees",
+        type=float,
+        default=DEFAULT_TRADING_FEE_PCT,
+        help=f"Fee %% per side (default: {DEFAULT_TRADING_FEE_PCT})",
+    )
+    parser.add_argument(
+        "--stop-loss", type=float, default=DEFAULT_STOP_LOSS_PCT, help="Stop-loss %% (0=disabled)"
+    )
+    parser.add_argument("--buy-hold", action="store_true", help="Include buy-and-hold comparison")
+    parser.add_argument(
+        "--no-refresh", action="store_true", help="Skip data download, use only cached data from DB"
+    )
+    parser.add_argument(
+        "--dir", type=str, default="results", help="Root output directory (default: results/)"
+    )
     args = parser.parse_args()
 
     # Determine tickers and scope label
@@ -210,9 +221,7 @@ def main():
         scope = "all"
 
     # Build output directory
-    dir_name = build_dir_name(
-        scope, args.days, args.fees, args.stop_loss, args.buy_hold
-    )
+    dir_name = build_dir_name(scope, args.days, args.fees, args.stop_loss, args.buy_hold)
     run_dir = Path(args.dir) / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -221,8 +230,10 @@ def main():
     bh_info = ", vs buy-and-hold" if args.buy_hold else ""
 
     print(f"{'=' * 80}")
-    print(f" BATCH BACKTEST: {len(tickers)} tickers × {len(ALL_PERIODS)} periods "
-          f"× {args.days} days{fee_info}{sl_info}{bh_info}")
+    print(
+        f" BATCH BACKTEST: {len(tickers)} tickers × {len(ALL_PERIODS)} periods "
+        f"× {args.days} days{fee_info}{sl_info}{bh_info}"
+    )
     print(f" Output: {run_dir.resolve()}/")
     print(f"{'=' * 80}\n")
 
@@ -236,8 +247,13 @@ def main():
 
     for ticker in progress_bar(tickers, desc="Batch backtest"):
         best = run_ticker_comparison(
-            api, ticker, args.days, args.fees, args.stop_loss,
-            args.buy_hold, run_dir,
+            api,
+            ticker,
+            args.days,
+            args.fees,
+            args.stop_loss,
+            args.buy_hold,
+            run_dir,
         )
         if best:
             best_per_ticker.append(best)
@@ -248,7 +264,7 @@ def main():
         # Collect all possible keys (benchmark columns vary per ticker)
         all_keys = {}
         for b in best_per_ticker:
-            for k in b.keys():
+            for k in b:
                 all_keys[k] = None
         fieldnames = list(all_keys.keys())
 
@@ -258,11 +274,13 @@ def main():
             writer.writerows(best_per_ticker)
 
         print(f"\n{'=' * 80}")
-        print(f" SUMMARY: Best model+period per ticker")
+        print(" SUMMARY: Best model+period per ticker")
         print(f"{'=' * 80}")
 
-        header = (f"\n  {'TICKER':<10} {'MODEL':<25} {'PERIOD':<8} "
-                  f"{'RETURN':<12} {'PF':<8} {'MAX DD':<10} {'SHARPE':<8}")
+        header = (
+            f"\n  {'TICKER':<10} {'MODEL':<25} {'PERIOD':<8} "
+            f"{'RETURN':<12} {'PF':<8} {'MAX DD':<10} {'SHARPE':<8}"
+        )
         if args.stop_loss > 0:
             header += f" {'SL':<5}"
         if args.buy_hold:
@@ -272,12 +290,13 @@ def main():
         print(f"  {'-' * divider_len}")
 
         for b in best_per_ticker:
-            sortino_s = f"{b['sortino_ratio']:.2f}" if b['sortino_ratio'] < 100 else "∞"
-            line = (f"  {b['ticker']:<10} {b['model']:<25} {b['period']:<8} "
-                    f"{b['total_return']:<+12.4%} "
-                    f"{pf_str(b['profit_factor']):<8} "
-                    f"{b['max_drawdown']:<+10.4%} "
-                    f"{b['sharpe_ratio']:<8.2f}")
+            line = (
+                f"  {b['ticker']:<10} {b['model']:<25} {b['period']:<8} "
+                f"{b['total_return']:<+12.4%} "
+                f"{pf_str(b['profit_factor']):<8} "
+                f"{b['max_drawdown']:<+10.4%} "
+                f"{b['sharpe_ratio']:<8.2f}"
+            )
             if args.stop_loss > 0:
                 line += f" {b.get('stopped_out', 0):<5}"
             if args.buy_hold:
@@ -287,19 +306,22 @@ def main():
             print(line)
 
         overall = max(best_per_ticker, key=lambda b: b["total_return"])
-        print(f"\n  ★ Best return:  {overall['ticker']} + {overall['model']} + "
-              f"{overall['period']} → {overall['total_return']:+.4%} "
-              f"(PF {pf_str(overall['profit_factor'])}, "
-              f"DD {overall['max_drawdown']:+.4%})")
+        print(
+            f"\n  ★ Best return:  {overall['ticker']} + {overall['model']} + "
+            f"{overall['period']} → {overall['total_return']:+.4%} "
+            f"(PF {pf_str(overall['profit_factor'])}, "
+            f"DD {overall['max_drawdown']:+.4%})"
+        )
 
         best_sharpe = max(best_per_ticker, key=lambda b: b["sharpe_ratio"])
-        print(f"  ★ Best Sharpe:  {best_sharpe['ticker']} + {best_sharpe['model']} + "
-              f"{best_sharpe['period']} → Sharpe {best_sharpe['sharpe_ratio']:.2f} "
-              f"(return {best_sharpe['total_return']:+.4%})")
+        print(
+            f"  ★ Best Sharpe:  {best_sharpe['ticker']} + {best_sharpe['model']} + "
+            f"{best_sharpe['period']} → Sharpe {best_sharpe['sharpe_ratio']:.2f} "
+            f"(return {best_sharpe['total_return']:+.4%})"
+        )
 
         if args.buy_hold:
-            beating_bh = sum(1 for b in best_per_ticker
-                             if b["total_return"] > b["buy_hold_return"])
+            beating_bh = sum(1 for b in best_per_ticker if b["total_return"] > b["buy_hold_return"])
             print(f"  Models beating Buy&Hold: {beating_bh}/{len(best_per_ticker)}")
 
         print(f"\n  Results: {run_dir}/")

@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -7,32 +7,49 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.13
+      - run: |
+          uv venv
+          uv pip install -e ".[dev]"
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.13
+      - run: |
+          uv venv
+          uv pip install -e ".[dev]"
+      - name: Mypy
+        run: uv run mypy engine/ interface/
+
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install ${{ matrix.python-version }}
+      - run: |
           uv venv
           uv pip install -e ".[dev]"
-
       - name: Download NLTK data
         run: uv run python -c "import nltk; nltk.download('vader_lexicon', quiet=True)"
-
       - name: Smoke test
         run: uv run python test_pipeline.py
-
       - name: Pytest with coverage + JUnit XML
         run: >
           uv run python -m pytest
@@ -41,14 +58,12 @@ jobs:
           --cov-report=term
           --junitxml=junit.xml
           -o junit_family=legacy
-
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
-
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1

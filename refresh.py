@@ -8,22 +8,21 @@ Usage:
     uv run python refresh.py --tickers AAPL NVDA BTC-USD
 """
 
-import sys
 import argparse
+import sys
+
+from config import ALL_TICKERS, CRYPTO, STOCKS
+from engine.logger import get_logger
+from interface.api import StockAppAPI
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-from interface.api import StockAppAPI
-from engine.logger import get_logger
-from config import ALL_TICKERS, STOCKS, CRYPTO
 
 log = get_logger("refresh")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="MarketPulse AI – Refresh prices & news"
-    )
+    parser = argparse.ArgumentParser(description="MarketPulse AI – Refresh prices & news")
     parser.add_argument("--tickers", nargs="+", default=None)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--stocks", action="store_true")

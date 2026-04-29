@@ -6,17 +6,19 @@ max drawdown, Sharpe ratio, Sortino ratio, buy-and-hold benchmark,
 and yearly rolling performance breakdown.
 """
 
+from dataclasses import dataclass, field
+from typing import Any
+
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
-from typing import List, Dict
 
-from config import DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT
+from config import DEFAULT_STOP_LOSS_PCT, DEFAULT_TRADING_FEE_PCT
 
 
 @dataclass
 class DayResult:
     """Result of a single day's prediction vs reality."""
+
     date: str
     predicted: str
     actual: str
@@ -33,6 +35,7 @@ class DayResult:
 @dataclass
 class YearlyPerformance:
     """Performance metrics for a single calendar year."""
+
     year: str
     trades: int
     correct: int
@@ -47,6 +50,7 @@ class YearlyPerformance:
 @dataclass
 class BacktestResult:
     """Aggregated backtest results."""
+
     model_name: str
     ticker: str
     test_days: int
@@ -68,9 +72,9 @@ class BacktestResult:
     # Stop-loss stats
     stopped_out_count: int = 0
     # Risk metrics
-    max_drawdown: float = 0.0       # maximum peak-to-trough decline
-    sharpe_ratio: float = 0.0       # annualized risk-adjusted return
-    sortino_ratio: float = 0.0      # like Sharpe but only penalizes downside
+    max_drawdown: float = 0.0  # maximum peak-to-trough decline
+    sharpe_ratio: float = 0.0  # annualized risk-adjusted return
+    sortino_ratio: float = 0.0  # like Sharpe but only penalizes downside
     # Streak metrics
     longest_win_streak: int = 0
     longest_loss_streak: int = 0
@@ -80,14 +84,16 @@ class BacktestResult:
     buy_hold_return: float = 0.0
     buy_hold_max_drawdown: float = 0.0
     # Rolling performance
-    yearly_performance: List[YearlyPerformance] = field(default_factory=list)
+    yearly_performance: list[YearlyPerformance] = field(default_factory=list)
     # Day-by-day results
-    days: List[DayResult] = field(default_factory=list)
+    days: list[DayResult] = field(default_factory=list)
 
     def summary(self) -> str:
         """Return a human-readable summary string."""
         pf_str = f"{self.profit_factor:.2f}" if self.profit_factor < 100 else "∞"
-        sl_str = f"  SL: {self.stopped_out_count}/{self.test_days}" if self.stop_loss_pct > 0 else ""
+        sl_str = (
+            f"  SL: {self.stopped_out_count}/{self.test_days}" if self.stop_loss_pct > 0 else ""
+        )
         lines = [
             f"  Model: {self.model_name}",
             f"  Accuracy: {self.correct}/{self.test_days} ({self.accuracy:.1%})",
@@ -112,8 +118,12 @@ class BacktestResult:
 class Backtester:
     """Walk-forward backtester with fees, stop-loss, and risk metrics."""
 
-    def __init__(self, n_days: int = 5, fee_pct: float = DEFAULT_TRADING_FEE_PCT,
-                 stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT):
+    def __init__(
+        self,
+        n_days: int = 5,
+        fee_pct: float = DEFAULT_TRADING_FEE_PCT,
+        stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+    ):
         self.n_days = n_days
         self.fee_pct = fee_pct
         self.stop_loss_pct = stop_loss_pct
@@ -123,8 +133,7 @@ class Backtester:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_trade_pnl(predicted: str, entry_price: float,
-                           exit_price: float) -> float:
+    def _compute_trade_pnl(predicted: str, entry_price: float, exit_price: float) -> float:
         ret = (exit_price - entry_price) / entry_price
         return ret if predicted == "UP" else -ret
 
@@ -132,8 +141,9 @@ class Backtester:
     def _apply_fees(raw_pnl: float, fee_pct: float) -> float:
         return raw_pnl - 2 * fee_pct / 100.0
 
-    def _check_stop_loss(self, predicted: str, entry_price: float,
-                         day_high: float, day_low: float) -> float | None:
+    def _check_stop_loss(
+        self, predicted: str, entry_price: float, day_high: float, day_low: float
+    ) -> float | None:
         if self.stop_loss_pct <= 0:
             return None
         sl_frac = self.stop_loss_pct / 100.0
@@ -152,7 +162,7 @@ class Backtester:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_max_drawdown(pnls: List[float]) -> float:
+    def _compute_max_drawdown(pnls: list[float]) -> float:
         """
         Maximum peak-to-trough decline of the cumulative equity curve.
 
@@ -172,7 +182,7 @@ class Backtester:
         return round(float(np.min(drawdown)), 8) if len(drawdown) > 0 else 0.0
 
     @staticmethod
-    def _compute_sharpe(pnls: List[float], risk_free_daily: float = 0.0) -> float:
+    def _compute_sharpe(pnls: list[float], risk_free_daily: float = 0.0) -> float:
         """
         Annualized Sharpe ratio.
 
@@ -191,7 +201,7 @@ class Backtester:
         return round(float(np.mean(excess) / std * np.sqrt(252)), 4)
 
     @staticmethod
-    def _compute_sortino(pnls: List[float], risk_free_daily: float = 0.0) -> float:
+    def _compute_sortino(pnls: list[float], risk_free_daily: float = 0.0) -> float:
         """
         Annualized Sortino ratio.
 
@@ -211,7 +221,7 @@ class Backtester:
         return round(float(np.mean(excess) / down_std * np.sqrt(252)), 4)
 
     @staticmethod
-    def _compute_buy_hold_drawdown(day_results: List[DayResult]) -> float:
+    def _compute_buy_hold_drawdown(day_results: list[DayResult]) -> float:
         """Max drawdown of buy-and-hold over the test period."""
         if not day_results:
             return 0.0
@@ -229,13 +239,13 @@ class Backtester:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_yearly_performance(day_results: List[DayResult]) -> List[YearlyPerformance]:
+    def _compute_yearly_performance(day_results: list[DayResult]) -> list[YearlyPerformance]:
         """Break down results by calendar year."""
         if not day_results:
             return []
 
         # Group by year
-        by_year: Dict[str, List[DayResult]] = {}
+        by_year: dict[str, list[DayResult]] = {}
         for d in day_results:
             year = d.date[:4]  # "2026-04-15" → "2026"
             by_year.setdefault(year, []).append(d)
@@ -267,17 +277,19 @@ class Backtester:
 
             correct = sum(1 for d in days if d.correct)
 
-            yearly.append(YearlyPerformance(
-                year=year,
-                trades=len(days),
-                correct=correct,
-                accuracy=round(correct / len(days), 4) if days else 0.0,
-                total_return=round(sum(pnls), 8),
-                profit_factor=round(pf, 4),
-                max_drawdown=round(max_dd, 8),
-                win_trades=len(wins),
-                loss_trades=len(losses),
-            ))
+            yearly.append(
+                YearlyPerformance(
+                    year=year,
+                    trades=len(days),
+                    correct=correct,
+                    accuracy=round(correct / len(days), 4) if days else 0.0,
+                    total_return=round(sum(pnls), 8),
+                    profit_factor=round(pf, 4),
+                    max_drawdown=round(max_dd, 8),
+                    win_trades=len(wins),
+                    loss_trades=len(losses),
+                )
+            )
 
         return yearly
 
@@ -286,13 +298,16 @@ class Backtester:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_streaks(day_results: List[DayResult]) -> dict:
+    def _compute_streaks(day_results: list[DayResult]) -> dict:
         if not day_results:
             return {
-                "longest_win_streak": 0, "longest_loss_streak": 0,
-                "avg_win_streak": 0.0, "avg_loss_streak": 0.0,
+                "longest_win_streak": 0,
+                "longest_loss_streak": 0,
+                "avg_win_streak": 0.0,
+                "avg_loss_streak": 0.0,
             }
-        win_streaks, loss_streaks = [], []
+        win_streaks: list[int] = []
+        loss_streaks: list[int] = []
         current_streak = 0
         current_type = None
         for d in day_results:
@@ -316,7 +331,7 @@ class Backtester:
         }
 
     @staticmethod
-    def _compute_profit_metrics(day_results: List[DayResult]) -> dict:
+    def _compute_profit_metrics(day_results: list[DayResult]) -> dict:
         if not day_results:
             return {}
         pnls = [d.trade_pnl_net for d in day_results]
@@ -342,7 +357,7 @@ class Backtester:
         }
 
     @staticmethod
-    def _compute_buy_hold(day_results: List[DayResult]) -> float:
+    def _compute_buy_hold(day_results: list[DayResult]) -> float:
         if not day_results:
             return 0.0
         entry = day_results[0].close_before
@@ -353,14 +368,18 @@ class Backtester:
     # Main run
     # ------------------------------------------------------------------
 
-    def run(self, model, model_name: str, df: pd.DataFrame,
-            ticker: str = "", use_time_weights: bool = False,
-            sentiment_score: float = 0.0) -> BacktestResult:
+    def run(
+        self,
+        model: Any,
+        model_name: str,
+        df: pd.DataFrame,
+        ticker: str = "",
+        use_time_weights: bool = False,
+        sentiment_score: float = 0.0,
+    ) -> BacktestResult:
         """Run walk-forward backtest with all metrics."""
         if len(df) < self.n_days + 20:
-            raise ValueError(
-                f"Not enough data: need {self.n_days + 20} rows, got {len(df)}"
-            )
+            raise ValueError(f"Not enough data: need {self.n_days + 20} rows, got {len(df)}")
 
         has_ohlc = "high" in df.columns and "low" in df.columns
         day_results = []
@@ -374,7 +393,8 @@ class Backtester:
             actual_direction = "UP" if close_actual > entry_price else "DOWN"
 
             predicted, confidence = model.predict(
-                train_df, use_time_weights=use_time_weights,
+                train_df,
+                use_time_weights=use_time_weights,
                 sentiment_score=sentiment_score,
             )
 
@@ -387,9 +407,7 @@ class Backtester:
             if self.stop_loss_pct > 0 and has_ohlc:
                 day_high = float(df["high"].iloc[eval_idx])
                 day_low = float(df["low"].iloc[eval_idx])
-                sl_exit = self._check_stop_loss(
-                    predicted, entry_price, day_high, day_low
-                )
+                sl_exit = self._check_stop_loss(predicted, entry_price, day_high, day_low)
                 if sl_exit is not None:
                     exit_price = sl_exit
                     stopped_out = True
@@ -397,19 +415,21 @@ class Backtester:
             raw_pnl = self._compute_trade_pnl(predicted, entry_price, exit_price)
             net_pnl = self._apply_fees(raw_pnl, self.fee_pct)
 
-            day_results.append(DayResult(
-                date=str(df["date"].iloc[eval_idx]),
-                predicted=predicted,
-                actual=actual_direction,
-                confidence=confidence,
-                correct=(predicted == actual_direction),
-                close_before=entry_price,
-                close_actual=close_actual,
-                exit_price=exit_price,
-                trade_pnl=raw_pnl,
-                trade_pnl_net=net_pnl,
-                stopped_out=stopped_out,
-            ))
+            day_results.append(
+                DayResult(
+                    date=str(df["date"].iloc[eval_idx]),
+                    predicted=predicted,
+                    actual=actual_direction,
+                    confidence=confidence,
+                    correct=(predicted == actual_direction),
+                    close_before=entry_price,
+                    close_actual=close_actual,
+                    exit_price=exit_price,
+                    trade_pnl=raw_pnl,
+                    trade_pnl_net=net_pnl,
+                    stopped_out=stopped_out,
+                )
+            )
 
         correct_count = sum(1 for d in day_results if d.correct)
         stopped_count = sum(1 for d in day_results if d.stopped_out)

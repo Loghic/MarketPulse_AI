@@ -3,11 +3,13 @@ data_downloader.py – Download historical market data via yfinance.
 Compatible with yfinance >= 1.3.0 (MultiIndex columns, new API format).
 """
 
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 
 
-def get_historical_data(ticker_symbol: str = "AAPL", period: str = "1y", debug: bool = False) -> pd.DataFrame:
+def get_historical_data(
+    ticker_symbol: str = "AAPL", period: str = "1y", debug: bool = False
+) -> pd.DataFrame:
     """
     Download historical price data for a given ticker from Yahoo Finance.
 

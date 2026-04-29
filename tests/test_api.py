@@ -1,9 +1,10 @@
 """test_api.py – StockAppAPI, benchmarks, export, sentiment."""
 
 import csv
+
 import pytest
-from pathlib import Path
-from interface.api import StockAppAPI, PredictionConfig
+
+from interface.api import PredictionConfig
 
 
 class TestAPI:
@@ -26,8 +27,7 @@ class TestAPI:
             assert result.last_price > 0
 
     def test_prediction_with_news(self, api):
-        cfg = PredictionConfig(ticker="TEST", period="1y", model_type="knn",
-                               include_news=True)
+        cfg = PredictionConfig(ticker="TEST", period="1y", model_type="knn", include_news=True)
         result = api.get_prediction(cfg)
         assert result.prediction in ("UP", "DOWN")
         assert result.sentiment in ("POSITIVE", "NEGATIVE", "NEUTRAL")
@@ -50,18 +50,21 @@ class TestBenchmarks:
 
     def test_stock_benchmarks(self):
         from config import get_benchmarks
+
         bench = get_benchmarks("AAPL")
         assert "SPY" in bench
         assert "QQQ" in bench
 
     def test_crypto_benchmarks(self):
         from config import get_benchmarks
+
         bench = get_benchmarks("ETH-USD")
         assert "BTC-USD" in bench
 
     def test_btc_no_self_benchmark(self):
         """BTC shouldn't benchmark against itself."""
         from config import get_benchmarks
+
         bench = get_benchmarks("BTC-USD")
         assert "BTC-USD" not in bench
         assert len(bench) == 0
@@ -107,6 +110,7 @@ class TestExport:
 
     def test_json_export(self, tmp_path):
         import json
+
         from engine.backtest_helpers import export_rows
 
         rows = [{"ticker": "TEST", "return": 0.05}]
@@ -124,6 +128,7 @@ class TestSentiment:
 
     def test_naive_scoring(self):
         from engine.news_scraper import NewsScraper
+
         s = NewsScraper()
         score = s._score_naive(["Great profit and growth", "Market crash feared"])
         assert isinstance(score, float)
@@ -131,6 +136,7 @@ class TestSentiment:
 
     def test_empty_headlines(self):
         from engine.news_scraper import NewsScraper
+
         s = NewsScraper()
         score = s._score_naive([])
         assert score == 0.0
@@ -145,16 +151,17 @@ class TestHelpers:
     """Backtest helper utilities."""
 
     def test_direction_accuracy(self):
+        from engine.backtest_helpers import BacktestResult, direction_accuracy
         from engine.backtester import DayResult
-        from engine.backtest_helpers import direction_accuracy, BacktestResult
 
         days = [
             DayResult("d1", "UP", "UP", 0.7, True, 100, 101, 101, 0.01, 0.01, False),
             DayResult("d2", "UP", "DOWN", 0.6, False, 100, 99, 99, -0.01, -0.01, False),
             DayResult("d3", "DOWN", "DOWN", 0.8, True, 100, 99, 99, 0.01, 0.01, False),
         ]
-        r = BacktestResult(model_name="test", ticker="T", test_days=3,
-                           correct=2, accuracy=0.67, days=days)
+        r = BacktestResult(
+            model_name="test", ticker="T", test_days=3, correct=2, accuracy=0.67, days=days
+        )
         up_c, up_t, dn_c, dn_t = direction_accuracy(r)
         assert up_c == 1  # 1 correct UP
         assert up_t == 2  # 2 UP predictions
@@ -162,8 +169,9 @@ class TestHelpers:
         assert dn_t == 1  # 1 DOWN prediction
 
     def test_period_to_start_date(self):
-        from engine.utils import period_to_start_date
         from datetime import date
+
+        from engine.utils import period_to_start_date
 
         d = period_to_start_date("max")
         assert d == date(1900, 1, 1)

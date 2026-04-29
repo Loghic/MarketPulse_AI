@@ -7,15 +7,13 @@ and display/print functions.
 
 import csv
 import json
-from datetime import datetime, timedelta, date
-from typing import Optional, List, Dict
 
-import numpy as np
 import pandas as pd
+
+from config import get_benchmarks
 from engine.backtester import BacktestResult
 from engine.logger import get_logger
 from engine.utils import period_to_start_date
-from config import ALL_PERIODS, get_benchmarks
 
 log = get_logger("helpers")
 
@@ -45,7 +43,7 @@ def direction_accuracy(result: BacktestResult):
     return up_c, up_t, dn_c, dn_t
 
 
-def compute_benchmarks(api, ticker: str, day_results) -> Dict[str, float]:
+def compute_benchmarks(api, ticker: str, day_results) -> dict[str, float]:
     """
     Compute buy-and-hold return for benchmark indices over the same
     period as the backtest results.
@@ -92,8 +90,10 @@ def compute_benchmarks(api, ticker: str, day_results) -> Dict[str, float]:
 # Export row builders
 # ------------------------------------------------------------------
 
-def result_to_summary_row(r: BacktestResult, ticker: str, period: str,
-                          benchmarks: Dict[str, float] | None = None) -> dict:
+
+def result_to_summary_row(
+    r: BacktestResult, ticker: str, period: str, benchmarks: dict[str, float] | None = None
+) -> dict:
     """Convert a BacktestResult to a summary export row."""
     up_c, up_t, dn_c, dn_t = direction_accuracy(r)
     row = {
@@ -135,27 +135,29 @@ def result_to_summary_row(r: BacktestResult, ticker: str, period: str,
     return row
 
 
-def result_to_daily_rows(r: BacktestResult, ticker: str, period: str) -> List[dict]:
+def result_to_daily_rows(r: BacktestResult, ticker: str, period: str) -> list[dict]:
     """Convert a BacktestResult to per-day export rows (for --full)."""
     rows = []
     for d in r.days:
-        rows.append({
-            "ticker": ticker,
-            "period": period,
-            "model": r.model_name,
-            "date": d.date,
-            "predicted": d.predicted,
-            "actual": d.actual,
-            "correct": d.correct,
-            "confidence": round(d.confidence, 4),
-            "trade_pnl": round(d.trade_pnl, 8),
-            "trade_pnl_net": round(d.trade_pnl_net, 8),
-            "fee_pct": r.fee_pct,
-            "stopped_out": d.stopped_out,
-            "exit_price": round(d.exit_price, 4),
-            "close_before": round(d.close_before, 4),
-            "close_actual": round(d.close_actual, 4),
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "period": period,
+                "model": r.model_name,
+                "date": d.date,
+                "predicted": d.predicted,
+                "actual": d.actual,
+                "correct": d.correct,
+                "confidence": round(d.confidence, 4),
+                "trade_pnl": round(d.trade_pnl, 8),
+                "trade_pnl_net": round(d.trade_pnl_net, 8),
+                "fee_pct": r.fee_pct,
+                "stopped_out": d.stopped_out,
+                "exit_price": round(d.exit_price, 4),
+                "close_before": round(d.close_before, 4),
+                "close_actual": round(d.close_actual, 4),
+            }
+        )
     return rows
 
 
@@ -171,12 +173,11 @@ def export_rows(rows: list, output: str):
         if not output.endswith(".csv"):
             output += ".csv"
         with open(output, "w", newline="") as f:
-            all_keys = {}
+            all_keys: dict[str, None] = {}
             for row in rows:
-                for k in row.keys():
+                for k in row:
                     all_keys[k] = None
-            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()),
-                                    extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
     print(f"\nResults exported to {output}")
@@ -185,6 +186,7 @@ def export_rows(rows: list, output: str):
 # ------------------------------------------------------------------
 # Run models for a single ticker × period
 # ------------------------------------------------------------------
+
 
 def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     """
@@ -201,23 +203,25 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     has_news = len(headlines) > 0
 
     variants = [
-        (api.knn,              "k-NN",                  False, 0.0),
-        (api.knn,              "k-NN Time-Weighted",     True,  0.0),
-        (api.knn_enhanced,     "k-NN Enhanced",          False, 0.0),
-        (api.knn_enhanced,     "k-NN Enh. TW",           True,  0.0),
-        (api.linreg,           "LinReg",                 False, 0.0),
-        (api.linreg,           "LinReg Time-Weighted",   True,  0.0),
-        (api.linreg_enhanced,  "LinReg Enhanced",        False, 0.0),
-        (api.linreg_enhanced,  "LinReg Enh. TW",         True,  0.0),
+        (api.knn, "k-NN", False, 0.0),
+        (api.knn, "k-NN Time-Weighted", True, 0.0),
+        (api.knn_enhanced, "k-NN Enhanced", False, 0.0),
+        (api.knn_enhanced, "k-NN Enh. TW", True, 0.0),
+        (api.linreg, "LinReg", False, 0.0),
+        (api.linreg, "LinReg Time-Weighted", True, 0.0),
+        (api.linreg_enhanced, "LinReg Enhanced", False, 0.0),
+        (api.linreg_enhanced, "LinReg Enh. TW", True, 0.0),
     ]
 
     if has_news:
-        variants.extend([
-            (api.knn,              "k-NN TW + News",       True,  sentiment_score),
-            (api.knn_enhanced,     "k-NN Enh. TW + News",  True,  sentiment_score),
-            (api.linreg,           "LinReg TW + News",     True,  sentiment_score),
-            (api.linreg_enhanced,  "LinReg Enh. TW + News", True,  sentiment_score),
-        ])
+        variants.extend(
+            [
+                (api.knn, "k-NN TW + News", True, sentiment_score),
+                (api.knn_enhanced, "k-NN Enh. TW + News", True, sentiment_score),
+                (api.linreg, "LinReg TW + News", True, sentiment_score),
+                (api.linreg_enhanced, "LinReg Enh. TW + News", True, sentiment_score),
+            ]
+        )
 
     # Add LSTM if available
     if api.lstm_available:
@@ -227,13 +231,16 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
             if has_news:
                 variants.append((lstm_model, "LSTM + News", False, sentiment_score))
         else:
-            log.info(f"No trained LSTM for {ticker} (period={period}). "
-                     f"Train: uv run python train.py --ticker {ticker} --period {period}")
+            log.info(
+                f"No trained LSTM for {ticker} (period={period}). "
+                f"Train: uv run python train.py --ticker {ticker} --period {period}"
+            )
 
     # If stop-loss is enabled, also create a no-SL backtester for comparison
     has_sl = backtester.stop_loss_pct > 0
     if has_sl:
         from engine.backtester import Backtester as BT
+
         backtester_no_sl = BT(
             n_days=backtester.n_days,
             fee_pct=backtester.fee_pct,
@@ -245,8 +252,12 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
         # Run without SL first (baseline)
         if has_sl:
             result_no_sl = backtester_no_sl.run(
-                model=model, model_name=name, df=filtered,
-                ticker=ticker, use_time_weights=tw, sentiment_score=sent,
+                model=model,
+                model_name=name,
+                df=filtered,
+                ticker=ticker,
+                use_time_weights=tw,
+                sentiment_score=sent,
             )
             results.append(result_no_sl)
 
@@ -255,7 +266,9 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
             model=model,
             model_name=f"{name} SL{backtester.stop_loss_pct:g}%" if has_sl else name,
             df=filtered,
-            ticker=ticker, use_time_weights=tw, sentiment_score=sent,
+            ticker=ticker,
+            use_time_weights=tw,
+            sentiment_score=sent,
         )
         results.append(result)
 
@@ -266,17 +279,23 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
 # Display helpers
 # ------------------------------------------------------------------
 
+
 def pf_str(pf: float) -> str:
     """Format profit factor for display."""
     return f"{pf:.2f}" if pf < 100 else "∞"
 
 
-def print_summary_table(results: List[BacktestResult], show_buy_hold: bool = False,
-                        benchmarks: Dict[str, float] | None = None):
+def print_summary_table(
+    results: list[BacktestResult],
+    show_buy_hold: bool = False,
+    benchmarks: dict[str, float] | None = None,
+):
     """Print the summary table."""
     has_sl = any(r.stop_loss_pct > 0 for r in results)
-    header = (f"  {'MODEL':<25} | {'ACC.':<8} | {'RETURN':<10} | "
-              f"{'P.FACTOR':<10} | {'MAX DD':<10} | {'SHARPE':<8}")
+    header = (
+        f"  {'MODEL':<25} | {'ACC.':<8} | {'RETURN':<10} | "
+        f"{'P.FACTOR':<10} | {'MAX DD':<10} | {'SHARPE':<8}"
+    )
     if has_sl:
         header += f" | {'SL':<4}"
     if show_buy_hold:
@@ -290,15 +309,17 @@ def print_summary_table(results: List[BacktestResult], show_buy_hold: bool = Fal
     print(f"  {'-' * divider}")
 
     for r in results:
-        line = (f"  {r.model_name:<25} | {r.accuracy:<8.1%} | "
-                f"{r.total_return:<+10.4%} | {pf_str(r.profit_factor):<10} | "
-                f"{r.max_drawdown:<+10.4%} | {r.sharpe_ratio:<8.2f}")
+        line = (
+            f"  {r.model_name:<25} | {r.accuracy:<8.1%} | "
+            f"{r.total_return:<+10.4%} | {pf_str(r.profit_factor):<10} | "
+            f"{r.max_drawdown:<+10.4%} | {r.sharpe_ratio:<8.2f}"
+        )
         if has_sl:
             line += f" | {r.stopped_out_count:<4}"
         if show_buy_hold:
             line += f" | {r.buy_hold_return:<+10.4%}"
         if benchmarks:
-            for bench, ret in benchmarks.items():
+            for _bench, ret in benchmarks.items():
                 line += f" | {ret:<+10.4%}"
         print(line)
 
@@ -349,8 +370,8 @@ def print_direction_accuracy(all_results):
     print(f"  {'-' * 55}")
     for r in all_results:
         up_c, up_t, dn_c, dn_t = direction_accuracy(r)
-        up_s = f"{up_c}/{up_t} ({up_c/up_t:.0%})" if up_t > 0 else "n/a"
-        dn_s = f"{dn_c}/{dn_t} ({dn_c/dn_t:.0%})" if dn_t > 0 else "n/a"
+        up_s = f"{up_c}/{up_t} ({up_c / up_t:.0%})" if up_t > 0 else "n/a"
+        dn_s = f"{dn_c}/{dn_t} ({dn_c / dn_t:.0%})" if dn_t > 0 else "n/a"
         print(f"  {r.model_name:<25} | {up_s:<12} | {dn_s:<12}")
 
 
@@ -369,12 +390,14 @@ def print_confidence_calibration(all_results):
         print(f"  {r.model_name:<25} | {hs:<16} | {ls:<16}")
 
 
-def print_profit_analysis(all_results, show_buy_hold: bool = False,
-                          benchmarks: Dict[str, float] | None = None):
+def print_profit_analysis(
+    all_results, show_buy_hold: bool = False, benchmarks: dict[str, float] | None = None
+):
     """Detailed profit metrics + streaks."""
     print(f"\n  {'PROFIT ANALYSIS':=^66}")
-    header = (f"  {'MODEL':<25} | {'RETURN':<10} | {'P.FACTOR':<10} | "
-              f"{'AVG WIN':<10} | {'AVG LOSS':<10}")
+    header = (
+        f"  {'MODEL':<25} | {'RETURN':<10} | {'P.FACTOR':<10} | {'AVG WIN':<10} | {'AVG LOSS':<10}"
+    )
     if show_buy_hold:
         header += f" | {'B&H':<10}"
     print(header)
@@ -383,21 +406,26 @@ def print_profit_analysis(all_results, show_buy_hold: bool = False,
     for r in all_results:
         avg_w = f"{r.avg_win:+.4%}" if r.win_trades > 0 else "n/a"
         avg_l = f"{r.avg_loss:+.4%}" if r.loss_trades > 0 else "n/a"
-        line = (f"  {r.model_name:<25} | {r.total_return:<+10.4%} | "
-                f"{pf_str(r.profit_factor):<10} | {avg_w:<10} | {avg_l:<10}")
+        line = (
+            f"  {r.model_name:<25} | {r.total_return:<+10.4%} | "
+            f"{pf_str(r.profit_factor):<10} | {avg_w:<10} | {avg_l:<10}"
+        )
         if show_buy_hold:
             line += f" | {r.buy_hold_return:<+10.4%}"
         print(line)
 
     # Streaks
     print(f"\n  {'STREAKS':=^66}")
-    print(f"  {'MODEL':<25} | {'MAX WIN':<10} | {'MAX LOSS':<10} | "
-          f"{'AVG WIN':<10} | {'AVG LOSS':<10}")
+    print(
+        f"  {'MODEL':<25} | {'MAX WIN':<10} | {'MAX LOSS':<10} | {'AVG WIN':<10} | {'AVG LOSS':<10}"
+    )
     print(f"  {'-' * 70}")
     for r in all_results:
-        print(f"  {r.model_name:<25} | {r.longest_win_streak:<10} | "
-              f"{r.longest_loss_streak:<10} | {r.avg_win_streak:<10.1f} | "
-              f"{r.avg_loss_streak:<10.1f}")
+        print(
+            f"  {r.model_name:<25} | {r.longest_win_streak:<10} | "
+            f"{r.longest_loss_streak:<10} | {r.avg_win_streak:<10.1f} | "
+            f"{r.avg_loss_streak:<10.1f}"
+        )
 
     # Risk metrics
     print(f"\n  {'RISK METRICS':=^66}")
@@ -405,9 +433,11 @@ def print_profit_analysis(all_results, show_buy_hold: bool = False,
     print(f"  {'-' * 70}")
     for r in all_results:
         sortino_s = f"{r.sortino_ratio:.2f}" if r.sortino_ratio < 100 else "∞"
-        print(f"  {r.model_name:<25} | {r.max_drawdown:<+10.4%} | "
-              f"{r.sharpe_ratio:<10.2f} | {sortino_s:<10} | "
-              f"{r.win_trades}/{r.loss_trades}")
+        print(
+            f"  {r.model_name:<25} | {r.max_drawdown:<+10.4%} | "
+            f"{r.sharpe_ratio:<10.2f} | {sortino_s:<10} | "
+            f"{r.win_trades}/{r.loss_trades}"
+        )
 
     if all_results:
         best = max(all_results, key=lambda r: r.total_return)
@@ -437,14 +467,18 @@ def print_profit_analysis(all_results, show_buy_hold: bool = False,
             for bench, ret in benchmarks.items():
                 beat = sum(1 for r in all_results if r.total_return > ret)
                 marker = "✓" if best_return > ret else "✗"
-                print(f"  {bench:<10} return: {ret:+.4%}  "
-                      f"| Models beating: {beat}/{len(all_results)} {marker}")
+                print(
+                    f"  {bench:<10} return: {ret:+.4%}  "
+                    f"| Models beating: {beat}/{len(all_results)} {marker}"
+                )
 
         if any(r.stop_loss_pct > 0 for r in all_results):
             total_stopped = sum(r.stopped_out_count for r in all_results)
             total_trades = sum(r.test_days for r in all_results)
-            print(f"\n  Stop-loss triggers:   {total_stopped}/{total_trades} trades "
-                  f"({total_stopped/total_trades:.0%})")
+            print(
+                f"\n  Stop-loss triggers:   {total_stopped}/{total_trades} trades "
+                f"({total_stopped / total_trades:.0%})"
+            )
 
     # Yearly performance (only shown if data spans multiple years)
     has_yearly = any(r.yearly_performance for r in all_results)
@@ -461,14 +495,17 @@ def print_yearly_performance(all_results):
 
     print(f"\n  {'YEARLY PERFORMANCE':=^66}")
     print(f"  Model: {best.model_name}\n")
-    print(f"  {'YEAR':<8} | {'TRADES':<8} | {'ACC.':<8} | {'RETURN':<10} | "
-          f"{'PF':<8} | {'MAX DD':<10}")
+    print(
+        f"  {'YEAR':<8} | {'TRADES':<8} | {'ACC.':<8} | {'RETURN':<10} | {'PF':<8} | {'MAX DD':<10}"
+    )
     print(f"  {'-' * 60}")
 
     for yp in best.yearly_performance:
         pf_s = f"{yp.profit_factor:.2f}" if yp.profit_factor < 100 else "∞"
-        print(f"  {yp.year:<8} | {yp.trades:<8} | {yp.accuracy:<8.0%} | "
-              f"{yp.total_return:<+10.4%} | {pf_s:<8} | {yp.max_drawdown:<+10.4%}")
+        print(
+            f"  {yp.year:<8} | {yp.trades:<8} | {yp.accuracy:<8.0%} | "
+            f"{yp.total_return:<+10.4%} | {pf_s:<8} | {yp.max_drawdown:<+10.4%}"
+        )
 
     # Also show top 3 models' yearly summary if multiple have yearly data
     models_with_yearly = [r for r in all_results if r.yearly_performance]

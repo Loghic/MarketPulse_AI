@@ -1,8 +1,8 @@
 """test_backtester.py – Walk-forward backtester, fees, stop-loss, risk metrics."""
 
-import numpy as np
 import pytest
-from engine.backtester import Backtester, DayResult, BacktestResult
+
+from engine.backtester import Backtester, DayResult
 
 
 class TestBasicBacktest:
@@ -35,6 +35,7 @@ class TestBasicBacktest:
 
     def test_insufficient_data_raises(self, api):
         import pandas as pd
+
         tiny = pd.DataFrame({"close": range(10), "date": range(10)})
         bt = Backtester(n_days=5)
         with pytest.raises(ValueError, match="Not enough data"):
@@ -55,7 +56,7 @@ class TestFees:
     def test_fee_math(self):
         """Round-trip fee = 2 × per-side fee."""
         raw_pnl = 0.05  # 5% gross return
-        fee_pct = 0.1   # 0.1% per side
+        fee_pct = 0.1  # 0.1% per side
         net = Backtester._apply_fees(raw_pnl, fee_pct)
         expected = 0.05 - 2 * 0.001  # 5% - 0.2% = 4.8%
         assert abs(net - expected) < 1e-10
@@ -185,8 +186,10 @@ class TestStreaks:
     """Win/loss streak calculations."""
 
     def test_all_wins(self):
-        days = [DayResult("d", "UP", "UP", 0.6, True, 100, 101, 101,
-                          0.01, 0.01, False) for _ in range(5)]
+        days = [
+            DayResult("d", "UP", "UP", 0.6, True, 100, 101, 101, 0.01, 0.01, False)
+            for _ in range(5)
+        ]
         s = Backtester._compute_streaks(days)
         assert s["longest_win_streak"] == 5
         assert s["longest_loss_streak"] == 0
@@ -196,8 +199,11 @@ class TestStreaks:
         for i in range(6):
             win = i % 2 == 0
             pnl = 0.01 if win else -0.01
-            days.append(DayResult("d", "UP", "UP" if win else "DOWN", 0.6,
-                                  win, 100, 101, 101, pnl, pnl, False))
+            days.append(
+                DayResult(
+                    "d", "UP", "UP" if win else "DOWN", 0.6, win, 100, 101, 101, pnl, pnl, False
+                )
+            )
         s = Backtester._compute_streaks(days)
         assert s["longest_win_streak"] == 1
         assert s["longest_loss_streak"] == 1

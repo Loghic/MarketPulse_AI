@@ -4,12 +4,12 @@ conftest.py – Shared fixtures for all tests.
 All tests use mock data — no network access needed.
 """
 
+from datetime import datetime
+from unittest.mock import PropertyMock, patch
+
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
-from datetime import datetime
-from unittest.mock import patch, PropertyMock
 
 
 def _make_prices(days=400, seed=42, base=150.0, daily_return=0.0005, volatility=0.02):
@@ -20,13 +20,16 @@ def _make_prices(days=400, seed=42, base=150.0, daily_return=0.0005, volatility=
     returns = np.random.normal(daily_return, volatility, n)
     prices = base * np.cumprod(1 + returns)
 
-    return pd.DataFrame({
-        "Open": prices * (1 + np.random.uniform(-0.005, 0.005, n)),
-        "High": prices * (1 + np.abs(np.random.normal(0, 0.015, n))),
-        "Low": prices * (1 - np.abs(np.random.normal(0, 0.015, n))),
-        "Close": prices,
-        "Volume": np.random.randint(1_000_000, 50_000_000, n),
-    }, index=dates).rename_axis("Date")
+    return pd.DataFrame(
+        {
+            "Open": prices * (1 + np.random.uniform(-0.005, 0.005, n)),
+            "High": prices * (1 + np.abs(np.random.normal(0, 0.015, n))),
+            "Low": prices * (1 - np.abs(np.random.normal(0, 0.015, n))),
+            "Close": prices,
+            "Volume": np.random.randint(1_000_000, 50_000_000, n),
+        },
+        index=dates,
+    ).rename_axis("Date")
 
 
 def _make_news():
@@ -63,8 +66,7 @@ def mock_yfinance():
     prices = _make_prices(400)
     news = _make_news()
 
-    with patch("engine.data_downloader.yf") as mock_dl, \
-         patch("engine.news_scraper.yf") as mock_ns:
+    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_scraper.yf") as mock_ns:
         mock_dl.Ticker.return_value.history.return_value = prices
         type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=news)
         yield mock_dl, mock_ns
@@ -74,6 +76,7 @@ def mock_yfinance():
 def api(mock_yfinance):
     """StockAppAPI with mocked data layer."""
     from interface.api import StockAppAPI
+
     return StockAppAPI()
 
 

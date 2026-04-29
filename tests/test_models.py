@@ -1,9 +1,10 @@
 """test_models.py – Prediction tests for all model types."""
 
 import pytest
+
+from engine.features import ALL_FEATURES
 from engine.knn_model import KNNModel
 from engine.lin_reg_model import LinearRegressionModel
-from engine.features import ALL_FEATURES
 
 
 class TestKNN:
@@ -36,8 +37,14 @@ class TestKNN:
     def test_insufficient_data(self):
         """Very small df should return 'Insufficient data'."""
         import pandas as pd
-        tiny = pd.DataFrame({"close": [1, 2, 3], "volume": [100, 100, 100],
-                             "date": ["2024-01-01", "2024-01-02", "2024-01-03"]})
+
+        tiny = pd.DataFrame(
+            {
+                "close": [1, 2, 3],
+                "volume": [100, 100, 100],
+                "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            }
+        )
         model = KNNModel(k=5, features=["returns"])
         pred, prob = model.predict(tiny)
         assert pred == "Insufficient data"
@@ -85,6 +92,7 @@ class TestLSTM:
         """ai_model should import even without torch."""
         try:
             from engine.ai_model import TORCH_AVAILABLE
+
             assert isinstance(TORCH_AVAILABLE, bool)
         except ImportError:
             pytest.skip("ai_model import failed entirely")
@@ -92,6 +100,7 @@ class TestLSTM:
     def test_api_lstm_error(self, api):
         """Requesting untrained LSTM should give clear error."""
         from interface.api import PredictionConfig
+
         cfg = PredictionConfig(ticker="TEST", period="1y", model_type="lstm")
         with pytest.raises(RuntimeError, match="No trained LSTM|PyTorch"):
             api.get_prediction(cfg)

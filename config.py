@@ -9,17 +9,17 @@ Add new tickers here. Everything else (main.py, backtest.py) reads from this fil
 # ------------------------------------------------------------------
 
 STOCKS = [
-    "AAPL",     # Apple
-    "MSFT",     # Microsoft
-    "NVDA",     # NVIDIA
-    "META",     # Meta (Facebook)
-    "GOOGL",    # Alphabet (Google)
-    "AMD",      # AMD
-    "TSM",      # Taiwan Semiconductor (TSMC)
-    "ASML",     # ASML
-    "AVGO",     # Broadcom
-    "TSLA",     # Tesla
-    "INTC",     # Intel
+    "AAPL",  # Apple
+    "MSFT",  # Microsoft
+    "NVDA",  # NVIDIA
+    "META",  # Meta (Facebook)
+    "GOOGL",  # Alphabet (Google)
+    "AMD",  # AMD
+    "TSM",  # Taiwan Semiconductor (TSMC)
+    "ASML",  # ASML
+    "AVGO",  # Broadcom
+    "TSLA",  # Tesla
+    "INTC",  # Intel
 ]
 
 CRYPTO = [
@@ -63,12 +63,14 @@ STOCK_BENCHMARKS = ["SPY", "QQQ"]  # S&P 500, Nasdaq 100
 # Crypto is compared against Bitcoin
 CRYPTO_BENCHMARKS = ["BTC-USD"]
 
+
 # Returns the relevant benchmarks for a ticker
 def get_benchmarks(ticker: str) -> list[str]:
     """Return benchmark tickers for comparison, excluding the ticker itself."""
     if "-USD" in ticker:
         return [b for b in CRYPTO_BENCHMARKS if b != ticker]
     return STOCK_BENCHMARKS
+
 
 # Total cost per trade as a percentage of trade value.
 # Covers: broker commission + bid-ask spread + slippage.

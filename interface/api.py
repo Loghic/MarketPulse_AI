@@ -3,22 +3,21 @@ api.py – Facade (StockAppAPI) bridging the UI layer with the engine logic.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
 from datetime import datetime
 
 import pandas as pd
 
-from engine.db_manager import DatabaseManager
 from engine.data_downloader import get_historical_data
+from engine.db_manager import DatabaseManager
+from engine.features import ALL_FEATURES
 from engine.knn_model import KNNModel
 from engine.lin_reg_model import LinearRegressionModel
-from engine.features import ALL_FEATURES
-from engine.news_scraper import NewsScraper
 from engine.logger import get_logger, progress_bar
+from engine.news_scraper import NewsScraper
 from engine.utils import period_to_start_date
 
 try:
-    from engine.ai_model import AIModel, TORCH_AVAILABLE
+    from engine.ai_model import TORCH_AVAILABLE, AIModel
 except ImportError:
     TORCH_AVAILABLE = False
 
@@ -44,13 +43,12 @@ class PredictionResult:
     model_type: str = "knn"
     sentiment: str = "N/A"
     sentiment_score: float = 0.0
-    headlines: List[str] = field(default_factory=list)
+    headlines: list[str] = field(default_factory=list)
     data_points: int = 0
     timestamp: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
 class StockAppAPI:
-
     def __init__(self):
         self.db = DatabaseManager()
         self.knn = KNNModel(k=5, features=["returns"])
@@ -162,13 +160,13 @@ class StockAppAPI:
         }
         if model_type == "lstm":
             if not self.lstm_available:
-                raise RuntimeError(
-                    "LSTM requires PyTorch. Install: uv pip install torch")
+                raise RuntimeError("LSTM requires PyTorch. Install: uv pip install torch")
             model = self._load_lstm(ticker, period)
             if model is None:
                 raise RuntimeError(
                     f"No trained LSTM for {ticker} (period={period}). "
-                    f"Train: uv run python train.py --ticker {ticker} --period {period}")
+                    f"Train: uv run python train.py --ticker {ticker} --period {period}"
+                )
             return model
         model = models.get(model_type)
         if model is None:
@@ -192,12 +190,14 @@ class StockAppAPI:
 
         score, headlines = self.news_scraper.get_sentiment(ticker)
         if headlines:
-            news_df = pd.DataFrame({
-                "ticker": [ticker] * len(headlines),
-                "date": [today_str] * len(headlines),
-                "headline": headlines,
-                "sentiment_score": [score] * len(headlines),
-            })
+            news_df = pd.DataFrame(
+                {
+                    "ticker": [ticker] * len(headlines),
+                    "date": [today_str] * len(headlines),
+                    "headline": headlines,
+                    "sentiment_score": [score] * len(headlines),
+                }
+            )
             self.db.save_news(ticker, news_df)
         return score, headlines
 

@@ -11,16 +11,18 @@ volatility, MACD) via the shared engine.features module.
 Sentiment integration uses the same two-stage post-hoc approach.
 """
 
+import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
-import numpy as np
-from typing import Tuple, List
 
 from engine.features import (
-    DEFAULT_FEATURES, ALL_FEATURES, validate_features, feature_label,
-    build_feature_matrix, compute_feature_columns, build_feature_vector,
+    DEFAULT_FEATURES,
+    build_feature_matrix,
+    build_feature_vector,
+    compute_feature_columns,
+    feature_label,
+    validate_features,
 )
-
 
 SENTIMENT_WEIGHT = 0.20
 
@@ -29,7 +31,7 @@ class LinearRegressionModel:
     def __init__(
         self,
         window_size: int = 5,
-        features: List[str] | None = None,
+        features: list[str] | None = None,
     ):
         self.window_size = window_size
         self.features = features or DEFAULT_FEATURES
@@ -64,7 +66,7 @@ class LinearRegressionModel:
         prob: float,
         sentiment_score: float,
         weight: float = SENTIMENT_WEIGHT,
-    ) -> Tuple[int, float]:
+    ) -> tuple[int, float]:
         """Shift probability using sentiment. Can flip the prediction."""
         if sentiment_score == 0.0:
             return prediction, prob
@@ -87,7 +89,7 @@ class LinearRegressionModel:
         df,
         use_time_weights: bool = False,
         sentiment_score: float = 0.0,
-    ) -> Tuple[str, float]:
+    ) -> tuple[str, float]:
         """
         Train Linear Regression and predict next-day direction.
 
@@ -100,9 +102,7 @@ class LinearRegressionModel:
         Returns:
             (direction, confidence) — e.g. ("UP", 0.73)
         """
-        X, y = build_feature_matrix(
-            df, self.features, self.window_size, target_type="continuous"
-        )
+        X, y = build_feature_matrix(df, self.features, self.window_size, target_type="continuous")
 
         if X is None or len(X) < self.window_size:
             return "Insufficient data", 0.0
@@ -136,8 +136,6 @@ class LinearRegressionModel:
         raw_prob = self._return_to_confidence(predicted_return)
 
         # Sentiment adjustment
-        final_pred, final_prob = self._apply_sentiment(
-            raw_prediction, raw_prob, sentiment_score
-        )
+        final_pred, final_prob = self._apply_sentiment(raw_prediction, raw_prob, sentiment_score)
 
         return ("UP" if final_pred == 1 else "DOWN"), final_prob

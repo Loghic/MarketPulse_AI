@@ -19,13 +19,15 @@ Usage:
 
 import logging
 import sys
-from typing import Iterable, Any
+from collections.abc import Iterable
+from typing import Any
 
-from config import LOG_MODE, LOG_LEVEL
+from config import LOG_LEVEL, LOG_MODE
 
 # Try to import tqdm for nice progress bars
 try:
     from tqdm import tqdm
+
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
@@ -85,13 +87,14 @@ def get_logger(name: str) -> logging.Logger:
 # Progress bar
 # ------------------------------------------------------------------
 
+
 class _SimpleProgress:
     """Fallback progress bar when tqdm is not available."""
 
     def __init__(self, iterable, desc="", total=None, **kwargs):
         self.iterable = iterable
         self.desc = desc
-        self.total = total or (len(iterable) if hasattr(iterable, '__len__') else None)
+        self.total = total or (len(iterable) if hasattr(iterable, "__len__") else None)
         self.n = 0
 
     def __iter__(self):
@@ -99,8 +102,7 @@ class _SimpleProgress:
             self.n += 1
             if self.total and LOG_MODE == "cli":
                 pct = self.n / self.total * 100
-                print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%)",
-                      end="", flush=True)
+                print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%)", end="", flush=True)
             yield item
         if self.total and LOG_MODE == "cli":
             print()  # newline after progress
@@ -124,14 +126,12 @@ class _SimpleManualProgress:
         self.n += n
         if LOG_MODE == "cli":
             pct = self.n / self.total * 100
-            print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%)",
-                  end="", flush=True)
+            print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%)", end="", flush=True)
 
     def set_postfix_str(self, s):
         if LOG_MODE == "cli":
             pct = self.n / self.total * 100
-            print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%) {s}",
-                  end="", flush=True)
+            print(f"\r  {self.desc}: {self.n}/{self.total} ({pct:.0f}%) {s}", end="", flush=True)
 
     def close(self):
         if LOG_MODE == "cli":
@@ -144,8 +144,7 @@ class _SimpleManualProgress:
         self.close()
 
 
-def progress_bar(iterable: Iterable, desc: str = "", total: int | None = None,
-                 **kwargs) -> Any:
+def progress_bar(iterable: Iterable, desc: str = "", total: int | None = None, **kwargs) -> Any:
     """
     Wrap an iterable with a progress bar.
 
@@ -156,8 +155,9 @@ def progress_bar(iterable: Iterable, desc: str = "", total: int | None = None,
         return iterable
 
     if TQDM_AVAILABLE:
-        return tqdm(iterable, desc=f"  {desc}", total=total,
-                    bar_format="{l_bar}{bar:30}{r_bar}", **kwargs)
+        return tqdm(
+            iterable, desc=f"  {desc}", total=total, bar_format="{l_bar}{bar:30}{r_bar}", **kwargs
+        )
     return _SimpleProgress(iterable, desc=desc, total=total)
 
 
@@ -177,7 +177,5 @@ def epoch_progress(total: int, desc: str = "Training") -> Any:
         return _SimpleManualProgress(total, desc)  # silent but tracks .n
 
     if TQDM_AVAILABLE:
-        return tqdm(total=total, desc=f"  {desc}",
-                    bar_format="{l_bar}{bar:30}{r_bar}")
+        return tqdm(total=total, desc=f"  {desc}", bar_format="{l_bar}{bar:30}{r_bar}")
     return _SimpleManualProgress(total, desc=desc)
-

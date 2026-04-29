@@ -11,8 +11,9 @@ to naive scoring automatically.
 Compatible with yfinance >= 1.3.0 (new XHR news endpoint).
 """
 
+from typing import Literal
+
 import yfinance as yf
-from typing import List, Tuple, Literal
 
 
 class NewsScraper:
@@ -22,14 +23,44 @@ class NewsScraper:
 
         # Legacy naive keyword sets (kept for baseline comparison)
         self.pos_words = {
-            "up", "bull", "buy", "growth", "profit", "surge", "positive",
-            "win", "high", "boost", "top", "gain", "rally", "strong",
-            "beat", "record", "upgrade", "outperform",
+            "up",
+            "bull",
+            "buy",
+            "growth",
+            "profit",
+            "surge",
+            "positive",
+            "win",
+            "high",
+            "boost",
+            "top",
+            "gain",
+            "rally",
+            "strong",
+            "beat",
+            "record",
+            "upgrade",
+            "outperform",
         }
         self.neg_words = {
-            "down", "bear", "sell", "loss", "drop", "negative", "fall",
-            "risk", "debt", "crash", "short", "decline", "plunge", "weak",
-            "miss", "warning", "downgrade", "underperform",
+            "down",
+            "bear",
+            "sell",
+            "loss",
+            "drop",
+            "negative",
+            "fall",
+            "risk",
+            "debt",
+            "crash",
+            "short",
+            "decline",
+            "plunge",
+            "weak",
+            "miss",
+            "warning",
+            "downgrade",
+            "underperform",
         }
 
     def _init_vader(self):
@@ -67,7 +98,7 @@ class NewsScraper:
                 return title
         return item.get("title") or item.get("headline") or item.get("summary") or ""
 
-    def _score_naive(self, titles: List[str]) -> float:
+    def _score_naive(self, titles: list[str]) -> float:
         """Simple keyword-matching scoring. Returns score in [-1, 1]."""
         if not titles:
             return 0.0
@@ -83,7 +114,7 @@ class NewsScraper:
 
         return max(-1.0, min(1.0, score / max(len(titles), 1)))
 
-    def _score_vader(self, titles: List[str]) -> float:
+    def _score_vader(self, titles: list[str]) -> float:
         """
         VADER sentiment scoring.
 
@@ -104,7 +135,7 @@ class NewsScraper:
         self,
         ticker: str,
         method: Literal["vader", "naive"] = "vader",
-    ) -> Tuple[float, List[str]]:
+    ) -> tuple[float, list[str]]:
         """
         Fetch recent news and return a sentiment score with headlines.
 
