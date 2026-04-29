@@ -104,7 +104,7 @@ class LinearRegressionModel:
         """
         X, y = build_feature_matrix(df, self.features, self.window_size, target_type="continuous")
 
-        if X is None or len(X) < self.window_size:
+        if X is None or y is None or len(X) < self.window_size:
             return "Insufficient data", 0.0
 
         # --- Scale + train ---

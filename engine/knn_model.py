@@ -84,7 +84,7 @@ class KNNModel:
         """
         X, y = build_feature_matrix(df, self.features, self.window_size, target_type="binary")
 
-        if X is None or len(X) < self.k:
+        if X is None or y is None or len(X) < self.k:
             return "Insufficient data", 0.0
 
         # --- Scale on full dataset ---
