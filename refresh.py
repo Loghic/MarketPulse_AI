@@ -2,7 +2,8 @@
 refresh.py – Download latest prices and news for all tickers.
 
 Pre-fetches data into SQLite so that main.py, backtest.py, and run_all.py
-don't have to wait for downloads. Run this once at the start of your day.
+don't have to wait for downloads. Same as running main.py without --no-refresh,
+but without running any models.
 
 Usage:
     uv run python refresh.py              # all tickers
@@ -44,40 +45,10 @@ def main():
     print(f"{'=' * 60}\n")
 
     api = StockAppAPI()
-    success = 0
-    failed = 0
+    api.refresh_tickers(tickers)
 
-    for i, ticker in enumerate(tickers, 1):
-        print(f"[{i}/{len(tickers)}] {ticker}...", end=" ", flush=True)
-
-        # Prices
-        try:
-            df = api.get_data(ticker, period="max")
-            rows = len(df)
-            last = df["date"].iloc[-1] if not df.empty else "n/a"
-        except Exception as e:
-            print(f"PRICE ERROR: {e}")
-            failed += 1
-            continue
-
-        # News
-        try:
-            score, headlines = api._process_news_with_db(ticker)
-            news_count = len(headlines)
-            if news_count > 0:
-                label = "POS" if score > 0.15 else "NEG" if score < -0.15 else "NEU"
-                news_str = f"{news_count} headlines ({label} {score:+.2f})"
-            else:
-                news_str = "no news"
-        except Exception:
-            news_str = "news error"
-
-        print(f"{rows} rows (→ {last}), {news_str}")
-        success += 1
-
-    print(f"\n{'=' * 60}")
-    print(f" DONE: {success} refreshed, {failed} failed")
-    print(f" DB: data/market_data.db")
+    print(f"{'=' * 60}")
+    print(f" DONE — DB: data/market_data.db")
     print(f"{'=' * 60}")
 
 

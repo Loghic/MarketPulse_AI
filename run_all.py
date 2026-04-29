@@ -162,6 +162,8 @@ def main():
                         help="Stop-loss %% (0=disabled)")
     parser.add_argument("--buy-hold", action="store_true",
                         help="Include buy-and-hold comparison")
+    parser.add_argument("--no-refresh", action="store_true",
+                        help="Skip data download, use only cached data from DB")
     parser.add_argument("--dir", type=str, default="results",
                         help="Root output directory (default: results/)")
     args = parser.parse_args()
@@ -201,6 +203,10 @@ def main():
     print(f"{'=' * 80}\n")
 
     api = StockAppAPI()
+
+    if not args.no_refresh:
+        api.refresh_tickers(tickers)
+
     best_per_ticker = []
 
     for i, ticker in enumerate(tickers, 1):

@@ -4,10 +4,7 @@ main.py – CLI entry point for MarketPulse AI.
 Tickers and periods are configured in config.py.
 """
 
-import sys
 import argparse
-
-sys.stdout.reconfigure(encoding="utf-8")
 from interface.api import StockAppAPI, PredictionConfig
 from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
 
@@ -33,9 +30,6 @@ def run_prediction(api: StockAppAPI, ticker: str, period: str,
 
 def print_report(api: StockAppAPI, ticker: str):
     """Print a strategic prediction report for a single ticker."""
-
-    # Pre-fetch full history so every period filters from the complete dataset
-    api.get_data(ticker, period="max")
 
     print(f"\n{'=' * 90}")
     print(f" STRATEGIC REPORT: {ticker}")
@@ -129,6 +123,10 @@ def main():
         "--all", action="store_true",
         help="Run all tickers (stocks + crypto)"
     )
+    parser.add_argument(
+        "--no-refresh", action="store_true",
+        help="Skip data download, use only cached data from DB"
+    )
     args = parser.parse_args()
 
     # Determine tickers
@@ -141,12 +139,16 @@ def main():
     elif args.all:
         tickers = ALL_TICKERS
     else:
-        # Default: first 3 (BTC, AAPL, MSFT equivalent) for quick runs
         tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
 
     print(f"Tickers: {tickers}")
 
     api = StockAppAPI()
+
+    # Refresh all data upfront (prices + news)
+    if not args.no_refresh:
+        api.refresh_tickers(tickers)
+
     for ticker in tickers:
         print_report(api, ticker)
 

@@ -70,6 +70,39 @@ Percentage of correct direction predictions. 50% = coin flip. Anything consisten
 
 **Average win/loss streak** — you want avg_win > avg_loss. If avg_loss = 3.0 and avg_win = 1.5, the model loses in long runs and recovers slowly.
 
+### Risk metrics
+
+**Max Drawdown (DD)** — maximum peak-to-trough decline of the cumulative equity curve. If equity goes +5% → +3% → +8%, the drawdown at step 2 is -1.9%. Max DD is the worst such decline. A model with +20% return but -15% max DD means at some point you were down 15% from your peak.
+
+**Sharpe Ratio** — risk-adjusted return, annualized: `(mean daily return / std daily return) × √252`.
+
+| Sharpe | Meaning |
+|---|---|
+| < 0 | Losing money |
+| 0-1 | Positive but risky |
+| 1-2 | Good risk-adjusted return |
+| > 2 | Excellent (rare for daily trading) |
+
+Higher Sharpe = more return per unit of risk. +10% return with Sharpe 1.5 is better than +15% with Sharpe 0.8.
+
+**Sortino Ratio** — like Sharpe but only penalizes downside volatility. If a model has big wins and small losses, Sortino > Sharpe (good — volatility is mostly on the upside).
+
+**Buy & Hold Max DD** — passive benchmark's max drawdown. If model DD is -5% and B&H DD is -12%, the model protected you from a big drop.
+
+The `--compare-periods` mode includes a **Risk-Adjusted Ranking** section sorted by Sharpe ratio — the best risk-adjusted models, not just the highest return.
+
+### Yearly rolling performance
+
+When test data spans multiple years, `--full` shows performance by calendar year:
+
+```
+  YEAR     | TRADES | ACC. | RETURN     | PF     | MAX DD
+  2023     | 30     | 63%  | +12.50%    | 1.82   | -3.20%
+  2024     | 20     | 45%  | -5.30%     | 0.71   | -8.10%
+```
+
+A model great in 2023 (AI rally) but terrible in 2024 may be overfitting to bull conditions. Stable yearly performance is more trustworthy than a high aggregate return.
+
 ### Direction accuracy, confidence calibration, consensus
 
 Direction accuracy breaks down by UP vs DOWN. Confidence calibration checks if high-confidence predictions are actually better. Consensus shows model agreement per day — unanimous days are strongest signals.
@@ -83,6 +116,7 @@ Direction accuracy breaks down by UP vs DOWN. Confidence calibration checks if h
 | `--fees FLOAT` | Fee % per side (default from config.py) |
 | `--stop-loss FLOAT` | Stop-loss % (0=disabled). Runs each model twice for comparison |
 | `--buy-hold` | Add buy-and-hold return to output |
+| `--no-refresh` | Skip data download, use cached DB only (offline mode) |
 | `--full` | Detailed: consensus, direction accuracy, profit analysis, streaks |
 | `--compare-periods` | All periods, accuracy matrix, top 5, streak analysis |
 | `--output FILE` | Export CSV or JSON |
@@ -96,6 +130,21 @@ Direction accuracy breaks down by UP vs DOWN. Confidence calibration checks if h
 | `--compare-periods` | 1 per model × period |
 
 With `--stop-loss`, row count doubles (baseline + SL variant for each model).
+
+## Data refresh
+
+All scripts (`main.py`, `backtest.py`, `run_all.py`) automatically download fresh prices and news before running. This ensures you always work with the latest data.
+
+To skip downloads and use only cached data from the database:
+
+```bash
+uv run python backtest.py --stocks --days 50 --no-refresh
+uv run python run_all.py --all --days 20 --no-refresh
+```
+
+Useful when: running multiple analyses in a row (refresh once, then `--no-refresh` for the rest), working offline, or when data was already fetched by `refresh.py`.
+
+The refresh logic lives in `api.refresh_tickers()` — a single method shared by all scripts, ready for GUI integration.
 
 ## Batch runner (`run_all.py`)
 

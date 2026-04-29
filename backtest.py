@@ -32,11 +32,15 @@ from config import (
 # ------------------------------------------------------------------
 
 def run_backtest(tickers, n_days, full=False, period="max",
-                 output=None, fee_pct=0.0, stop_loss_pct=0.0, buy_hold=False):
+                 output=None, fee_pct=0.0, stop_loss_pct=0.0, buy_hold=False,
+                 no_refresh=False):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
     backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_export_rows = []
+
+    if not no_refresh:
+        api.refresh_tickers(tickers)
 
     for ticker in tickers:
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
@@ -109,11 +113,14 @@ def run_backtest(tickers, n_days, full=False, period="max",
 # ------------------------------------------------------------------
 
 def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
-                        stop_loss_pct=0.0, buy_hold=False):
+                        stop_loss_pct=0.0, buy_hold=False, no_refresh=False):
     """Run backtest across all periods, find optimal model+period."""
     api = StockAppAPI()
     backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_export_rows = []
+
+    if not no_refresh:
+        api.refresh_tickers(tickers)
 
     for ticker in tickers:
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
@@ -358,6 +365,8 @@ def main():
                         help="Stop-loss %% (0=disabled). Exit if position drops by this %%")
     parser.add_argument("--buy-hold", action="store_true",
                         help="Compare with buy-and-hold benchmark")
+    parser.add_argument("--no-refresh", action="store_true",
+                        help="Skip data download, use only cached data from DB (offline mode)")
     args = parser.parse_args()
 
     if args.tickers:
@@ -373,10 +382,12 @@ def main():
 
     if args.compare_periods:
         run_compare_periods(tickers, args.days, args.output,
-                            args.fees, args.stop_loss, args.buy_hold)
+                            args.fees, args.stop_loss, args.buy_hold,
+                            args.no_refresh)
     else:
         run_backtest(tickers, args.days, args.full, args.period,
-                     args.output, args.fees, args.stop_loss, args.buy_hold)
+                     args.output, args.fees, args.stop_loss, args.buy_hold,
+                     args.no_refresh)
 
 
 if __name__ == "__main__":

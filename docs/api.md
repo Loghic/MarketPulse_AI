@@ -21,6 +21,18 @@ One class (`StockAppAPI`) exposes a simple interface while hiding the complexity
 
 ## StockAppAPI
 
+### refresh_tickers(tickers)
+
+Pre-fetches prices (full history via yfinance) and news (VADER sentiment) for all given tickers into SQLite. Called automatically by all CLI scripts before running models. Use `--no-refresh` to skip.
+
+```python
+api = StockAppAPI()
+api.refresh_tickers(["AAPL", "MSFT", "BTC-USD"])  # download all
+# Now get_prediction() reads from DB — no network needed
+```
+
+Designed for GUI integration: one "Refresh" button calls this method, then all predictions are instant.
+
 ### get_prediction(config) → PredictionResult
 
 1. Data fetch (DB → yfinance if stale)
@@ -51,7 +63,7 @@ One class (`StockAppAPI`) exposes a simple interface while hiding the complexity
 | `data_downloader.py` + `db_manager.py` | Data layer |
 | `news_scraper.py` | Sentiment scoring |
 
-`backtest.py` is a thin CLI wrapper (~240 lines). `run_all.py` creates organized subdirectories in `results/`.
+`backtest.py` is a thin CLI wrapper (~240 lines). `run_all.py` creates organized subdirectories in `results/`. `refresh.py` calls `api.refresh_tickers()` without running models. All three (plus `main.py`) call `refresh_tickers()` upfront by default — `--no-refresh` skips the download for offline use.
 
 ## Backtester
 

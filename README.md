@@ -60,6 +60,37 @@ uv run python train.py --list
 
 Models saved to `models/{ticker}_{period}_{preset}.pt`. Auto-loaded in predictions (cluster > standard > quick priority).
 
+## Data Refresh
+
+All scripts download fresh data automatically before running. To skip downloads (offline mode), use `--no-refresh`.
+
+```bash
+# Standalone refresh (download only, no models)
+uv run python refresh.py
+uv run python refresh.py --stocks
+
+# Predictions download data automatically
+uv run python main.py --stocks
+
+# Offline mode (use cached data from DB)
+uv run python main.py --stocks --no-refresh
+uv run python backtest.py --stocks --days 50 --no-refresh
+uv run python run_all.py --stocks --days 20 --no-refresh
+```
+
+### Daily workflow
+
+```bash
+# 1. Morning: predictions (auto-refreshes data)
+uv run python main.py --stocks
+
+# 2. Or: refresh first, then run multiple analyses offline
+uv run python refresh.py
+uv run python main.py --stocks --no-refresh
+uv run python backtest.py --stocks --days 20 --fees 0.03 --no-refresh
+uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold --no-refresh
+```
+
 ## Backtesting
 
 Walk-forward testing with simulated trading P/L, configurable fees, stop-loss, buy-and-hold benchmark, and risk metrics (max drawdown, Sharpe ratio, Sortino ratio, yearly rolling performance).
@@ -73,6 +104,9 @@ uv run python backtest.py --stocks --days 20 --fees 0.03 --buy-hold
 
 # With stop-loss (runs each model twice: with and without SL for comparison)
 uv run python backtest.py --tickers AAPL --days 20 --fees 0.03 --stop-loss 2
+
+# Offline (skip data download)
+uv run python backtest.py --stocks --days 50 --no-refresh
 
 # Full details
 uv run python backtest.py --full --period 1y --buy-hold --stop-loss 2
@@ -134,6 +168,7 @@ marketpulse-ai/
 ├── backtest.py              # CLI — model evaluation
 ├── train.py                 # CLI — LSTM training
 ├── run_all.py               # CLI — batch backtest (organized subdirectories)
+├── refresh.py               # CLI — download latest prices + news (no models)
 ├── test_pipeline.py         # 13 offline tests
 ├── pyproject.toml           # Dependencies & build config
 ├── Containerfile            # Podman/Docker build

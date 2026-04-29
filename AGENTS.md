@@ -14,6 +14,7 @@ main.py                     → CLI: prediction reports (--stocks/--crypto/--all
 backtest.py                 → CLI: model evaluation (--full/--compare-periods/--output/--stop-loss)
 train.py                    → CLI: LSTM training (--preset quick/standard/cluster)
 run_all.py                  → CLI: batch runner (organized subdirectories in results/)
+refresh.py                  → CLI: download latest prices + news (no models, just data)
 test_pipeline.py            → 13 offline tests
 
 interface/
@@ -109,6 +110,15 @@ uv run python backtest.py --compare-periods --output results.csv
 # Batch runner
 uv run python run_all.py --stocks --days 50 --fees 0.03 --stop-loss 2 --buy-hold
 # → results/stocks_50d_fee003_sl2_bh/{AAPL,MSFT,...,_summary}.csv
+
+# Data refresh (no models, just download)
+uv run python refresh.py
+uv run python refresh.py --stocks
+
+# All scripts auto-refresh by default. Skip with --no-refresh:
+uv run python main.py --stocks --no-refresh
+uv run python backtest.py --stocks --days 50 --no-refresh
+uv run python run_all.py --stocks --days 20 --no-refresh
 ```
 
 ## Common tasks
@@ -124,6 +134,8 @@ uv run python run_all.py --stocks --days 50 --fees 0.03 --stop-loss 2 --buy-hold
 ## Architecture notes
 
 - `backtest.py` is a thin CLI wrapper (~240 lines). Logic lives in `backtester.py` and `backtest_helpers.py`.
+- All scripts call `api.refresh_tickers(tickers)` upfront (prices + news → SQLite). `--no-refresh` skips this for offline use.
+- `api.refresh_tickers()` is the single refresh method — used by refresh.py, main.py, backtest.py, run_all.py, and future GUI.
 - `engine/utils.py` holds shared helpers used by both engine and interface layers.
 - Backtester computes: accuracy, P/L, PF, max drawdown, Sharpe, Sortino, streaks, B&H + B&H DD, yearly breakdown.
 - Sharpe = (mean daily return / std) × √252. Sortino = same but downside std only.

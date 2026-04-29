@@ -15,7 +15,7 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Evaluation
 
-- **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees, stop-loss, buy-and-hold benchmark, profit factor, max drawdown, Sharpe/Sortino ratios, streaks, yearly rolling performance, batch runner, CSV export, interpreting results.
+- **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees, stop-loss, buy-and-hold benchmark, profit factor, max drawdown, Sharpe/Sortino ratios, streaks, yearly rolling performance, data refresh, batch runner, CSV export, interpreting results.
 
 ## Architecture
 
