@@ -70,9 +70,12 @@ class TestBenchmarks:
         from engine.backtest_helpers import compute_benchmarks
         from engine.backtester import Backtester
 
+        # Benchmark data must be in DB first (simulates refresh step)
+        api.get_data("SPY", period="max")
+        api.get_data("QQQ", period="max")
+
         bt = Backtester(n_days=10)
         result = bt.run(api.knn, "k-NN", full_df, ticker="AAPL-FAKE")
-        # Should return SPY + QQQ (non-crypto ticker)
         bench = compute_benchmarks(api, "AAPL-FAKE", result.days)
         assert "SPY" in bench
         assert "QQQ" in bench

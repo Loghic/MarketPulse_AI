@@ -50,10 +50,8 @@ def compute_benchmarks(api, ticker: str, day_results) -> Dict[str, float]:
     Compute buy-and-hold return for benchmark indices over the same
     period as the backtest results.
 
-    For stocks: compares against SPY and QQQ.
-    For crypto: compares against BTC-USD (if the ticker isn't BTC itself).
-
-    Returns dict like {"SPY": 0.035, "QQQ": 0.042} (as decimals).
+    Reads directly from DB cache (no re-download). Benchmark data
+    should already be present from the upfront refresh step.
     """
     if not day_results:
         return {}
@@ -62,18 +60,18 @@ def compute_benchmarks(api, ticker: str, day_results) -> Dict[str, float]:
     if not benchmarks:
         return {}
 
-    # Date range from backtest results
-    start_date = day_results[0].date   # first test day
-    end_date = day_results[-1].date    # last test day
+    start_date = day_results[0].date
+    end_date = day_results[-1].date
 
     results = {}
     for bench in benchmarks:
         try:
-            df = api.get_data(bench, period="max")
+            # Read from DB only — no freshness check, no re-download
+            df = api.db.get_prices(bench)
             if df.empty:
+                log.warning(f"Benchmark {bench} not in DB. Run refresh first.")
                 continue
 
-            # Filter to the test period
             mask = (df["date"] >= start_date) & (df["date"] <= end_date)
             period_df = df[mask]
 
