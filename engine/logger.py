@@ -180,3 +180,4 @@ def epoch_progress(total: int, desc: str = "Training") -> Any:
         return tqdm(total=total, desc=f"  {desc}",
                     bar_format="{l_bar}{bar:30}{r_bar}")
     return _SimpleManualProgress(total, desc=desc)
+
