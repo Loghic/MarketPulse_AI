@@ -136,10 +136,16 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct,
 
     # Save individual ticker CSV
     ticker_file = run_dir / f"{ticker}.csv"
-    with open(ticker_file, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=all_rows[0].keys())
-        writer.writeheader()
-        writer.writerows(all_rows)
+    if all_rows:
+        all_keys = {}
+        for row in all_rows:
+            for k in row.keys():
+                all_keys[k] = None
+        with open(ticker_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()),
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(all_rows)
 
     # Find best combo by return
     best = max(all_combos, key=lambda c: (c["total_return"], c["accuracy"]))
@@ -239,8 +245,15 @@ def main():
     # --- Summary ---
     if best_per_ticker:
         summary_file = run_dir / "_summary.csv"
+        # Collect all possible keys (benchmark columns vary per ticker)
+        all_keys = {}
+        for b in best_per_ticker:
+            for k in b.keys():
+                all_keys[k] = None
+        fieldnames = list(all_keys.keys())
+
         with open(summary_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=best_per_ticker[0].keys())
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(best_per_ticker)
 

@@ -173,7 +173,12 @@ def export_rows(rows: list, output: str):
         if not output.endswith(".csv"):
             output += ".csv"
         with open(output, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            all_keys = {}
+            for row in rows:
+                for k in row.keys():
+                    all_keys[k] = None
+            writer = csv.DictWriter(f, fieldnames=list(all_keys.keys()),
+                                    extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
     print(f"\nResults exported to {output}")
