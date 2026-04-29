@@ -186,3 +186,13 @@ If no model beats buy-and-hold after fees, active trading doesn't work for that 
 ### Small sample bias
 
 With 5 days, one prediction swings accuracy by 20%. Use 20+ days. PF ∞ on 5 days = 5 lucky guesses.
+
+## Verification
+
+The backtester has 30 dedicated tests in `tests/test_backtester.py`:
+
+```bash
+uv run python -m pytest tests/test_backtester.py -v
+```
+
+Tests cover: fee math (round-trip = 2x per-side), stop-loss triggers on High/Low, max drawdown from known sequences, Sharpe/Sortino edge cases (all wins, few samples), streak calculation, yearly breakdown, B&H return correctness, and gross profit/loss sum.

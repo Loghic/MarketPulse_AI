@@ -163,20 +163,28 @@ Directory name encodes run parameters (`scope_days_fees_sl_bh`). Different runs 
 
 ```
 marketpulse-ai/
-├── config.py                # ★ Tickers, periods, fees, stop-loss defaults
+├── config.py                # ★ Tickers, periods, fees, stop-loss, benchmarks, logging mode
 ├── main.py                  # CLI — prediction reports
 ├── backtest.py              # CLI — model evaluation
 ├── train.py                 # CLI — LSTM training
 ├── run_all.py               # CLI — batch backtest (organized subdirectories)
 ├── refresh.py               # CLI — download latest prices + news (no models)
-├── test_pipeline.py         # 13 offline tests
+├── test_pipeline.py         # Quick smoke test (13 tests, no extra deps)
 ├── pyproject.toml           # Dependencies & build config
 ├── Containerfile            # Podman/Docker build
 ├── AGENTS.md                # AI assistant context file
 │
+├── tests/                   # Comprehensive pytest suite (77 tests)
+│   ├── conftest.py          # Shared fixtures (mock data, patched yfinance)
+│   ├── test_features.py     # Feature matrix shape, NaN, edge cases
+│   ├── test_models.py       # k-NN, LinReg, LSTM predict + errors
+│   ├── test_backtester.py   # P/L, fees, stop-loss, DD, Sharpe, streaks, yearly
+│   ├── test_api.py          # API facade, benchmarks, CSV export, sentiment
+│   └── test_logger.py       # Logger modes, progress bar, config sanity
+│
 ├── interface/
 │   ├── __init__.py
-│   └── api.py               # StockAppAPI facade
+│   └── api.py               # StockAppAPI facade (refresh, predict, data)
 │
 ├── engine/
 │   ├── __init__.py
@@ -186,7 +194,7 @@ marketpulse-ai/
 │   ├── lin_reg_model.py     # LinReg (naive + enhanced)
 │   ├── ai_model.py          # LSTM (train, save/load, predict, early stopping)
 │   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks)
-│   ├── backtest_helpers.py  # Shared helpers (display, export, period filtering)
+│   ├── backtest_helpers.py  # Shared helpers (display, export, benchmarks, model variants)
 │   ├── utils.py             # Common helpers shared across layers
 │   ├── data_downloader.py   # Yahoo Finance data
 │   ├── db_manager.py        # SQLite storage
@@ -210,11 +218,23 @@ marketpulse-ai/
 
 ## Testing
 
+Two test suites — quick smoke test and comprehensive pytest:
+
 ```bash
+# Quick smoke test (no extra dependencies, 13 tests)
 uv run python test_pipeline.py
+
+# Full pytest suite (77 tests, needs pytest)
+uv run python -m pytest tests/ -v
+
+# Run specific test file
+uv run python -m pytest tests/test_backtester.py -v
+
+# Run specific test class
+uv run python -m pytest tests/test_backtester.py::TestFees -v
 ```
 
-13 tests covering all models, features, sentiment, backtesting, fees, and error handling.
+Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L math, fees, stop-loss, risk metrics, streaks, yearly), benchmarks (SPY/QQQ/BTC), CSV export, sentiment, logger, config.
 
 ## Roadmap
 
@@ -230,6 +250,7 @@ uv run python test_pipeline.py
 - [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
 - [x] Centralized config, CLI filtering, CSV/JSON export
 - [x] Documentation (`docs/` + `AGENTS.md`)
+- [x] Pytest suite (77 tests: models, backtester, benchmarks, export, logger)
 - [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Visualization layer (Plotly/Matplotlib)
 - [ ] Web UI (Flask/FastAPI)

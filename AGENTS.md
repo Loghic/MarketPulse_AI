@@ -15,7 +15,15 @@ backtest.py                 → CLI: model evaluation (--full/--compare-periods/
 train.py                    → CLI: LSTM training (--preset quick/standard/cluster)
 run_all.py                  → CLI: batch runner (organized subdirectories in results/)
 refresh.py                  → CLI: download latest prices + news (no models, just data)
-test_pipeline.py            → 13 offline tests
+test_pipeline.py            → 13 offline smoke tests (no pytest needed)
+
+tests/                      → Comprehensive pytest suite (77 tests)
+  conftest.py               → Fixtures: mock prices, news, patched yfinance, api
+  test_features.py          → Feature matrix shape, NaN, edge cases
+  test_models.py            → k-NN, LinReg, LSTM predict + errors
+  test_backtester.py        → P/L math, fees, SL, DD, Sharpe, Sortino, streaks, yearly
+  test_api.py               → API facade, benchmarks, CSV export, sentiment
+  test_logger.py            → Logger modes, progress bar, config sanity
 
 interface/
   api.py                    → StockAppAPI facade — single entry point
@@ -42,11 +50,22 @@ docs/                       → In-depth docs for humans
 ## Config
 
 ```python
+# Tickers
 STOCKS = ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMD", "TSM", "ASML", "AVGO", "TSLA", "INTC"]
 CRYPTO = ["BTC-USD", "ETH-USD", "SOL-USD"]
 ALL_TICKERS = STOCKS + CRYPTO
 ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
-DEFAULT_TRADING_FEE_PCT = 0.05   # per side, round-trip = 2×
+
+# Logging: "cli" = INFO + progress bars, "gui" = WARNING only
+LOG_MODE = "cli"
+LOG_LEVEL = None  # override: "DEBUG", "INFO", "WARNING", "ERROR"
+
+# Benchmarks: stocks vs SPY+QQQ, crypto vs BTC-USD (excluding self)
+STOCK_BENCHMARKS = ["SPY", "QQQ"]
+CRYPTO_BENCHMARKS = ["BTC-USD"]
+
+# Trading
+DEFAULT_TRADING_FEE_PCT = 0.05   # per side, round-trip = 2x
 DEFAULT_STOP_LOSS_PCT = 0.0      # 0 = disabled
 ```
 
