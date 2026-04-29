@@ -14,6 +14,7 @@ from typing import Optional
 
 from interface.api import StockAppAPI
 from engine.backtester import Backtester
+from engine.logger import get_logger, progress_bar
 from engine.backtest_helpers import (
     filter_by_period, run_single_backtest, result_to_summary_row,
     result_to_daily_rows, export_rows, pf_str, compute_benchmarks,
@@ -26,6 +27,8 @@ from config import (
     DEFAULT_BACKTEST_DAYS, DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
     STOCK_BENCHMARKS, CRYPTO_BENCHMARKS,
 )
+
+log = get_logger("backtest")
 
 
 # ------------------------------------------------------------------
@@ -45,7 +48,7 @@ def run_backtest(tickers, n_days, full=False, period="max",
         all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
         api.refresh_tickers(all_to_refresh)
 
-    for ticker in tickers:
+    for ticker in progress_bar(tickers, desc="Backtesting"):
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
         print(f"\n{'=' * 70}")
         print(f" BACKTEST: {ticker} (last {n_days} days, period={period}"
@@ -131,7 +134,7 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
         all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
         api.refresh_tickers(all_to_refresh)
 
-    for ticker in tickers:
+    for ticker in progress_bar(tickers, desc="Comparing periods"):
         sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
         print(f"\n{'=' * 80}")
         print(f" PERIOD COMPARISON: {ticker} (holdout={n_days} days"

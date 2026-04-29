@@ -180,6 +180,7 @@ marketpulse-ai/
 │
 ├── engine/
 │   ├── __init__.py
+│   ├── logger.py            # Centralized logging + progress bars (cli/gui modes)
 │   ├── features.py          # Shared feature engineering
 │   ├── knn_model.py         # k-NN (naive + enhanced)
 │   ├── lin_reg_model.py     # LinReg (naive + enhanced)
@@ -226,6 +227,7 @@ uv run python test_pipeline.py
 - [x] Trading fees + stop-loss + buy-and-hold benchmark
 - [x] Risk metrics (max drawdown, Sharpe, Sortino, yearly rolling performance)
 - [x] Batch runner with organized output (`run_all.py`)
+- [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
 - [x] Centralized config, CLI filtering, CSV/JSON export
 - [x] Documentation (`docs/` + `AGENTS.md`)
 - [ ] FinBERT sentiment (finance-specific transformer)
@@ -234,4 +236,4 @@ uv run python test_pipeline.py
 
 ## Tech Stack
 
-Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · SQLite · uv
+Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · tqdm · SQLite · uv

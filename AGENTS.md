@@ -22,6 +22,7 @@ interface/
 
 engine/
   features.py               → Shared indicators (RSI, MACD, volatility, volume)
+  logger.py                 → Centralized logging + progress bars (tqdm/fallback)
   knn_model.py              → k-NN (naive + enhanced)
   lin_reg_model.py          → LinReg (naive + enhanced)
   ai_model.py               → LSTM (train/save/load/predict + early stopping)
@@ -130,6 +131,34 @@ uv run python run_all.py --stocks --days 20 --no-refresh
 **Add a feature:** Add to `features.py` → update `ALL_FEATURES` + `min_rows_needed()`.
 
 **Change defaults:** Edit `config.py` → `DEFAULT_TRADING_FEE_PCT`, `DEFAULT_STOP_LOSS_PCT`.
+
+## Logging & progress
+
+`engine/logger.py` provides centralized logging and progress bars. Two modes via `config.py → LOG_MODE`:
+
+| Mode | Log level | Progress bars | Use case |
+|---|---|---|---|
+| `"cli"` | INFO | tqdm (with fallback) | Terminal / development |
+| `"gui"` | WARNING | silent passthrough | Future web/desktop UI |
+
+```python
+from engine.logger import get_logger, progress_bar, epoch_progress
+
+log = get_logger(__name__)
+log.info("operational message")   # shown in cli, hidden in gui
+log.warning("something wrong")    # shown in both modes
+
+for ticker in progress_bar(tickers, desc="Predicting"):  # tqdm in cli, silent in gui
+    ...
+
+pbar = epoch_progress(100, desc="LSTM quick")  # manual update for training
+for epoch in range(100):
+    pbar.update(1)
+    pbar.set_postfix_str(f"loss={loss:.4f}")
+pbar.close()
+```
+
+Convention: `print()` for user-facing tables/reports. `log.*` for operational messages.
 
 ## Architecture notes
 

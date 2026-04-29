@@ -59,6 +59,7 @@ Designed for GUI integration: one "Refresh" button calls this method, then all p
 | `backtest_helpers.py` | Shared: period filtering, direction accuracy, export builders, display functions, model variant runner (including SL side-by-side logic) |
 | `utils.py` | Common helpers shared across engine and interface (e.g. `period_to_start_date`) |
 | `features.py` | Technical indicators + feature matrix building |
+| `logger.py` | Centralized logging (cli/gui modes) + progress bars (tqdm with fallback) |
 | `knn_model.py` / `lin_reg_model.py` / `ai_model.py` | Model implementations |
 | `data_downloader.py` + `db_manager.py` | Data layer |
 | `news_scraper.py` | Sentiment scoring |

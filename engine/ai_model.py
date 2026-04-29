@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import Tuple, List, Optional
 from datetime import datetime
 
-from sklearn.preprocessing import StandardScaler
-
 from engine.features import (
     ALL_FEATURES, DEFAULT_FEATURES, validate_features, feature_label,
     compute_feature_columns, build_feature_vector, min_rows_needed,
 )
+from engine.logger import get_logger, epoch_progress
+
+log = get_logger(__name__)
 
 # Try to import torch — graceful fallback if not installed
 try:
@@ -160,7 +161,6 @@ class AIModel:
         self.config = TRAINING_PRESETS[preset]
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.network = None
-        self.scaler = None
         self.trained = False
         self.training_info = {}
 
@@ -264,22 +264,10 @@ class AIModel:
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_train, y_val = y[:split_idx], y[split_idx:]
 
-        # Normalize per-feature across all timesteps (fit on train only)
-        n_train, seq_len, n_feat = X_train.shape
-        self.scaler = StandardScaler()
-        X_train = self.scaler.fit_transform(
-            X_train.reshape(-1, n_feat)
-        ).reshape(n_train, seq_len, n_feat)
-        n_val = X_val.shape[0]
-        X_val = self.scaler.transform(
-            X_val.reshape(-1, n_feat)
-        ).reshape(n_val, seq_len, n_feat)
-
         if verbose:
-            print(f"  Training LSTM ({self.preset}): {len(X_train)} train, "
-                  f"{len(X_val)} val samples")
-            print(f"  Sequence shape: ({self.window_size}, {X.shape[2]}), "
-                  f"Device: {self.device}")
+            log.info(f"Training LSTM ({self.preset}): {len(X_train)} train, "
+                     f"{len(X_val)} val, shape=({self.window_size}, {X.shape[2]}), "
+                     f"device={self.device}")
 
         # Create network
         self.network = _LSTMNetwork(
@@ -322,6 +310,9 @@ class AIModel:
         stopped_early = False
         start_time = datetime.now()
 
+        pbar = epoch_progress(self.config["epochs"],
+                              desc=f"LSTM {self.preset}") if verbose else None
+
         for epoch in range(self.config["epochs"]):
             # Train
             self.network.train()
@@ -362,21 +353,27 @@ class AIModel:
             if scheduler:
                 scheduler.step(val_loss)
 
-            # Progress logging
-            if verbose and (epoch + 1) % max(1, self.config["epochs"] // 10) == 0:
-                print(f"    Epoch {epoch + 1:>5}/{self.config['epochs']}  "
-                      f"train_loss={avg_train_loss:.4f}  "
-                      f"val_loss={val_loss:.4f}  val_acc={val_acc:.1%}"
-                      f"  (no improvement: {epochs_without_improvement}/{patience})")
+            # Progress bar update
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix_str(
+                    f"loss={avg_train_loss:.4f} val={val_loss:.4f} "
+                    f"acc={val_acc:.0%} wait={epochs_without_improvement}/{patience}"
+                )
 
             # Early stopping
             if epochs_without_improvement >= patience:
                 stopped_early = True
-                if verbose:
-                    print(f"    Early stopping at epoch {epoch + 1} "
-                          f"(no improvement for {patience} epochs, "
-                          f"best val_loss={best_val_loss:.4f})")
+                if pbar:
+                    pbar.close()
+                log.info(f"Early stopping at epoch {epoch + 1} "
+                         f"(no improvement for {patience} epochs, "
+                         f"best val_loss={best_val_loss:.4f})")
                 break
+        else:
+            # Loop completed without break
+            if pbar:
+                pbar.close()
 
         # Restore best model
         if best_state:
@@ -414,9 +411,9 @@ class AIModel:
             stop_info = (f"early stop at epoch {len(loss_history)}"
                          if stopped_early
                          else f"all {self.config['epochs']} epochs")
-            print(f"  Training complete: {duration:.1f}s ({stop_info}), "
-                  f"val_accuracy={final_acc:.1%}, "
-                  f"best_val_loss={best_val_loss:.4f}")
+            log.info(f"Training complete: {duration:.1f}s ({stop_info}), "
+                     f"val_accuracy={final_acc:.1%}, "
+                     f"best_val_loss={best_val_loss:.4f}")
 
         return self.training_info
 
@@ -446,10 +443,9 @@ class AIModel:
             "features": self.features,
             "window_size": self.window_size,
             "preset": self.preset,
-            "scaler": self.scaler,
         }, path)
 
-        print(f"  Model saved to {path}")
+        log.info(f"Model saved to {path}")
 
     def load(self, path: str | Path) -> bool:
         """
@@ -470,7 +466,6 @@ class AIModel:
         self.preset = checkpoint["preset"]
         self.config = checkpoint["config"]
         self.training_info = checkpoint.get("training_info", {})
-        self.scaler = checkpoint.get("scaler", None)
         self._features_per_step = self._count_features_per_step()
 
         # Rebuild and load network
@@ -558,12 +553,9 @@ class AIModel:
             return "Insufficient data", 0.0
 
         # Take the last window_size rows as the input sequence
-        last_seq = df_feat[step_cols].iloc[-self.window_size:].values.astype(np.float32)
+        last_seq = df_feat[step_cols].iloc[-self.window_size:].values
         if np.isnan(last_seq).any():
             return "Data error", 0.0
-
-        if self.scaler is not None:
-            last_seq = self.scaler.transform(last_seq).astype(np.float32)
 
         # Predict
         self.network.eval()

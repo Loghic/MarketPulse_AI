@@ -34,6 +34,7 @@ from datetime import datetime
 
 from interface.api import StockAppAPI
 from engine.backtester import Backtester
+from engine.logger import get_logger, progress_bar
 from engine.backtest_helpers import (
     filter_by_period, run_single_backtest, result_to_summary_row,
     compute_benchmarks, pf_str,
@@ -43,6 +44,8 @@ from config import (
     DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
     STOCK_BENCHMARKS, CRYPTO_BENCHMARKS,
 )
+
+log = get_logger("run_all")
 
 
 RESULTS_DIR = Path("results")
@@ -225,8 +228,7 @@ def main():
 
     best_per_ticker = []
 
-    for i, ticker in enumerate(tickers, 1):
-        print(f"[{i}/{len(tickers)}] {ticker}...")
+    for ticker in progress_bar(tickers, desc="Batch backtest"):
         best = run_ticker_comparison(
             api, ticker, args.days, args.fees, args.stop_loss,
             args.buy_hold, run_dir,

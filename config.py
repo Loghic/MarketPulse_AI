@@ -47,8 +47,15 @@ DEFAULT_PERIOD = "max"
 DEFAULT_BACKTEST_DAYS = 5
 
 # ------------------------------------------------------------------
-# Benchmarks (for comparison in backtesting)
+# Logging & display mode
 # ------------------------------------------------------------------
+
+# "cli" = verbose logging + progress bars (for terminal use)
+# "gui" = minimal logging, WARNING+ only (for future web/desktop UI)
+LOG_MODE = "cli"
+
+# Log level override (DEBUG, INFO, WARNING, ERROR). None = auto from LOG_MODE.
+LOG_LEVEL = None
 
 # Stocks are compared against broad market indices
 STOCK_BENCHMARKS = ["SPY", "QQQ"]  # S&P 500, Nasdaq 100

@@ -13,24 +13,16 @@ from typing import Optional, List, Dict
 import numpy as np
 import pandas as pd
 from engine.backtester import BacktestResult
+from engine.logger import get_logger
+from engine.utils import period_to_start_date
 from config import ALL_PERIODS, get_benchmarks
+
+log = get_logger("helpers")
 
 
 # ------------------------------------------------------------------
 # Data helpers
 # ------------------------------------------------------------------
-
-def period_to_start_date(period: str) -> date:
-    """Convert a period string to the earliest date to include."""
-    today = datetime.now().date()
-    mapping = {
-        "1mo": today - timedelta(days=30),
-        "1y":  today - timedelta(days=365),
-        "2y":  today - timedelta(days=730),
-        "5y":  today - timedelta(days=1825),
-        "max": date(1900, 1, 1),
-    }
-    return mapping.get(period, today - timedelta(days=365))
 
 
 def filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
@@ -232,8 +224,8 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
             if has_news:
                 variants.append((lstm_model, "LSTM + News", False, sentiment_score))
         else:
-            print(f"  NOTE: No trained LSTM for {ticker} (period={period}). "
-                  f"Train: uv run python train.py --ticker {ticker} --period {period}")
+            log.info(f"No trained LSTM for {ticker} (period={period}). "
+                     f"Train: uv run python train.py --ticker {ticker} --period {period}")
 
     # If stop-loss is enabled, also create a no-SL backtester for comparison
     has_sl = backtester.stop_loss_pct > 0

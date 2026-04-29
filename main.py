@@ -6,7 +6,10 @@ Tickers and periods are configured in config.py.
 
 import argparse
 from interface.api import StockAppAPI, PredictionConfig
+from engine.logger import get_logger, progress_bar
 from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
+
+log = get_logger("main")
 
 
 def run_prediction(api: StockAppAPI, ticker: str, period: str,
@@ -141,7 +144,7 @@ def main():
     else:
         tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
 
-    print(f"Tickers: {tickers}")
+    log.info(f"Tickers: {tickers}")
 
     api = StockAppAPI()
 
@@ -149,7 +152,7 @@ def main():
     if not args.no_refresh:
         api.refresh_tickers(tickers)
 
-    for ticker in tickers:
+    for ticker in progress_bar(tickers, desc="Predicting"):
         print_report(api, ticker)
 
 

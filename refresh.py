@@ -1,10 +1,6 @@
 """
 refresh.py – Download latest prices and news for all tickers.
 
-Pre-fetches data into SQLite so that main.py, backtest.py, and run_all.py
-don't have to wait for downloads. Same as running main.py without --no-refresh,
-but without running any models.
-
 Usage:
     uv run python refresh.py              # all tickers
     uv run python refresh.py --stocks     # only stocks
@@ -12,11 +8,16 @@ Usage:
     uv run python refresh.py --tickers AAPL NVDA BTC-USD
 """
 
+import sys
 import argparse
-from datetime import datetime
+
+sys.stdout.reconfigure(encoding="utf-8")
 
 from interface.api import StockAppAPI
+from engine.logger import get_logger
 from config import ALL_TICKERS, STOCKS, CRYPTO
+
+log = get_logger("refresh")
 
 
 def main():
@@ -39,17 +40,8 @@ def main():
     else:
         tickers = ALL_TICKERS
 
-    print(f"{'=' * 60}")
-    print(f" DATA REFRESH: {len(tickers)} tickers")
-    print(f" {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'=' * 60}\n")
-
     api = StockAppAPI()
     api.refresh_tickers(tickers)
-
-    print(f"{'=' * 60}")
-    print(f" DONE — DB: data/market_data.db")
-    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
