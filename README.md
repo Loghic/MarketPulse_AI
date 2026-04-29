@@ -1,5 +1,7 @@
 # MarketPulse AI
 
+![Tests](https://github.com/Loghic/MarketPulse_AI/actions/workflows/tests.yml/badge.svg)
+
 Stock prediction engine combining k-NN, Linear Regression, and LSTM neural networks with VADER sentiment analysis. Built as a modular system with a clean separation between data layer, model engine, and interface — ready to plug into a web or desktop UI.
 
 > **Disclaimer:** This is an educational/research project. Predictions are not financial advice.
