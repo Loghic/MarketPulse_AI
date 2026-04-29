@@ -26,3 +26,9 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 - `test_pipeline.py` — Quick 13-test smoke test (no pytest needed)
 - `tests/` — Comprehensive 77-test pytest suite: models, features, backtester (fees, SL, DD, Sharpe, streaks), benchmarks, export, logger
+
+## CI / CD
+
+- `.github/workflows/tests.yml` — Three parallel jobs: **lint** (ruff), **typecheck** (mypy), **test** (pytest + coverage upload). Runs on Python 3.12 + 3.13 matrix.
+- `.codecov.yml` — Coverage thresholds (60% target, 50% patch).
+- Coverage badge and test results visible on [Codecov](https://codecov.io).

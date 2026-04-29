@@ -1,7 +1,7 @@
 # MarketPulse AI
 
-![Tests](https://github.com/Loghic/MarketPulse_AI/actions/workflows/tests.yml/badge.svg)
-![codecov](https://codecov.io/gh/Loghic/MarketPulse_AI/graph/badge.svg)
+[![Tests](https://github.com/Loghic/MarketPulse_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/loghi-gh/mp_ai/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/Loghic/MarketPulse_AI/graph/badge.svg)](https://codecov.io/gh/loghi-gh/mp_ai)
 
 Stock prediction engine combining k-NN, Linear Regression, and LSTM neural networks with VADER sentiment analysis. Built as a modular system with a clean separation between data layer, model engine, and interface — ready to plug into a web or desktop UI.
 
@@ -166,6 +166,10 @@ Directory name encodes run parameters (`scope_days_fees_sl_bh`). Different runs 
 
 ```
 marketpulse-ai/
+├── .github/
+│   └── workflows/
+│       └── tests.yml            # CI: lint (ruff) + typecheck (mypy) + test (pytest+coverage)
+├── .codecov.yml                 # Coverage thresholds and Codecov config
 ├── config.py                # ★ Tickers, periods, fees, stop-loss, benchmarks, logging mode
 ├── main.py                  # CLI — prediction reports
 ├── backtest.py              # CLI — model evaluation
@@ -228,16 +232,51 @@ Two test suites — quick smoke test and comprehensive pytest:
 uv run python test_pipeline.py
 
 # Full pytest suite (77 tests, needs pytest)
-uv run python -m pytest tests/ -v
+uv run python -m pytest
 
-# Run specific test file
+# Run specific test file or class
 uv run python -m pytest tests/test_backtester.py -v
-
-# Run specific test class
 uv run python -m pytest tests/test_backtester.py::TestFees -v
 ```
 
 Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L math, fees, stop-loss, risk metrics, streaks, yearly), benchmarks (SPY/QQQ/BTC), CSV export, sentiment, logger, config.
+
+## CI / CD
+
+Every push and PR to `main` triggers three parallel jobs via GitHub Actions:
+
+| Job | Tool | What it checks | Blocking? |
+|---|---|---|---|
+| **lint** | Ruff | Unused imports, import order, deprecated syntax, common bugs, formatting | Yes |
+| **typecheck** | Mypy | Type annotations, None safety, wrong argument types | Yes |
+| **test** | Pytest | 77 tests + coverage upload to Codecov (Python 3.12 + 3.13 matrix) | Yes |
+
+### Static analysis locally
+
+```bash
+# Lint (must pass before push)
+uv run ruff check .
+uv run ruff format --check .
+
+# Auto-fix lint issues
+uv run ruff check --fix .
+uv run ruff format .
+
+# Type check
+uv run mypy engine/ interface/
+```
+
+### Coverage
+
+Coverage is uploaded to [Codecov](https://codecov.io) after each test run. Current coverage is shown in the badge at the top of this README. Core engine modules are at 90%+, overall ~59% (LSTM module pulls it down since PyTorch isn't in CI).
+
+### Adding new code
+
+When adding new modules, follow these rules to keep CI green:
+
+- **Ruff**: imports must be sorted, no unused imports, use `list`/`dict` instead of `typing.List`/`typing.Dict`
+- **Mypy**: add `if X is None` guards before using Optional values. Strict modules (`engine/backtester.py`, `engine/utils.py`) require full type annotations on all functions.
+- **Tests**: add tests in `tests/` for new features. Run `uv run python -m pytest` before pushing.
 
 ## Roadmap
 
@@ -254,6 +293,7 @@ Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L
 - [x] Centralized config, CLI filtering, CSV/JSON export
 - [x] Documentation (`docs/` + `AGENTS.md`)
 - [x] Pytest suite (77 tests: models, backtester, benchmarks, export, logger)
+- [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
 - [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Visualization layer (Plotly/Matplotlib)
 - [ ] Web UI (Flask/FastAPI)

@@ -140,6 +140,18 @@ def predict(self, df, use_time_weights=False, sentiment_score=0.0) -> Tuple[str,
     """Returns ("UP"/"DOWN", confidence) or ("Insufficient data"/"Model not trained", 0.0)"""
 ```
 
+## Code quality
+
+Static analysis is enforced via CI (`.github/workflows/tests.yml`):
+
+| Tool | Config in | What it enforces |
+|---|---|---|
+| **Ruff** | `pyproject.toml [tool.ruff]` | Import ordering, unused imports, modern syntax (`list` not `List`), bugbear |
+| **Mypy** | `pyproject.toml [tool.mypy]` | Type safety. Strict on `backtester.py` + `utils.py`. `ai_model.py` excluded (torch). |
+| **Pytest** | `pyproject.toml [tool.pytest]` | 77 tests, coverage to Codecov |
+
+To add a new strict module, move it from the lenient override to the strict override in `pyproject.toml` and add type annotations to all functions.
+
 ## Adding a web UI
 
 ```python

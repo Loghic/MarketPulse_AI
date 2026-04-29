@@ -9,6 +9,9 @@ Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, and
 ## Project layout
 
 ```
+.github/workflows/tests.yml    → CI: lint (ruff) + typecheck (mypy) + test (pytest+codecov)
+.codecov.yml                    → Coverage thresholds (60% target)
+
 config.py                   → ★ Tickers, periods, fees, stop-loss defaults. Edit to add assets.
 main.py                     → CLI: prediction reports (--stocks/--crypto/--all/--tickers)
 backtest.py                 → CLI: model evaluation (--full/--compare-periods/--output/--stop-loss)
@@ -150,6 +153,24 @@ uv run python run_all.py --stocks --days 20 --no-refresh
 **Add a feature:** Add to `features.py` → update `ALL_FEATURES` + `min_rows_needed()`.
 
 **Change defaults:** Edit `config.py` → `DEFAULT_TRADING_FEE_PCT`, `DEFAULT_STOP_LOSS_PCT`.
+
+## CI / CD
+
+GitHub Actions (`.github/workflows/tests.yml`) runs on every push/PR to `main`:
+
+```
+lint       → ruff check + ruff format --check    (blocking)
+typecheck  → mypy engine/ interface/              (blocking)
+test       → pytest --cov + upload to Codecov     (Python 3.12 + 3.13 matrix)
+```
+
+Coverage uploaded to Codecov (`.codecov.yml` sets 60% target).
+
+**Before pushing:** `ruff check --fix . && ruff format . && mypy engine/ interface/ && python -m pytest`
+
+**Ruff rules:** unused imports, import sorting, `list`/`dict` instead of `typing.List`/`Dict`, bugbear, simplify. Tests exempt from annotation rules.
+
+**Mypy:** strict on `engine/backtester.py` and `engine/utils.py` (require full annotations). Lenient on rest. `engine/ai_model.py` excluded (torch Optional patterns).
 
 ## Logging & progress
 
