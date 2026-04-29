@@ -64,3 +64,9 @@ DEFAULT_BACKTEST_DAYS = 5
 # We buy AND sell each day → fee is applied TWICE per round-trip.
 # Default 0.05% per side = 0.10% round-trip.
 DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)
+
+# Stop-loss as percentage. If the position moves against you by this much
+# intraday, it's automatically closed at the stop-loss price.
+# 0 = disabled (hold until end of day regardless).
+# 2.0 = close if price drops 2% from entry (long) or rises 2% (short).
+DEFAULT_STOP_LOSS_PCT = 0.0  # disabled by default

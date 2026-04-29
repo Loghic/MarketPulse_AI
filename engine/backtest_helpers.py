@@ -7,13 +7,29 @@ and display/print functions.
 
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from typing import Optional, List
 
 import pandas as pd
 from engine.backtester import BacktestResult
-from engine.utils import period_to_start_date
 from config import ALL_PERIODS
+
+
+# ------------------------------------------------------------------
+# Data helpers
+# ------------------------------------------------------------------
+
+def period_to_start_date(period: str) -> date:
+    """Convert a period string to the earliest date to include."""
+    today = datetime.now().date()
+    mapping = {
+        "1mo": today - timedelta(days=30),
+        "1y":  today - timedelta(days=365),
+        "2y":  today - timedelta(days=730),
+        "5y":  today - timedelta(days=1825),
+        "max": date(1900, 1, 1),
+    }
+    return mapping.get(period, today - timedelta(days=365))
 
 
 def filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
@@ -43,7 +59,7 @@ def direction_accuracy(result: BacktestResult):
 def result_to_summary_row(r: BacktestResult, ticker: str, period: str) -> dict:
     """Convert a BacktestResult to a summary export row."""
     up_c, up_t, dn_c, dn_t = direction_accuracy(r)
-    return {
+    row = {
         "ticker": ticker,
         "period": period,
         "model": r.model_name,
@@ -54,6 +70,8 @@ def result_to_summary_row(r: BacktestResult, ticker: str, period: str) -> dict:
         "buy_hold_return": round(r.buy_hold_return, 8),
         "profit_factor": round(r.profit_factor, 4),
         "fee_pct": r.fee_pct,
+        "stop_loss_pct": r.stop_loss_pct,
+        "stopped_out": r.stopped_out_count,
         "win_trades": r.win_trades,
         "loss_trades": r.loss_trades,
         "avg_win": round(r.avg_win, 8),
@@ -69,6 +87,7 @@ def result_to_summary_row(r: BacktestResult, ticker: str, period: str) -> dict:
         "down_accuracy": round(dn_c / dn_t, 4) if dn_t > 0 else None,
         "down_predictions": dn_t,
     }
+    return row
 
 
 def result_to_daily_rows(r: BacktestResult, ticker: str, period: str) -> List[dict]:
@@ -87,6 +106,8 @@ def result_to_daily_rows(r: BacktestResult, ticker: str, period: str) -> List[di
             "trade_pnl": round(d.trade_pnl, 8),
             "trade_pnl_net": round(d.trade_pnl_net, 8),
             "fee_pct": r.fee_pct,
+            "stopped_out": d.stopped_out,
+            "exit_price": round(d.exit_price, 4),
             "close_before": round(d.close_before, 4),
             "close_actual": round(d.close_actual, 4),
         })
@@ -116,7 +137,12 @@ def export_rows(rows: list, output: str):
 # ------------------------------------------------------------------
 
 def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
-    """Run backtest for one ticker × one period. Returns list of BacktestResult."""
+    """
+    Run backtest for one ticker × one period. Returns list of BacktestResult.
+
+    If backtester has stop-loss enabled, each model runs twice:
+    once without SL (baseline) and once with SL — so you can compare.
+    """
     filtered = filter_by_period(df, period)
     if len(filtered) < n_days + 20:
         return []
@@ -154,10 +180,31 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
             print(f"  NOTE: No trained LSTM for {ticker} (period={period}). "
                   f"Train: uv run python train.py --ticker {ticker} --period {period}")
 
+    # If stop-loss is enabled, also create a no-SL backtester for comparison
+    has_sl = backtester.stop_loss_pct > 0
+    if has_sl:
+        from engine.backtester import Backtester as BT
+        backtester_no_sl = BT(
+            n_days=backtester.n_days,
+            fee_pct=backtester.fee_pct,
+            stop_loss_pct=0.0,
+        )
+
     results = []
     for model, name, tw, sent in variants:
+        # Run without SL first (baseline)
+        if has_sl:
+            result_no_sl = backtester_no_sl.run(
+                model=model, model_name=name, df=filtered,
+                ticker=ticker, use_time_weights=tw, sentiment_score=sent,
+            )
+            results.append(result_no_sl)
+
+        # Run with SL (or the only run if SL is disabled)
         result = backtester.run(
-            model=model, model_name=name, df=filtered,
+            model=model,
+            model_name=f"{name} SL{backtester.stop_loss_pct:g}%" if has_sl else name,
+            df=filtered,
             ticker=ticker, use_time_weights=tw, sentiment_score=sent,
         )
         results.append(result)
@@ -176,17 +223,22 @@ def pf_str(pf: float) -> str:
 
 def print_summary_table(results: List[BacktestResult], show_buy_hold: bool = False):
     """Print the summary table."""
+    has_sl = any(r.stop_loss_pct > 0 for r in results)
     header = (f"  {'MODEL':<25} | {'ACC.':<8} | {'RETURN':<10} | "
               f"{'P.FACTOR':<10} | {'W/L':<8}")
+    if has_sl:
+        header += f" | {'SL':<4}"
     if show_buy_hold:
         header += f" | {'B&H':<10}"
     print(header)
-    print(f"  {'-' * (75 + (13 if show_buy_hold else 0))}")
+    print(f"  {'-' * (75 + (7 if has_sl else 0) + (13 if show_buy_hold else 0))}")
 
     for r in results:
         line = (f"  {r.model_name:<25} | {r.accuracy:<8.1%} | "
                 f"{r.total_return:<+10.4%} | {pf_str(r.profit_factor):<10} | "
                 f"{r.win_trades}/{r.loss_trades:<5}")
+        if has_sl:
+            line += f" | {r.stopped_out_count:<4}"
         if show_buy_hold:
             line += f" | {r.buy_hold_return:<+10.4%}"
         print(line)
@@ -303,6 +355,16 @@ def print_profit_analysis(all_results, show_buy_hold: bool = False):
             beat = sum(1 for r in all_results if r.total_return > bh)
             print(f"\n  Buy & Hold return:    {bh:+.4%}")
             print(f"  Models beating B&H:   {beat}/{len(all_results)}")
+
+        if any(r.stop_loss_pct > 0 for r in all_results):
+            total_stopped = sum(r.stopped_out_count for r in all_results)
+            total_trades = sum(r.test_days for r in all_results)
+            print(f"\n  Stop-loss triggers:   {total_stopped}/{total_trades} trades "
+                  f"({total_stopped/total_trades:.0%})")
+            most_stopped = max(all_results, key=lambda r: r.stopped_out_count)
+            if most_stopped.stopped_out_count > 0:
+                print(f"  Most stopped out:     {most_stopped.model_name} "
+                      f"({most_stopped.stopped_out_count}/{most_stopped.test_days})")
 
 
 def print_next_day_forecast(all_results):

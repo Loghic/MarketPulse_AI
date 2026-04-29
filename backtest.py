@@ -23,7 +23,7 @@ from engine.backtest_helpers import (
 )
 from config import (
     ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS, DEFAULT_PERIOD,
-    DEFAULT_BACKTEST_DAYS, DEFAULT_TRADING_FEE_PCT,
+    DEFAULT_BACKTEST_DAYS, DEFAULT_TRADING_FEE_PCT, DEFAULT_STOP_LOSS_PCT,
 )
 
 
@@ -32,16 +32,17 @@ from config import (
 # ------------------------------------------------------------------
 
 def run_backtest(tickers, n_days, full=False, period="max",
-                 output=None, fee_pct=0.0, buy_hold=False):
+                 output=None, fee_pct=0.0, stop_loss_pct=0.0, buy_hold=False):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct)
+    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_export_rows = []
 
     for ticker in tickers:
+        sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
         print(f"\n{'=' * 70}")
         print(f" BACKTEST: {ticker} (last {n_days} days, period={period}"
-              f"{f', fees={fee_pct}%' if fee_pct > 0 else ''})")
+              f"{f', fees={fee_pct}%' if fee_pct > 0 else ''}{sl_str})")
         print(f"{'=' * 70}")
 
         df = api.get_data(ticker, period="max")
@@ -108,16 +109,17 @@ def run_backtest(tickers, n_days, full=False, period="max",
 # ------------------------------------------------------------------
 
 def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
-                        buy_hold=False):
+                        stop_loss_pct=0.0, buy_hold=False):
     """Run backtest across all periods, find optimal model+period."""
     api = StockAppAPI()
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct)
+    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_export_rows = []
 
     for ticker in tickers:
+        sl_str = f", SL={stop_loss_pct}%" if stop_loss_pct > 0 else ""
         print(f"\n{'=' * 80}")
         print(f" PERIOD COMPARISON: {ticker} (holdout={n_days} days"
-              f"{f', fees={fee_pct}%' if fee_pct > 0 else ''})")
+              f"{f', fees={fee_pct}%' if fee_pct > 0 else ''}{sl_str})")
         print(f"{'=' * 80}")
 
         df = api.get_data(ticker, period="max")
@@ -183,6 +185,8 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
                         r.longest_win_streak, r.longest_loss_streak,
                         r.avg_win_streak, r.avg_loss_streak,
                         r.buy_hold_return,
+                        r.max_drawdown, r.sharpe_ratio, r.sortino_ratio,
+                        r.buy_hold_max_drawdown,
                     ))
                     all_export_rows.append(
                         result_to_summary_row(r, ticker, period)
@@ -230,12 +234,13 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
         # Top 5
         unique_rets = len(set(round(c[5], 8) for c in all_combos))
         if unique_rets > 1:
-            cols = f"  {'#':<4} {'MODEL':<25} {'PERIOD':<8} {'RETURN':<12} {'ACC.':<8} {'P.FACTOR':<10}"
+            cols = (f"  {'#':<4} {'MODEL':<25} {'PERIOD':<8} {'RETURN':<12} "
+                    f"{'PF':<8} {'MAX DD':<10} {'SHARPE':<8}")
             if buy_hold:
                 cols += f" {'B&H':<12}"
             print(f"\n  Top 5 by return:")
             print(cols)
-            print(f"  {'-' * (72 + (14 if buy_hold else 0))}")
+            print(f"  {'-' * (80 + (14 if buy_hold else 0))}")
             shown = set()
             rank = 0
             for c in all_combos:
@@ -246,7 +251,8 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
                 rank += 1
                 marker = " ★" if c[5] == top_ret else ""
                 line = (f"  {rank:<4} {c[0]:<25} {c[1]:<8} "
-                        f"{c[5]:<+12.4%} {c[2]:<8.0%} {pf_str(c[6]):<10}"
+                        f"{c[5]:<+12.4%} {pf_str(c[6]):<8} "
+                        f"{c[12]:<+10.4%} {c[13]:<8.2f}"
                         f"{marker}")
                 if buy_hold:
                     line += f" {c[11]:<+12.4%}"
@@ -288,12 +294,34 @@ def run_compare_periods(tickers, n_days, output=None, fee_pct=0.0,
         # Buy-and-hold comparison
         if buy_hold and all_combos:
             bh = all_combos[0][11]
+            bh_dd = all_combos[0][15]
             beat = sum(1 for c in all_combos if c[5] > bh)
             total = len(all_combos)
             print(f"\n  {'BUY & HOLD COMPARISON':=^70}")
-            print(f"  Buy & Hold return:    {bh:+.4%}")
+            print(f"  Buy & Hold return:    {bh:+.4%}  (max DD: {bh_dd:+.4%})")
             print(f"  Models beating B&H:   {beat}/{total} "
                   f"({beat/total:.0%})")
+
+        # Risk-adjusted ranking (by Sharpe)
+        if len(all_combos) > 1:
+            by_sharpe = sorted(all_combos, key=lambda c: c[13], reverse=True)
+            print(f"\n  {'RISK-ADJUSTED RANKING (by Sharpe)':=^70}")
+            print(f"  {'#':<4} {'MODEL':<25} {'PERIOD':<8} {'SHARPE':<8} "
+                  f"{'SORTINO':<8} {'MAX DD':<10} {'RETURN':<12}")
+            print(f"  {'-' * 80}")
+            shown = set()
+            rank = 0
+            for c in by_sharpe:
+                key = (c[0], c[1])
+                if key in shown:
+                    continue
+                shown.add(key)
+                rank += 1
+                sortino_s = f"{c[14]:.2f}" if c[14] < 100 else "∞"
+                print(f"  {rank:<4} {c[0]:<25} {c[1]:<8} {c[13]:<8.2f} "
+                      f"{sortino_s:<8} {c[12]:<+10.4%} {c[5]:<+12.4%}")
+                if rank >= 5:
+                    break
 
         print(f"\n{'*' * 80}")
 
@@ -326,6 +354,8 @@ def main():
                         help="Export to CSV or JSON")
     parser.add_argument("--fees", type=float, default=DEFAULT_TRADING_FEE_PCT,
                         help=f"Trading fee %% per side (default: {DEFAULT_TRADING_FEE_PCT})")
+    parser.add_argument("--stop-loss", type=float, default=DEFAULT_STOP_LOSS_PCT,
+                        help="Stop-loss %% (0=disabled). Exit if position drops by this %%")
     parser.add_argument("--buy-hold", action="store_true",
                         help="Compare with buy-and-hold benchmark")
     args = parser.parse_args()
@@ -343,10 +373,10 @@ def main():
 
     if args.compare_periods:
         run_compare_periods(tickers, args.days, args.output,
-                            args.fees, args.buy_hold)
+                            args.fees, args.stop_loss, args.buy_hold)
     else:
         run_backtest(tickers, args.days, args.full, args.period,
-                     args.output, args.fees, args.buy_hold)
+                     args.output, args.fees, args.stop_loss, args.buy_hold)
 
 
 if __name__ == "__main__":
