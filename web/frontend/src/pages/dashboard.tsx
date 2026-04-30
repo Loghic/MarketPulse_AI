@@ -23,7 +23,7 @@ export default function Dashboard() {
 
   const { data: tickerData, isLoading, error } = useQuery({
     queryKey: ["tickerData", ticker, period],
-    queryFn: () => api.getTickerData(ticker, period === "custom" ? "max" : period, 5000),
+    queryFn: () => api.getTickerData(ticker, period === "custom" ? "max" : period),
     enabled: !!ticker,
   });
 
@@ -33,6 +33,7 @@ export default function Dashboard() {
       qc.invalidateQueries({ queryKey: ["tickerData"] });
       qc.invalidateQueries({ queryKey: ["tickers"] });
     },
+    onError: (err) => console.error("Refresh failed:", err),
   });
 
   const refreshAll = useMutation({
@@ -41,6 +42,7 @@ export default function Dashboard() {
       qc.invalidateQueries({ queryKey: ["tickerData"] });
       qc.invalidateQueries({ queryKey: ["tickers"] });
     },
+    onError: (err) => console.error("Refresh all failed:", err),
   });
 
   // Filter for custom period

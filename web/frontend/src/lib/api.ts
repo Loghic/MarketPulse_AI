@@ -119,7 +119,8 @@ export interface UserSettings {
   default_backtest_days: number;
   knn_k: number;
   knn_enhanced_k: number;
-  lstm_preset: string;
+  lstm_preferred_preset: string;
+  lstm_fallback: boolean;
   log_mode: string;
 }
 
@@ -144,7 +145,7 @@ export const api = {
   // Data
   getTickers: () => request<TickerInfo[]>("/data/tickers"),
 
-  getTickerData: (ticker: string, period = "1y", limit = 500) =>
+  getTickerData: (ticker: string, period = "1y", limit = 0) =>
     request<TickerDataResponse>(`/data/ticker/${ticker}?period=${period}&limit=${limit}`),
 
   refresh: (tickers: string[] = []) =>

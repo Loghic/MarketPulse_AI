@@ -7,14 +7,22 @@ Run with:
 API docs at: http://localhost:8000/docs
 """
 
+import logging
 import sys
-
-sys.path.insert(0, ".")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from web.backend.routes import analysis, backtest, data, predict, settings, train
+
+sys.path.insert(0, ".")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-5s %(name)s │ %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 
 app = FastAPI(
     title="MarketPulse AI",
