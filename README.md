@@ -94,6 +94,54 @@ uv run python backtest.py --stocks --days 20 --fees 0.03 --no-refresh
 uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold --no-refresh
 ```
 
+## Web GUI
+
+Browser-based dashboard with FastAPI backend and React frontend.
+
+```bash
+# Install dependencies
+uv pip install -e ".[web]"
+cd web/frontend && npm install && cd ../..
+
+# Start both servers
+chmod +x web/dev.sh
+./web/dev.sh
+
+# Or manually in two terminals:
+# Terminal 1: uv run uvicorn web.backend.app:app --reload --port 8000
+# Terminal 2: cd web/frontend && npm run dev
+```
+
+- **Frontend:** http://localhost:5173 (React dashboard)
+- **Backend API:** http://localhost:8000 (FastAPI)
+- **API docs:** http://localhost:8000/docs (auto-generated Swagger)
+
+### Pages
+
+| Tab | Description |
+|---|---|
+| **Dashboard** | Ticker selector, price chart, sortable OHLCV table with pagination, Update Data buttons |
+| **Predict** | Next-day predictions, model/period selection, consensus view, cached results |
+| **Backtest** | Walk-forward backtest configurator, results table, best models, equity curve |
+| **Training** | LSTM preset selection, progress tracking, saved model inventory |
+| **Analysis** | News vs No-News model comparison, paired metrics, export for academic paper |
+| **Settings** | Persistent model parameters (k, fees, SL, period), display preferences |
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/data/tickers` | List all tickers with metadata |
+| GET | `/api/data/ticker/{ticker}` | OHLCV data (with period filter) |
+| POST | `/api/data/refresh` | Download latest prices + news |
+| POST | `/api/predict` | Run predictions (with caching) |
+| GET | `/api/predict/consensus/{ticker}` | Consensus across all models |
+| POST | `/api/backtest` | Walk-forward backtest |
+| GET | `/api/train/models` | List saved LSTM models |
+| POST | `/api/train/start` | Start LSTM training (background) |
+| GET/PUT/PATCH | `/api/settings` | User settings (persistent JSON) |
+| POST | `/api/analysis/news-comparison` | News vs No-News paired comparison |
+
 ## Backtesting
 
 Walk-forward testing with simulated trading P/L, configurable fees, stop-loss, buy-and-hold benchmark, and risk metrics (max drawdown, Sharpe ratio, Sortino ratio, yearly rolling performance).
@@ -180,6 +228,26 @@ marketpulse-ai/
 ├── pyproject.toml           # Dependencies & build config
 ├── Containerfile            # Podman/Docker build
 ├── AGENTS.md                # AI assistant context file
+│
+├── web/                         # Web GUI
+│   ├── dev.sh                   # Start both servers
+│   ├── backend/
+│   │   ├── app.py               # FastAPI main (CORS, Swagger at /docs)
+│   │   ├── schemas.py           # Pydantic request/response models
+│   │   └── routes/
+│   │       ├── data.py          # Tickers, OHLCV, refresh
+│   │       ├── predict.py       # Predictions + consensus + caching
+│   │       ├── backtest.py      # Walk-forward backtesting
+│   │       ├── train.py         # LSTM training + model inventory
+│   │       ├── settings.py      # Persistent user settings (JSON)
+│   │       └── analysis.py      # News vs No-News comparison
+│   └── frontend/
+│       ├── package.json         # React 19 + Vite + TypeScript + Plotly
+│       ├── vite.config.ts       # Dev proxy /api → localhost:8000
+│       └── src/
+│           ├── main.tsx         # Entry + router + layout
+│           ├── lib/api.ts       # Typed API client
+│           └── pages/           # Dashboard, Predict, Backtest, Training, Analysis, Settings
 │
 ├── tests/                   # Comprehensive pytest suite (77 tests)
 │   ├── conftest.py          # Shared fixtures (mock data, patched yfinance)
@@ -294,10 +362,17 @@ When adding new modules, follow these rules to keep CI green:
 - [x] Documentation (`docs/` + `AGENTS.md`)
 - [x] Pytest suite (77 tests: models, backtester, benchmarks, export, logger)
 - [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
+- [x] Web GUI scaffold (FastAPI + React + TypeScript, 6 pages, typed API client)
+- [ ] Web GUI: full Dashboard (live chart, OHLCV table with data from API)
+- [ ] Web GUI: Predict + Backtest + Training pages
+- [ ] Web GUI: Analysis page (News vs No-News for paper)
 - [ ] FinBERT sentiment (finance-specific transformer)
-- [ ] Visualization layer (Plotly/Matplotlib)
-- [ ] Web UI (Flask/FastAPI)
+- [ ] Authentication (API key for public deploy)
 
 ## Tech Stack
 
-Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · tqdm · SQLite · uv
+**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · tqdm · SQLite
+
+**Web:** FastAPI · uvicorn · React 19 · TypeScript · Vite · TanStack Query · Plotly.js
+
+**Dev:** pytest · ruff · mypy · GitHub Actions · Codecov · uv

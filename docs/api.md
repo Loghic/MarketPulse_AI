@@ -152,26 +152,58 @@ Static analysis is enforced via CI (`.github/workflows/tests.yml`):
 
 To add a new strict module, move it from the lenient override to the strict override in `pyproject.toml` and add type annotations to all functions.
 
-## Adding a web UI
+## Web GUI architecture
+
+The web layer (`web/`) wraps `StockAppAPI` without duplicating business logic:
+
+```
+┌──────────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  React Frontend      │────▶│  FastAPI Backend  │────▶│  StockAppAPI     │
+│  localhost:5173      │     │  localhost:8000   │     │  (unchanged)     │
+│  Vite proxies /api   │     │  /api/* routes    │     │  engine/ layer   │
+└──────────────────────┘     └──────────────────┘     └──────────────────┘
+```
+
+**Backend** (`web/backend/`):
+- `app.py` — FastAPI app with CORS for React dev server, mounts all route modules
+- `schemas.py` — Pydantic models matching engine dataclasses (with validation)
+- `routes/data.py` — ticker CRUD, OHLCV data from DB, refresh trigger
+- `routes/predict.py` — predictions with file-based caching, consensus endpoint
+- `routes/backtest.py` — delegates to `Backtester` + `run_single_backtest()`
+- `routes/train.py` — LSTM training via `BackgroundTasks`, model file inventory
+- `routes/settings.py` — user settings persisted to `data/settings.json`
+- `routes/analysis.py` — News vs No-News paired comparison for academic paper
+
+**Frontend** (`web/frontend/`):
+- Single `main.tsx` with React Router (6 routes) + TanStack Query for data fetching
+- `lib/api.ts` — typed fetch wrappers matching every backend endpoint
+- Pages: Dashboard (functional), Predict/Backtest/Training/Analysis/Settings (stubs)
+
+**Shared API instance:** `routes/data.py:get_api()` creates one `StockAppAPI` reused across all routes. No separate initialization — same instance as CLI would use.
+
+**Running:** `./web/dev.sh` starts both servers. API docs auto-generated at `/docs` (Swagger).
+
+## Adding new endpoints
+
+The backend is modular — add a new route file and register it in `app.py`:
 
 ```python
-from flask import Flask, jsonify, request
-from interface.api import StockAppAPI, PredictionConfig
+# web/backend/routes/new_feature.py
+from fastapi import APIRouter
+from web.backend.routes.data import get_api
 
-app = Flask(__name__)
-api = StockAppAPI()
+router = APIRouter(prefix="/api/new-feature", tags=["new-feature"])
 
-@app.route("/predict")
-def predict():
-    config = PredictionConfig(
-        ticker=request.args.get("ticker", "AAPL"),
-        period=request.args.get("period", "1y"),
-        model_type=request.args.get("model", "knn"),
-    )
-    result = api.get_prediction(config)
-    return jsonify({
-        "prediction": result.prediction,
-        "confidence": result.confidence,
-        "price": result.last_price,
-    })
+@router.get("/{ticker}")
+def my_endpoint(ticker: str, period: str = "1y"):
+    api = get_api()
+    df = api.get_data(ticker, period=period)
+    # ... your logic ...
+    return {"ticker": ticker, "result": "..."}
+```
+
+```python
+# web/backend/app.py — add one line:
+from web.backend.routes import new_feature
+app.include_router(new_feature.router)
 ```

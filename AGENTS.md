@@ -28,6 +28,26 @@ tests/                      → Comprehensive pytest suite (77 tests)
   test_api.py               → API facade, benchmarks, CSV export, sentiment
   test_logger.py            → Logger modes, progress bar, config sanity
 
+web/                        → Web GUI (FastAPI + React)
+  dev.sh                    → Start both servers (backend + frontend)
+  backend/
+    app.py                  → FastAPI main (CORS, router, Swagger at /docs)
+    schemas.py              → Pydantic request/response models
+    routes/
+      data.py               → GET tickers, GET OHLCV, POST refresh
+      predict.py            → POST predict, GET consensus (with JSON caching)
+      backtest.py           → POST backtest (delegates to engine)
+      train.py              → GET models inventory, POST start training
+      settings.py           → GET/PUT/PATCH persistent user settings
+      analysis.py           → POST news-comparison (for academic paper)
+  frontend/
+    package.json            → React 19 + Vite + TS + TanStack + Plotly
+    vite.config.ts          → Dev proxy /api → backend:8000
+    src/
+      main.tsx              → Entry + router + layout (6 tabs)
+      lib/api.ts            → Typed fetch client for all endpoints
+      pages/                → Dashboard, Predict, Backtest, Training, Analysis, Settings
+
 interface/
   api.py                    → StockAppAPI facade — single entry point
 
@@ -153,6 +173,28 @@ uv run python run_all.py --stocks --days 20 --no-refresh
 **Add a feature:** Add to `features.py` → update `ALL_FEATURES` + `min_rows_needed()`.
 
 **Change defaults:** Edit `config.py` → `DEFAULT_TRADING_FEE_PCT`, `DEFAULT_STOP_LOSS_PCT`.
+
+## Web GUI
+
+FastAPI backend + React frontend. Backend wraps `StockAppAPI` — no business logic duplication.
+
+```
+React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →  StockAppAPI  →  engine/
+```
+
+**Run:** `./web/dev.sh` or manually: `uvicorn web.backend.app:app --reload` + `cd web/frontend && npm run dev`
+
+**Backend routes:**
+- `routes/data.py` — ticker list, OHLCV data (from DB, no re-download), refresh
+- `routes/predict.py` — predictions with JSON file caching (`predictions/{date}_{ticker}_{model}.json`)
+- `routes/backtest.py` — delegates to `engine/backtester.py` + `backtest_helpers.py`
+- `routes/train.py` — background LSTM training via `BackgroundTasks`, model inventory from `models/`
+- `routes/settings.py` — persistent user settings in `data/settings.json`
+- `routes/analysis.py` — News vs No-News paired comparison (for paper)
+
+**Frontend:** single `main.tsx` with router, layout, 6 pages. `lib/api.ts` has typed fetch wrappers for every endpoint. Dashboard is functional, other pages are stubs.
+
+**Shared instance:** `routes/data.py:get_api()` creates one `StockAppAPI` reused by all routes. Same as CLI — no separate initialization.
 
 ## CI / CD
 
