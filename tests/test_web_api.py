@@ -3,33 +3,34 @@
 Tests all routes with mocked StockAppAPI (no network, no real DB).
 """
 
-import json
-import pytest
-from unittest.mock import patch, PropertyMock
-from pathlib import Path
+from datetime import datetime
+from unittest.mock import PropertyMock, patch
 
 import numpy as np
 import pandas as pd
-from datetime import datetime
+import pytest
 from fastapi.testclient import TestClient
-
 
 # ------------------------------------------------------------------
 # Fixtures
 # ------------------------------------------------------------------
+
 
 def _make_prices(days=400, seed=42):
     np.random.seed(seed)
     dates = pd.date_range(end=datetime.now(), periods=days, freq="B")
     n = len(dates)
     prices = 150.0 * np.cumprod(1 + np.random.normal(0.0005, 0.02, n))
-    return pd.DataFrame({
-        "Open": prices * (1 + np.random.uniform(-0.005, 0.005, n)),
-        "High": prices * (1 + np.abs(np.random.normal(0, 0.015, n))),
-        "Low": prices * (1 - np.abs(np.random.normal(0, 0.015, n))),
-        "Close": prices,
-        "Volume": np.random.randint(1_000_000, 50_000_000, n),
-    }, index=dates).rename_axis("Date")
+    return pd.DataFrame(
+        {
+            "Open": prices * (1 + np.random.uniform(-0.005, 0.005, n)),
+            "High": prices * (1 + np.abs(np.random.normal(0, 0.015, n))),
+            "Low": prices * (1 - np.abs(np.random.normal(0, 0.015, n))),
+            "Close": prices,
+            "Volume": np.random.randint(1_000_000, 50_000_000, n),
+        },
+        index=dates,
+    ).rename_axis("Date")
 
 
 def _make_news():
@@ -42,16 +43,17 @@ def _make_news():
 @pytest.fixture(scope="module")
 def client():
     """Create TestClient with mocked yfinance."""
-    with patch("engine.data_downloader.yf") as mock_dl, \
-         patch("engine.news_scraper.yf") as mock_ns:
+    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_scraper.yf") as mock_ns:
         mock_dl.Ticker.return_value.history.return_value = _make_prices()
         type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=_make_news())
 
         # Reset shared API instance
         from web.backend.routes import data as data_module
+
         data_module._api = None
 
         from web.backend.app import app
+
         with TestClient(app) as c:
             yield c
 
@@ -66,6 +68,7 @@ def refreshed_client(client):
 # ------------------------------------------------------------------
 # Health & Root
 # ------------------------------------------------------------------
+
 
 class TestRoot:
     def test_root(self, client):
@@ -84,6 +87,7 @@ class TestRoot:
 # ------------------------------------------------------------------
 # Data endpoints
 # ------------------------------------------------------------------
+
 
 class TestData:
     def test_list_tickers(self, client):
@@ -149,15 +153,19 @@ class TestData:
 # Predict endpoints
 # ------------------------------------------------------------------
 
+
 class TestPredict:
     def test_predict_single(self, refreshed_client):
-        r = refreshed_client.post("/api/predict", json={
-            "tickers": ["TEST"],
-            "models": ["knn"],
-            "period": "1y",
-            "include_news": False,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/predict",
+            json={
+                "tickers": ["TEST"],
+                "models": ["knn"],
+                "period": "1y",
+                "include_news": False,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         data = r.json()
         assert "predictions" in data
@@ -169,13 +177,16 @@ class TestPredict:
         assert 0 <= p["confidence"] <= 1
 
     def test_predict_multiple_models(self, refreshed_client):
-        r = refreshed_client.post("/api/predict", json={
-            "tickers": ["TEST"],
-            "models": ["knn", "linreg"],
-            "period": "1y",
-            "include_news": False,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/predict",
+            json={
+                "tickers": ["TEST"],
+                "models": ["knn", "linreg"],
+                "period": "1y",
+                "include_news": False,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         preds = r.json()["predictions"]
         # At least one result per requested model
@@ -184,13 +195,16 @@ class TestPredict:
         assert "linreg" in models
 
     def test_predict_all_models(self, refreshed_client):
-        r = refreshed_client.post("/api/predict", json={
-            "tickers": ["TEST"],
-            "models": ["all"],
-            "period": "1y",
-            "include_news": False,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/predict",
+            json={
+                "tickers": ["TEST"],
+                "models": ["all"],
+                "period": "1y",
+                "include_news": False,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         preds = r.json()["predictions"]
         # Should have results from all 4 base model types
@@ -199,13 +213,16 @@ class TestPredict:
         assert len(preds) >= 4  # at least 4 predictions total
 
     def test_predict_with_news(self, refreshed_client):
-        r = refreshed_client.post("/api/predict", json={
-            "tickers": ["TEST"],
-            "models": ["knn"],
-            "period": "1y",
-            "include_news": True,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/predict",
+            json={
+                "tickers": ["TEST"],
+                "models": ["knn"],
+                "period": "1y",
+                "include_news": True,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
 
     def test_consensus(self, refreshed_client):
@@ -223,15 +240,19 @@ class TestPredict:
 # Backtest endpoints
 # ------------------------------------------------------------------
 
+
 class TestBacktest:
     def test_backtest_basic(self, refreshed_client):
-        r = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "period": "1y",
-            "fee_pct": 0.03,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "fee_pct": 0.03,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         data = r.json()
         assert "results" in data
@@ -249,12 +270,15 @@ class TestBacktest:
         assert 0 <= result["accuracy"] <= 1
 
     def test_backtest_has_daily_data(self, refreshed_client):
-        r = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "period": "1y",
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "refresh_data": False,
+            },
+        )
         results = r.json()["results"]
         # At least one result should have day-by-day data
         result = results[0]
@@ -266,13 +290,16 @@ class TestBacktest:
         assert "trade_pnl_net" in day
 
     def test_backtest_with_stop_loss(self, refreshed_client):
-        r = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "period": "1y",
-            "stop_loss_pct": 2.0,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "stop_loss_pct": 2.0,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         results = r.json()["results"]
         # With SL, should have both baseline and SL variants
@@ -283,38 +310,56 @@ class TestBacktest:
         assert has_baseline
 
     def test_backtest_with_fees(self, refreshed_client):
-        r_no_fee = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"], "days": 5, "period": "1y",
-            "fee_pct": 0.0, "refresh_data": False,
-        })
-        r_fee = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"], "days": 5, "period": "1y",
-            "fee_pct": 0.5, "refresh_data": False,
-        })
+        r_no_fee = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "fee_pct": 0.0,
+                "refresh_data": False,
+            },
+        )
+        r_fee = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "fee_pct": 0.5,
+                "refresh_data": False,
+            },
+        )
         # Same model, first result — fee version should have lower return
         no_fee_ret = r_no_fee.json()["results"][0]["total_return"]
         fee_ret = r_fee.json()["results"][0]["total_return"]
         assert fee_ret < no_fee_ret
 
     def test_backtest_best_models(self, refreshed_client):
-        r = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "period": "1y",
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "refresh_data": False,
+            },
+        )
         data = r.json()
         assert data["best_by_return"] is not None
         assert data["best_by_sharpe"] is not None
         assert "model" in data["best_by_return"]
 
     def test_backtest_compare_periods(self, refreshed_client):
-        r = refreshed_client.post("/api/backtest", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "compare_periods": True,
-            "refresh_data": False,
-        })
+        r = refreshed_client.post(
+            "/api/backtest",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "compare_periods": True,
+                "refresh_data": False,
+            },
+        )
         assert r.status_code == 200
         results = r.json()["results"]
         # Should have results from multiple periods
@@ -325,6 +370,7 @@ class TestBacktest:
 # ------------------------------------------------------------------
 # Training endpoints
 # ------------------------------------------------------------------
+
 
 class TestTraining:
     def test_list_models_empty(self, client):
@@ -341,6 +387,7 @@ class TestTraining:
 # ------------------------------------------------------------------
 # Settings endpoints
 # ------------------------------------------------------------------
+
 
 class TestSettings:
     def test_get_defaults(self, client):
@@ -382,14 +429,18 @@ class TestSettings:
 # Analysis endpoints
 # ------------------------------------------------------------------
 
+
 class TestAnalysis:
     def test_news_comparison(self, refreshed_client):
-        r = refreshed_client.post("/api/analysis/news-comparison", json={
-            "tickers": ["TEST"],
-            "days": 5,
-            "period": "1y",
-            "fee_pct": 0.03,
-        })
+        r = refreshed_client.post(
+            "/api/analysis/news-comparison",
+            json={
+                "tickers": ["TEST"],
+                "days": 5,
+                "period": "1y",
+                "fee_pct": 0.03,
+            },
+        )
         assert r.status_code == 200
         results = r.json()
         assert isinstance(results, list)
