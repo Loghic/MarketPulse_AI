@@ -15,7 +15,7 @@ jobs:
       - run: uv python install 3.13
       - run: |
           uv venv
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,web]"
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format check
@@ -23,16 +23,15 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - run: uv python install 3.13
       - run: |
           uv venv
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,web]"
       - name: Mypy
-        run: uv run mypy engine/ interface/
+        run: uv run mypy engine/ interface/ web/backend/
 
   test:
     runs-on: ubuntu-latest
@@ -45,7 +44,7 @@ jobs:
       - run: uv python install ${{ matrix.python-version }}
       - run: |
           uv venv
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,web]"
       - name: Download NLTK data
         run: uv run python -c "import nltk; nltk.download('vader_lexicon', quiet=True)"
       - name: Smoke test
@@ -53,7 +52,7 @@ jobs:
       - name: Pytest with coverage + JUnit XML
         run: >
           uv run python -m pytest
-          --cov=engine --cov=interface
+          --cov=engine --cov=interface --cov=web
           --cov-report=xml
           --cov-report=term
           --junitxml=junit.xml
