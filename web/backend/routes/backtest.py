@@ -4,22 +4,26 @@ routes/backtest.py – Backtesting endpoints.
 
 from fastapi import APIRouter
 
-from interface.api import StockAppAPI
-from engine.backtester import Backtester
+from config import ALL_PERIODS, ALL_TICKERS, CRYPTO_BENCHMARKS, STOCK_BENCHMARKS
 from engine.backtest_helpers import (
-    filter_by_period, run_single_backtest, compute_benchmarks,
+    compute_benchmarks,
+    run_single_backtest,
 )
-from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS, STOCK_BENCHMARKS, CRYPTO_BENCHMARKS
-from web.backend.schemas import (
-    BacktestRequest, BacktestResponse, BacktestModelResult, BacktestDayRow,
-)
+from engine.backtester import Backtester
 from web.backend.routes.data import get_api
+from web.backend.schemas import (
+    BacktestDayRow,
+    BacktestModelResult,
+    BacktestRequest,
+    BacktestResponse,
+)
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 
 
-def _result_to_schema(r, ticker: str, period: str,
-                       benchmarks: dict | None = None) -> BacktestModelResult:
+def _result_to_schema(
+    r, ticker: str, period: str, benchmarks: dict | None = None
+) -> BacktestModelResult:
     """Convert engine BacktestResult to API schema."""
     days = [
         BacktestDayRow(
@@ -92,9 +96,7 @@ def run_backtest(req: BacktestRequest):
             periods = [req.period]
 
         for period in periods:
-            results = run_single_backtest(
-                api, backtester, ticker, df, period, req.days, full=False
-            )
+            results = run_single_backtest(api, backtester, ticker, df, period, req.days, full=False)
             if not results:
                 continue
 

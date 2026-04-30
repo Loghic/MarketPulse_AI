@@ -4,11 +4,11 @@ routes/analysis.py – News vs No-News model comparison for academic paper.
 
 from fastapi import APIRouter
 
+from config import ALL_TICKERS
+from engine.backtest_helpers import filter_by_period
 from engine.backtester import Backtester
-from engine.backtest_helpers import filter_by_period, compute_benchmarks
-from config import ALL_TICKERS, ALL_PERIODS
-from web.backend.schemas import AnalysisRequest, NewsComparisonRow
 from web.backend.routes.data import get_api
+from web.backend.schemas import AnalysisRequest, NewsComparisonRow
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -51,32 +51,39 @@ def compare_news_impact(req: AnalysisRequest):
 
             # Run WITHOUT news
             r_no_news = backtester.run(
-                model=model, model_name=f"{label} (no news)",
-                df=filtered, ticker=ticker,
-                use_time_weights=True, sentiment_score=0.0,
+                model=model,
+                model_name=f"{label} (no news)",
+                df=filtered,
+                ticker=ticker,
+                use_time_weights=True,
+                sentiment_score=0.0,
             )
 
             # Run WITH news
             r_with_news = backtester.run(
-                model=model, model_name=f"{label} + News",
-                df=filtered, ticker=ticker,
+                model=model,
+                model_name=f"{label} + News",
+                df=filtered,
+                ticker=ticker,
                 use_time_weights=True,
                 sentiment_score=sentiment_score if has_news else 0.0,
             )
 
             diff = r_with_news.total_return - r_no_news.total_return
 
-            results.append(NewsComparisonRow(
-                ticker=ticker,
-                model=label,
-                period=req.period,
-                return_no_news=round(r_no_news.total_return, 8),
-                return_with_news=round(r_with_news.total_return, 8),
-                diff=round(diff, 8),
-                sharpe_no_news=r_no_news.sharpe_ratio,
-                sharpe_with_news=r_with_news.sharpe_ratio,
-                accuracy_no_news=r_no_news.accuracy,
-                accuracy_with_news=r_with_news.accuracy,
-            ))
+            results.append(
+                NewsComparisonRow(
+                    ticker=ticker,
+                    model=label,
+                    period=req.period,
+                    return_no_news=round(r_no_news.total_return, 8),
+                    return_with_news=round(r_with_news.total_return, 8),
+                    diff=round(diff, 8),
+                    sharpe_no_news=r_no_news.sharpe_ratio,
+                    sharpe_with_news=r_with_news.sharpe_ratio,
+                    accuracy_no_news=r_no_news.accuracy,
+                    accuracy_with_news=r_with_news.accuracy,
+                )
+            )
 
     return results

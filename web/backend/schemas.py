@@ -5,18 +5,17 @@ Maps to existing engine dataclasses but adds validation and serialization.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
-
 
 # ------------------------------------------------------------------
 # Ticker / Data
 # ------------------------------------------------------------------
 
+
 class TickerInfo(BaseModel):
     ticker: str
     asset_type: str  # "stock" or "crypto"
     rows: int
-    last_date: Optional[str] = None
+    last_date: str | None = None
 
 
 class OHLCVRow(BaseModel):
@@ -49,11 +48,12 @@ class RefreshStatus(BaseModel):
 # Predictions
 # ------------------------------------------------------------------
 
+
 class PredictRequest(BaseModel):
     tickers: list[str] = Field(default_factory=list, description="Empty = all")
     models: list[str] = Field(
         default=["all"],
-        description="Model types: knn, knn_enhanced, linreg, linreg_enhanced, lstm, all"
+        description="Model types: knn, knn_enhanced, linreg, linreg_enhanced, lstm, all",
     )
     period: str = "1y"
     include_news: bool = True
@@ -81,6 +81,7 @@ class PredictResponse(BaseModel):
 # ------------------------------------------------------------------
 # Backtest
 # ------------------------------------------------------------------
+
 
 class BacktestRequest(BaseModel):
     tickers: list[str] = Field(default_factory=list)
@@ -133,13 +134,14 @@ class BacktestModelResult(BaseModel):
 
 class BacktestResponse(BaseModel):
     results: list[BacktestModelResult]
-    best_by_return: Optional[BacktestModelResult] = None
-    best_by_sharpe: Optional[BacktestModelResult] = None
+    best_by_return: BacktestModelResult | None = None
+    best_by_sharpe: BacktestModelResult | None = None
 
 
 # ------------------------------------------------------------------
 # Training
 # ------------------------------------------------------------------
+
 
 class TrainRequest(BaseModel):
     ticker: str
@@ -172,6 +174,7 @@ class ModelInventoryItem(BaseModel):
 # Settings
 # ------------------------------------------------------------------
 
+
 class UserSettings(BaseModel):
     # Global defaults
     default_period: str = "1y"
@@ -193,6 +196,7 @@ class UserSettings(BaseModel):
 # ------------------------------------------------------------------
 # Analysis (News vs No-News comparison)
 # ------------------------------------------------------------------
+
 
 class AnalysisRequest(BaseModel):
     tickers: list[str] = Field(default_factory=list)

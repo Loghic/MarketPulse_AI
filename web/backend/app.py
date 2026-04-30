@@ -8,12 +8,13 @@ API docs at: http://localhost:8000/docs
 """
 
 import sys
+
 sys.path.insert(0, ".")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web.backend.routes import data, predict, backtest, train, settings, analysis
+from web.backend.routes import analysis, backtest, data, predict, settings, train
 
 app = FastAPI(
     title="MarketPulse AI",
@@ -25,8 +26,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:3000",   # Alternative dev port
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",  # Alternative dev port
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
     ],

@@ -3,15 +3,15 @@ routes/predict.py – Prediction endpoints.
 """
 
 import json
-from pathlib import Path
 from datetime import datetime
-from fastapi import APIRouter
-from typing import Optional
+from pathlib import Path
 
-from interface.api import StockAppAPI, PredictionConfig
-from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
-from web.backend.schemas import PredictRequest, PredictResponse, PredictionRow
+from fastapi import APIRouter
+
+from config import ALL_TICKERS
+from interface.api import PredictionConfig
 from web.backend.routes.data import get_api
+from web.backend.schemas import PredictionRow, PredictRequest, PredictResponse
 
 router = APIRouter(prefix="/api/predict", tags=["predictions"])
 
@@ -23,7 +23,7 @@ def _cache_key(ticker: str, model: str, period: str) -> str:
     return f"{today}_{ticker}_{model}_{period}"
 
 
-def _load_cached(ticker: str, model: str, period: str) -> Optional[PredictionRow]:
+def _load_cached(ticker: str, model: str, period: str) -> PredictionRow | None:
     """Load prediction from today's cache if exists."""
     key = _cache_key(ticker, model, period)
     path = CACHE_DIR / f"{key}.json"
@@ -132,16 +132,21 @@ def get_consensus(ticker: str, period: str = "1y"):
         for tw in [False, True]:
             try:
                 cfg = PredictionConfig(
-                    ticker=ticker, period=period, model_type=model,
-                    use_time_weights=tw, include_news=False,
+                    ticker=ticker,
+                    period=period,
+                    model_type=model,
+                    use_time_weights=tw,
+                    include_news=False,
                 )
                 result = api.get_prediction(cfg)
                 label = f"{model}{' TW' if tw else ''}"
-                model_votes.append({
-                    "model": label,
-                    "prediction": result.prediction,
-                    "confidence": float(result.confidence.rstrip("%")) / 100,
-                })
+                model_votes.append(
+                    {
+                        "model": label,
+                        "prediction": result.prediction,
+                        "confidence": float(result.confidence.rstrip("%")) / 100,
+                    }
+                )
                 if result.prediction == "UP":
                     up_count += 1
                 else:

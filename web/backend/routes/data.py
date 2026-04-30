@@ -2,23 +2,26 @@
 routes/data.py – Ticker data and refresh endpoints.
 """
 
-from fastapi import APIRouter, HTTPException
-from typing import Optional
-
 import sys
+
+from fastapi import APIRouter, HTTPException
+
 sys.path.insert(0, ".")
 
+from config import ALL_TICKERS, CRYPTO_BENCHMARKS, STOCK_BENCHMARKS
 from interface.api import StockAppAPI
-from config import STOCKS, CRYPTO, ALL_TICKERS, STOCK_BENCHMARKS, CRYPTO_BENCHMARKS
 from web.backend.schemas import (
-    TickerInfo, TickerDataResponse, OHLCVRow,
-    RefreshRequest, RefreshStatus,
+    OHLCVRow,
+    RefreshRequest,
+    RefreshStatus,
+    TickerDataResponse,
+    TickerInfo,
 )
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
 # Shared API instance (created once, reused)
-_api: Optional[StockAppAPI] = None
+_api: StockAppAPI | None = None
 
 
 def get_api() -> StockAppAPI:
@@ -37,12 +40,14 @@ def list_tickers():
         asset_type = "crypto" if "-USD" in ticker else "stock"
         df = api.db.get_prices(ticker)
         last_date = str(df["date"].iloc[-1]) if not df.empty else None
-        result.append(TickerInfo(
-            ticker=ticker,
-            asset_type=asset_type,
-            rows=len(df),
-            last_date=last_date,
-        ))
+        result.append(
+            TickerInfo(
+                ticker=ticker,
+                asset_type=asset_type,
+                rows=len(df),
+                last_date=last_date,
+            )
+        )
     return result
 
 
@@ -58,8 +63,10 @@ def get_ticker_data(ticker: str, period: str = "1y", limit: int = 500):
 
     # Apply period filter
     from engine.utils import period_to_start_date
+
     start = period_to_start_date(period)
     import pandas as pd
+
     df["_date"] = pd.to_datetime(df["date"]).dt.date
     df = df[df["_date"] >= start].drop(columns=["_date"])
 
@@ -96,15 +103,22 @@ def refresh_data(req: RefreshRequest):
             df = api.get_data(ticker, period="max")
             score, headlines = api._process_news_with_db(ticker)
             last_date = str(df["date"].iloc[-1]) if not df.empty else "n/a"
-            results.append(RefreshStatus(
-                ticker=ticker,
-                rows=len(df),
-                last_date=last_date,
-                news_count=len(headlines),
-            ))
-        except Exception as e:
-            results.append(RefreshStatus(
-                ticker=ticker, rows=0, last_date="error", news_count=0,
-            ))
+            results.append(
+                RefreshStatus(
+                    ticker=ticker,
+                    rows=len(df),
+                    last_date=last_date,
+                    news_count=len(headlines),
+                )
+            )
+        except Exception:
+            results.append(
+                RefreshStatus(
+                    ticker=ticker,
+                    rows=0,
+                    last_date="error",
+                    news_count=0,
+                )
+            )
 
     return results

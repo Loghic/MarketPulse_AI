@@ -2,14 +2,13 @@
 routes/train.py – LSTM training and model inventory endpoints.
 """
 
-import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from fastapi import APIRouter, BackgroundTasks
 
-from config import ALL_TICKERS, STOCKS, CRYPTO, ALL_PERIODS
-from web.backend.schemas import TrainRequest, TrainStatus, ModelInventoryItem
 from web.backend.routes.data import get_api
+from web.backend.schemas import ModelInventoryItem, TrainRequest, TrainStatus
 
 router = APIRouter(prefix="/api/train", tags=["training"])
 
@@ -35,14 +34,16 @@ def list_models():
             ticker, period, preset = f.stem, "?", "?"
 
         stat = f.stat()
-        items.append(ModelInventoryItem(
-            ticker=ticker,
-            period=period,
-            preset=preset,
-            filename=f.name,
-            size_kb=round(stat.st_size / 1024, 1),
-            modified=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        ))
+        items.append(
+            ModelInventoryItem(
+                ticker=ticker,
+                period=period,
+                preset=preset,
+                filename=f.name,
+                size_kb=round(stat.st_size / 1024, 1),
+                modified=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            )
+        )
 
     return items
 
@@ -72,7 +73,8 @@ def start_training(req: TrainRequest, bg: BackgroundTasks):
 def _run_training(req: TrainRequest, key: str):
     """Background training task."""
     try:
-        from engine.ai_model import AIModel, TORCH_AVAILABLE
+        from engine.ai_model import TORCH_AVAILABLE, AIModel
+
         if not TORCH_AVAILABLE:
             _training_status[key].status = "error"
             _training_status[key].message = "PyTorch not installed"
@@ -114,7 +116,6 @@ def get_training_status(key: str):
     """Check status of a training job."""
     if key not in _training_status:
         return TrainStatus(
-            ticker="?", period="?", preset="?",
-            status="not_found", message=f"No job: {key}"
+            ticker="?", period="?", preset="?", status="not_found", message=f"No job: {key}"
         )
     return _training_status[key]
