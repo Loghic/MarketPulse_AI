@@ -37,6 +37,7 @@ FastAPI backend (`web/backend/`) wraps the existing `StockAppAPI` with REST endp
 
 ## CI / CD
 
+- `.pre-commit-config.yaml` — Git hooks: **ruff** auto-fix + format + **mypy** type check before every commit. Setup: `uv run pre-commit install`
 - `.github/workflows/tests.yml` — Three parallel jobs: **lint** (ruff), **typecheck** (mypy), **test** (pytest + coverage upload). Runs on Python 3.12 + 3.13 matrix.
 - `.codecov.yml` — Coverage thresholds (60% target, 50% patch).
 - Coverage badge and test results visible on [Codecov](https://codecov.io).

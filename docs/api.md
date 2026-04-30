@@ -142,13 +142,17 @@ def predict(self, df, use_time_weights=False, sentiment_score=0.0) -> Tuple[str,
 
 ## Code quality
 
-Static analysis is enforced via CI (`.github/workflows/tests.yml`):
+Static analysis is enforced at two levels:
+
+**Pre-commit hooks** (local, every commit): ruff auto-fixes imports and formatting, mypy checks types. Setup: `uv run pre-commit install`. Config in `.pre-commit-config.yaml`.
+
+**CI pipeline** (remote, every push): same checks plus pytest with coverage. Config in `.github/workflows/tests.yml`.
 
 | Tool | Config in | What it enforces |
 |---|---|---|
 | **Ruff** | `pyproject.toml [tool.ruff]` | Import ordering, unused imports, modern syntax (`list` not `List`), bugbear |
 | **Mypy** | `pyproject.toml [tool.mypy]` | Type safety. Strict on `backtester.py` + `utils.py`. `ai_model.py` excluded (torch). |
-| **Pytest** | `pyproject.toml [tool.pytest]` | 77 tests, coverage to Codecov |
+| **Pytest** | `pyproject.toml [tool.pytest]` | 103 tests, coverage to Codecov |
 
 To add a new strict module, move it from the lenient override to the strict override in `pyproject.toml` and add type annotations to all functions.
 

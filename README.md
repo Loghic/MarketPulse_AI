@@ -218,6 +218,7 @@ marketpulse-ai/
 │   └── workflows/
 │       └── tests.yml            # CI: lint (ruff) + typecheck (mypy) + test (pytest+coverage)
 ├── .codecov.yml                 # Coverage thresholds and Codecov config
+├── .pre-commit-config.yaml      # Git hooks: ruff + mypy before every commit
 ├── config.py                # ★ Tickers, periods, fees, stop-loss, benchmarks, logging mode
 ├── main.py                  # CLI — prediction reports
 ├── backtest.py              # CLI — model evaluation
@@ -317,7 +318,26 @@ Every push and PR to `main` triggers three parallel jobs via GitHub Actions:
 |---|---|---|---|
 | **lint** | Ruff | Unused imports, import order, deprecated syntax, common bugs, formatting | Yes |
 | **typecheck** | Mypy | Type annotations, None safety, wrong argument types | Yes |
-| **test** | Pytest | 77 tests + coverage upload to Codecov (Python 3.12 + 3.13 matrix) | Yes |
+| **test** | Pytest | 103 tests + coverage upload to Codecov (Python 3.12 + 3.13 matrix) | Yes |
+
+### Pre-commit hooks
+
+Git hooks that run **before every commit** — catches issues locally before they reach CI:
+
+```bash
+# One-time setup
+uv pip install -e ".[dev]"
+uv run pre-commit install
+
+# Now every git commit auto-runs:
+#   1. ruff --fix     (auto-fixes imports, unused vars)
+#   2. ruff format    (auto-formats code)
+#   3. mypy           (type checking)
+```
+
+If ruff modifies files, the commit stops — just `git add -A` and commit again. If mypy fails, you need to fix the type error manually.
+
+To skip hooks for emergency fixes: `git commit --no-verify -m "hotfix"`
 
 ### Static analysis locally
 
@@ -340,7 +360,7 @@ Coverage is uploaded to [Codecov](https://codecov.io) after each test run. Curre
 
 ### Adding new code
 
-When adding new modules, follow these rules to keep CI green:
+Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 
 - **Ruff**: imports must be sorted, no unused imports, use `list`/`dict` instead of `typing.List`/`typing.Dict`
 - **Mypy**: add `if X is None` guards before using Optional values. Strict modules (`engine/backtester.py`, `engine/utils.py`) require full type annotations on all functions.
@@ -362,6 +382,7 @@ When adding new modules, follow these rules to keep CI green:
 - [x] Documentation (`docs/` + `AGENTS.md`)
 - [x] Pytest suite (77 tests: models, backtester, benchmarks, export, logger)
 - [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
+- [x] Pre-commit hooks (ruff auto-fix + format + mypy on every commit)
 - [x] Web GUI scaffold (FastAPI + React + TypeScript, 6 pages, typed API client)
 - [ ] Web GUI: full Dashboard (live chart, OHLCV table with data from API)
 - [ ] Web GUI: Predict + Backtest + Training pages

@@ -11,6 +11,7 @@ Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, and
 ```
 .github/workflows/tests.yml    → CI: lint (ruff) + typecheck (mypy) + test (pytest+codecov)
 .codecov.yml                    → Coverage thresholds (60% target)
+.pre-commit-config.yaml         → Git hooks: ruff auto-fix + format + mypy before every commit
 
 config.py                   → ★ Tickers, periods, fees, stop-loss defaults. Edit to add assets.
 main.py                     → CLI: prediction reports (--stocks/--crypto/--all/--tickers)
@@ -198,7 +199,21 @@ React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →
 
 ## CI / CD
 
-GitHub Actions (`.github/workflows/tests.yml`) runs on every push/PR to `main`:
+### Pre-commit hooks (local)
+
+Runs before every `git commit` — auto-fixes what it can, blocks on the rest:
+
+```
+git commit → ruff --fix → ruff format → mypy → commit (or fail)
+```
+
+Setup: `uv pip install -e ".[dev]" && uv run pre-commit install`
+
+Config in `.pre-commit-config.yaml`. Uses `uv run mypy` so it works without activated venv (Neovim/fugitive compatible).
+
+### GitHub Actions (remote)
+
+`.github/workflows/tests.yml` runs on every push/PR to `main`:
 
 ```
 lint       → ruff check + ruff format --check    (blocking)
@@ -208,7 +223,7 @@ test       → pytest --cov + upload to Codecov     (Python 3.12 + 3.13 matrix)
 
 Coverage uploaded to Codecov (`.codecov.yml` sets 60% target).
 
-**Before pushing:** `ruff check --fix . && ruff format . && mypy engine/ interface/ && python -m pytest`
+**Before pushing:** pre-commit hooks auto-run on `git commit`. Manual check: `ruff check --fix . && ruff format . && mypy engine/ interface/ web/backend/ && python -m pytest`
 
 **Ruff rules:** unused imports, import sorting, `list`/`dict` instead of `typing.List`/`Dict`, bugbear, simplify. Tests exempt from annotation rules.
 
