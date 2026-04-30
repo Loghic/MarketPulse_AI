@@ -207,10 +207,15 @@ export const api = {
 
   // Settings
   getSettings: () => request<UserSettings>("/settings"),
-  updateSettings: (settings: Partial<UserSettings>) =>
+  updateSettings: (settings: UserSettings) =>
+    request<UserSettings>("/settings", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+  patchSettings: (updates: Partial<UserSettings>) =>
     request<UserSettings>("/settings", {
       method: "PATCH",
-      body: JSON.stringify(settings),
+      body: JSON.stringify(updates),
     }),
 
   // Analysis
