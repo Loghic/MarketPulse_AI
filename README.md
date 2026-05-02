@@ -118,29 +118,33 @@ chmod +x web/dev.sh
 
 ### Pages
 
-| Tab | Description |
-|---|---|
-| **Dashboard** | Ticker selector, price chart, sortable OHLCV table with pagination, Update Data buttons |
-| **Predict** | Next-day predictions, model/period selection, consensus view, cached results |
-| **Backtest** | Walk-forward backtest configurator, results table, best models, equity curve |
-| **Training** | LSTM preset selection, progress tracking, saved model inventory |
-| **Analysis** | News vs No-News model comparison, paired metrics, export for academic paper |
-| **Settings** | Persistent model parameters (k, fees, SL, period), display preferences |
+| Tab | Status | Description |
+|---|---|---|
+| **Dashboard** | ✓ | Ticker selector, zoomable chart (line/candle, pan bar), stats cards, OHLCV table with Δ% sorting, custom period, export CSV |
+| **Predict** | ✓ | Prediction builder (per-model period + news), quick presets, 9 model variants incl. LSTM, auto consensus, caching, historical predictions |
+| **Backtest** | stub | Walk-forward backtest configurator, results table, best models, equity curve |
+| **Training** | stub | LSTM preset selection, progress tracking, saved model inventory |
+| **Analysis** | stub | News vs No-News model comparison, paired metrics, export for academic paper |
+| **Settings** | ✓ | Persistent k, fees, SL, LSTM preference with fallback, developer settings (collapsible) |
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/api/data/tickers` | List all tickers with metadata |
-| GET | `/api/data/ticker/{ticker}` | OHLCV data (with period filter) |
+| GET | `/api/data/ticker/{ticker}` | OHLCV data (period filter, limit=0 for all) |
 | POST | `/api/data/refresh` | Download latest prices + news |
-| POST | `/api/predict` | Run predictions (with caching) |
-| GET | `/api/predict/consensus/{ticker}` | Consensus across all models |
+| GET | `/api/predict/info` | Available models, periods, next trading day |
+| POST | `/api/predict/run` | Unified prediction (per-model period + news) |
+| GET | `/api/predict/cached` | List cached prediction files |
+| POST | `/api/predict/historical` | Predict for any past date |
 | POST | `/api/backtest` | Walk-forward backtest |
 | GET | `/api/train/models` | List saved LSTM models |
 | POST | `/api/train/start` | Start LSTM training (background) |
 | GET/PUT/PATCH | `/api/settings` | User settings (persistent JSON) |
 | POST | `/api/analysis/news-comparison` | News vs No-News paired comparison |
+
+See [docs/web.md](docs/web.md) for full API documentation with request/response examples.
 
 ## Backtesting
 
@@ -237,7 +241,7 @@ marketpulse-ai/
 │   │   ├── schemas.py           # Pydantic request/response models
 │   │   └── routes/
 │   │       ├── data.py          # Tickers, OHLCV, refresh
-│   │       ├── predict.py       # Predictions + consensus + caching
+│   │       ├── predict.py       # Unified prediction builder + caching + consensus
 │   │       ├── backtest.py      # Walk-forward backtesting
 │   │       ├── train.py         # LSTM training + model inventory
 │   │       ├── settings.py      # Persistent user settings (JSON)
@@ -250,13 +254,14 @@ marketpulse-ai/
 │           ├── lib/api.ts       # Typed API client
 │           └── pages/           # Dashboard, Predict, Backtest, Training, Analysis, Settings
 │
-├── tests/                   # Comprehensive pytest suite (77 tests)
+├── tests/                   # Comprehensive pytest suite (103 tests)
 │   ├── conftest.py          # Shared fixtures (mock data, patched yfinance)
 │   ├── test_features.py     # Feature matrix shape, NaN, edge cases
 │   ├── test_models.py       # k-NN, LinReg, LSTM predict + errors
 │   ├── test_backtester.py   # P/L, fees, stop-loss, DD, Sharpe, streaks, yearly
 │   ├── test_api.py          # API facade, benchmarks, CSV export, sentiment
-│   └── test_logger.py       # Logger modes, progress bar, config sanity
+│   ├── test_logger.py       # Logger modes, progress bar, config sanity
+│   └── test_web_api.py      # FastAPI endpoints (26 tests: data, predict, backtest, settings)
 │
 ├── interface/
 │   ├── __init__.py
@@ -300,7 +305,7 @@ Two test suites — quick smoke test and comprehensive pytest:
 # Quick smoke test (no extra dependencies, 13 tests)
 uv run python test_pipeline.py
 
-# Full pytest suite (77 tests, needs pytest)
+# Full pytest suite (103 tests, needs pytest)
 uv run python -m pytest
 
 # Run specific test file or class
@@ -380,12 +385,15 @@ Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 - [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
 - [x] Centralized config, CLI filtering, CSV/JSON export
 - [x] Documentation (`docs/` + `AGENTS.md`)
-- [x] Pytest suite (77 tests: models, backtester, benchmarks, export, logger)
+- [x] Pytest suite (103 tests: models, backtester, benchmarks, web API, export, logger)
 - [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
 - [x] Pre-commit hooks (ruff auto-fix + format + mypy on every commit)
 - [x] Web GUI scaffold (FastAPI + React + TypeScript, 6 pages, typed API client)
-- [ ] Web GUI: full Dashboard (live chart, OHLCV table with data from API)
-- [ ] Web GUI: Predict + Backtest + Training pages
+- [x] Web GUI: Dashboard (zoomable chart, OHLCV table, stats, custom period, export CSV)
+- [x] Web GUI: Predict (builder with per-model config, 9 models incl. LSTM, consensus, caching, historical)
+- [x] Web GUI: Settings (persistent JSON, k-NN k, fees, SL, LSTM preference, developer section)
+- [ ] Web GUI: Backtest page (configurator, results, equity curve)
+- [ ] Web GUI: Training page (LSTM progress, model inventory)
 - [ ] Web GUI: Analysis page (News vs No-News for paper)
 - [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Authentication (API key for public deploy)

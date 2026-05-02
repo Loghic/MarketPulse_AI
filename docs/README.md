@@ -24,16 +24,14 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Web GUI
 
-FastAPI backend (`web/backend/`) wraps the existing `StockAppAPI` with REST endpoints. React frontend (`web/frontend/`) provides a browser dashboard with 6 tabs: Dashboard, Predict, Backtest, Training, Analysis, Settings.
+- **[Web GUI](web.md)** — Full documentation: architecture, pages (Dashboard, Predict, Settings), API endpoints with examples, reusable components, prediction caching, file structure.
 
-- Backend: auto-generated Swagger docs at `http://localhost:8000/docs`
-- Frontend: Vite dev server proxies `/api` to backend
-- Run both: `./web/dev.sh`
+FastAPI backend wraps `StockAppAPI` with REST endpoints. React frontend provides a browser dashboard. Swagger docs at `http://localhost:8000/docs`. Run: `./web/dev.sh`.
 
 ## Testing
 
 - `test_pipeline.py` — Quick 13-test smoke test (no pytest needed)
-- `tests/` — Comprehensive 77-test pytest suite: models, features, backtester (fees, SL, DD, Sharpe, streaks), benchmarks, export, logger
+- `tests/` — 103-test pytest suite: models, features, backtester (fees, SL, DD, Sharpe, streaks), benchmarks, web API endpoints (data, predict, backtest, settings, analysis), export, logger
 
 ## CI / CD
 

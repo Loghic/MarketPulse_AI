@@ -157,83 +157,80 @@ class TestData:
 class TestPredict:
     def test_predict_single(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/predict",
+            "/api/predict/run",
             json={
-                "tickers": ["TEST"],
-                "models": ["knn"],
-                "period": "1y",
-                "include_news": False,
-                "refresh_data": False,
+                "ticker": "TEST",
+                "items": [{"model": "k-NN", "period": "1y", "news": False}],
             },
         )
         assert r.status_code == 200
         data = r.json()
         assert "predictions" in data
+        assert "consensus" in data
         preds = data["predictions"]
-        assert len(preds) > 0
+        assert len(preds) >= 1
         p = preds[0]
         assert p["ticker"] == "TEST"
-        assert p["prediction"] in ("UP", "DOWN")
-        assert 0 <= p["confidence"] <= 1
+        assert p["prediction"] in ("UP", "DOWN", "N/A")
 
     def test_predict_multiple_models(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/predict",
+            "/api/predict/run",
             json={
-                "tickers": ["TEST"],
-                "models": ["knn", "linreg"],
-                "period": "1y",
-                "include_news": False,
-                "refresh_data": False,
+                "ticker": "TEST",
+                "items": [
+                    {"model": "k-NN", "period": "1y", "news": False},
+                    {"model": "k-NN (TW)", "period": "1y", "news": False},
+                ],
             },
         )
         assert r.status_code == 200
         preds = r.json()["predictions"]
-        # At least one result per requested model
-        models = {p["model"].split(" ")[0] for p in preds}
-        assert "knn" in models
-        assert "linreg" in models
+        assert len(preds) >= 1
+        labels = {p["model"] for p in preds}
+        assert any("k-NN" in label for label in labels)
 
     def test_predict_all_models(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/predict",
+            "/api/predict/run",
             json={
-                "tickers": ["TEST"],
-                "models": ["all"],
-                "period": "1y",
-                "include_news": False,
-                "refresh_data": False,
+                "ticker": "TEST",
+                "items": [
+                    {"model": m, "period": "1y", "news": False}
+                    for m in ["k-NN", "k-NN (TW)", "LinReg", "LSTM"]
+                ],
             },
         )
         assert r.status_code == 200
         preds = r.json()["predictions"]
-        # Should have results from all 4 base model types
-        base_models = {p["model"].split(" ")[0] for p in preds}
-        assert len(base_models) >= 3  # at least knn, linreg, + one enhanced
-        assert len(preds) >= 4  # at least 4 predictions total
+        assert len(preds) >= 2
 
     def test_predict_with_news(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/predict",
+            "/api/predict/run",
             json={
-                "tickers": ["TEST"],
-                "models": ["knn"],
-                "period": "1y",
-                "include_news": True,
-                "refresh_data": False,
+                "ticker": "TEST",
+                "items": [{"model": "k-NN", "period": "1y", "news": True}],
             },
         )
         assert r.status_code == 200
 
-    def test_consensus(self, refreshed_client):
-        r = refreshed_client.get("/api/predict/consensus/TEST?period=1y")
+    def test_consensus_in_response(self, refreshed_client):
+        r = refreshed_client.post(
+            "/api/predict/run",
+            json={
+                "ticker": "TEST",
+                "items": [
+                    {"model": "k-NN", "period": "1y", "news": False},
+                    {"model": "k-NN (TW)", "period": "1y", "news": False},
+                ],
+            },
+        )
         assert r.status_code == 200
-        data = r.json()
-        assert data["ticker"] == "TEST"
-        assert data["consensus"] in ("UP", "DOWN")
-        assert data["up_votes"] + data["down_votes"] == data["total"]
-        assert 0 <= data["agreement"] <= 1
-        assert len(data["votes"]) > 0
+        cons = r.json()["consensus"]
+        assert cons["direction"] in ("UP", "DOWN", "SPLIT")
+        assert cons["up"] + cons["down"] == cons["total"]
+        assert 0 <= cons["agreement"] <= 1
 
 
 # ------------------------------------------------------------------

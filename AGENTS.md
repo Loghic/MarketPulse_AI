@@ -21,33 +21,45 @@ run_all.py                  → CLI: batch runner (organized subdirectories in r
 refresh.py                  → CLI: download latest prices + news (no models, just data)
 test_pipeline.py            → 13 offline smoke tests (no pytest needed)
 
-tests/                      → Comprehensive pytest suite (77 tests)
+tests/                      → Comprehensive pytest suite (103 tests)
   conftest.py               → Fixtures: mock prices, news, patched yfinance, api
   test_features.py          → Feature matrix shape, NaN, edge cases
   test_models.py            → k-NN, LinReg, LSTM predict + errors
   test_backtester.py        → P/L math, fees, SL, DD, Sharpe, Sortino, streaks, yearly
   test_api.py               → API facade, benchmarks, CSV export, sentiment
   test_logger.py            → Logger modes, progress bar, config sanity
+  test_web_api.py           → FastAPI endpoints: data, predict, backtest, train, settings, analysis
 
 web/                        → Web GUI (FastAPI + React)
   dev.sh                    → Start both servers (backend + frontend)
   backend/
-    app.py                  → FastAPI main (CORS, router, Swagger at /docs)
+    app.py                  → FastAPI main (CORS, logging, Swagger at /docs)
     schemas.py              → Pydantic request/response models
     routes/
-      data.py               → GET tickers, GET OHLCV, POST refresh
-      predict.py            → POST predict, GET consensus (with JSON caching)
+      data.py               → GET tickers, GET OHLCV (limit=0=all), POST refresh
+      predict.py            → POST /run (unified per-model config), /cached, /historical
       backtest.py           → POST backtest (delegates to engine)
       train.py              → GET models inventory, POST start training
       settings.py           → GET/PUT/PATCH persistent user settings
       analysis.py           → POST news-comparison (for academic paper)
   frontend/
-    package.json            → React 19 + Vite + TS + TanStack + Plotly
+    package.json            → React 19 + Vite + TS + TanStack Query
     vite.config.ts          → Dev proxy /api → backend:8000
     src/
       main.tsx              → Entry + router + layout (6 tabs)
+      app.css               → Dark theme, no spinbox arrows
       lib/api.ts            → Typed fetch client for all endpoints
-      pages/                → Dashboard, Predict, Backtest, Training, Analysis, Settings
+      components/
+        ui.tsx              → Panel, Btn, LoadingBox, pct(), usd()
+        PriceChart.tsx      → Reusable zoomable SVG chart (line/candle, pan bar)
+        DataTable.tsx       → Reusable sortable/filterable/paginated table
+      pages/
+        Dashboard.tsx       → ★ Complete: chart, stats, OHLCV table
+        Predict.tsx         → ★ Complete: builder, consensus, caching, historical
+        Settings.tsx        → ★ Complete: persistent prefs, dev section
+        Backtest.tsx        → Stub (backend ready)
+        Training.tsx        → Stub (backend ready)
+        Analysis.tsx        → Stub (backend ready)
 
 interface/
   api.py                    → StockAppAPI facade — single entry point
@@ -185,17 +197,25 @@ React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →
 
 **Run:** `./web/dev.sh` or manually: `uvicorn web.backend.app:app --reload` + `cd web/frontend && npm run dev`
 
+**Pages (status):**
+- Dashboard ✓ — zoomable chart (line/candle, pan bar), stats, OHLCV table (Δ% sort, export CSV), custom period
+- Predict ✓ — unified builder (per-model period+news), 9 variants incl. LSTM, quick presets, auto consensus, JSON caching, historical predictions
+- Settings ✓ — persistent JSON, k/fee/SL sliders+text, LSTM preference with fallback, collapsible dev section
+- Backtest, Training, Analysis — stubs (backend endpoints ready)
+
 **Backend routes:**
-- `routes/data.py` — ticker list, OHLCV data (from DB, no re-download), refresh
-- `routes/predict.py` — predictions with JSON file caching (`predictions/{date}_{ticker}_{model}.json`)
-- `routes/backtest.py` — delegates to `engine/backtester.py` + `backtest_helpers.py`
-- `routes/train.py` — background LSTM training via `BackgroundTasks`, model inventory from `models/`
-- `routes/settings.py` — persistent user settings in `data/settings.json`
-- `routes/analysis.py` — News vs No-News paired comparison (for paper)
+- `routes/data.py` — ticker list, OHLCV (from DB, limit=0 = no limit), refresh
+- `routes/predict.py` — `POST /run` (unified per-model config), `/cached`, `/historical`. Cache: `predictions/{ticker}/{date}.json`
+- `routes/backtest.py` — delegates to `engine/backtester.py`
+- `routes/train.py` — background LSTM training, model inventory from `models/`
+- `routes/settings.py` — GET/PUT/PATCH `data/settings.json`
+- `routes/analysis.py` — News vs No-News paired comparison
 
-**Frontend:** single `main.tsx` with router, layout, 6 pages. `lib/api.ts` has typed fetch wrappers for every endpoint. Dashboard is functional, other pages are stubs.
+**Reusable components:** `PriceChart` (zoomable SVG), `DataTable` (generic sort/filter/paginate/export), `ui.tsx` (Panel, Btn, pct, usd)
 
-**Shared instance:** `routes/data.py:get_api()` creates one `StockAppAPI` reused by all routes. Same as CLI — no separate initialization.
+**Predict endpoint:** `POST /api/predict/run` takes `{ticker, items: [{model, period, news}], refresh_data}`. Returns `{predictions, consensus}`.
+
+**9 model variants:** k-NN, k-NN (TW), k-NN Enhanced, k-NN Enhanced (TW), LinReg, LinReg (TW), LinReg Enhanced, LinReg Enhanced (TW), LSTM. Each can independently have news on/off and its own period.
 
 ## CI / CD
 

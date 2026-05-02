@@ -2,8 +2,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, NavLink, Outlet } from "react-router-dom";
-import Dashboard from "./pages/dashboard";
-import Settings from "./pages/settings";
+import Dashboard from "./pages/Dashboard";
+import Predict from "./pages/Predict";
+import Settings from "./pages/Settings";
 import { s } from "./components/ui";
 import "./app.css";
 
@@ -78,7 +79,7 @@ createRoot(document.getElementById("root")!).render(
           <Route element={<Layout />}>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/predict" element={<Stub title="Predictions" icon="🎯" />} />
+            <Route path="/predict" element={<Predict />} />
             <Route path="/backtest" element={<Stub title="Backtest" icon="📈" />} />
             <Route path="/training" element={<Stub title="Training" icon="🧠" />} />
             <Route path="/analysis" element={<Stub title="Analysis" icon="📝" />} />

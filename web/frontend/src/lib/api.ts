@@ -177,6 +177,8 @@ export const api = {
       votes: { model: string; prediction: string; confidence: number }[];
     }>(`/predict/consensus/${ticker}?period=${period}`),
 
+  listCached: () => request<{ ticker: string; date: string; count: number; models: string[] }[]>("/predict/cached"),
+
   // Backtest
   backtest: (params: {
     tickers?: string[];

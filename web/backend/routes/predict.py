@@ -1,167 +1,267 @@
 """
-routes/predict.py – Prediction endpoints.
+routes/predict.py – Unified prediction endpoint.
+
+POST /api/predict/run — accepts list of {model, period, news} items.
+Results include both predictions table and consensus summary.
+Cache: predictions/{ticker}/{date}.json
 """
 
+from __future__ import annotations
+
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from fastapi import APIRouter
+from pydantic import BaseModel
 
-from config import ALL_TICKERS
-from interface.api import PredictionConfig
+from config import ALL_PERIODS
+from interface.api import PredictionConfig, StockAppAPI
 from web.backend.routes.data import get_api
-from web.backend.schemas import PredictionRow, PredictRequest, PredictResponse
 
 router = APIRouter(prefix="/api/predict", tags=["predictions"])
+log = logging.getLogger("marketpulse.web")
 
 CACHE_DIR = Path("predictions")
 
+MODEL_VARIANTS = [
+    {"type": "knn", "tw": False, "label": "k-NN"},
+    {"type": "knn", "tw": True, "label": "k-NN (TW)"},
+    {"type": "knn_enhanced", "tw": False, "label": "k-NN Enhanced"},
+    {"type": "knn_enhanced", "tw": True, "label": "k-NN Enhanced (TW)"},
+    {"type": "linreg", "tw": False, "label": "LinReg"},
+    {"type": "linreg", "tw": True, "label": "LinReg (TW)"},
+    {"type": "linreg_enhanced", "tw": False, "label": "LinReg Enhanced"},
+    {"type": "linreg_enhanced", "tw": True, "label": "LinReg Enhanced (TW)"},
+    {"type": "lstm", "tw": False, "label": "LSTM"},
+]
+VARIANT_BY_LABEL = {v["label"]: v for v in MODEL_VARIANTS}
+ALL_LABELS = [v["label"] for v in MODEL_VARIANTS]
 
-def _cache_key(ticker: str, model: str, period: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
-    return f"{today}_{ticker}_{model}_{period}"
+
+def _cache_path(ticker: str, date: str) -> Path:
+    return CACHE_DIR / ticker / f"{date}.json"
 
 
-def _load_cached(ticker: str, model: str, period: str) -> PredictionRow | None:
-    """Load prediction from today's cache if exists."""
-    key = _cache_key(ticker, model, period)
-    path = CACHE_DIR / f"{key}.json"
-    if path.exists():
-        data = json.loads(path.read_text())
-        return PredictionRow(**data)
+def _load_cache(ticker: str, date: str) -> list[dict] | None:
+    p = _cache_path(ticker, date)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return None
     return None
 
 
-def _save_cache(row: PredictionRow):
-    """Cache a prediction result."""
-    CACHE_DIR.mkdir(exist_ok=True)
-    key = _cache_key(row.ticker, row.model, row.period)
-    path = CACHE_DIR / f"{key}.json"
-    path.write_text(json.dumps(row.model_dump(), indent=2))
+def _save_cache(ticker: str, date: str, rows: list[dict]) -> None:
+    p = _cache_path(ticker, date)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rows, indent=2))
 
 
-ALL_MODELS = ["knn", "knn_enhanced", "linreg", "linreg_enhanced"]
-TW_MODELS = {
-    "knn_tw": ("knn", True, False),
-    "knn_enhanced_tw": ("knn_enhanced", True, False),
-    "linreg_tw": ("linreg", True, False),
-    "linreg_enhanced_tw": ("linreg_enhanced", True, False),
-}
+def _next_trading_day() -> str:
+    d = datetime.now() + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
 
-@router.post("", response_model=PredictResponse)
-def run_predictions(req: PredictRequest):
-    """Run predictions for specified tickers and models."""
+def _run_one(api: StockAppAPI, ticker: str, period: str, variant: dict, news: bool) -> dict | None:
+    try:
+        cfg = PredictionConfig(
+            ticker=ticker,
+            period=period,
+            model_type=variant["type"],
+            use_time_weights=variant["tw"],
+            include_news=news,
+        )
+        r = api.get_prediction(cfg)
+        label = variant["label"]
+        if news and r.sentiment_score != 0:
+            label += " + News"
+        return {
+            "ticker": ticker,
+            "model": label,
+            "period": period,
+            "prediction": r.prediction,
+            "confidence": float(r.confidence.rstrip("%")) / 100,
+            "last_price": r.last_price,
+            "sentiment": r.sentiment,
+            "sentiment_score": r.sentiment_score,
+            "headlines": r.headlines,
+            "timestamp": r.timestamp,
+        }
+    except Exception as e:
+        log.debug(f"  {ticker}/{variant['label']}/{period}: {e}")
+        return None
+
+
+# ------------------------------------------------------------------
+# Endpoints
+# ------------------------------------------------------------------
+
+
+@router.get("/info")
+def predict_info():
+    return {
+        "variants": ALL_LABELS,
+        "periods": ALL_PERIODS,
+        "next_trading_day": _next_trading_day(),
+    }
+
+
+class RunItem(BaseModel):
+    model: str  # variant label
+    period: str  # e.g. "1y"
+    news: bool = False
+
+
+class RunRequest(BaseModel):
+    ticker: str
+    items: list[RunItem]
+    refresh_data: bool = False
+
+
+@router.post("/run")
+def run_predictions(req: RunRequest):
+    """
+    Unified prediction endpoint.
+    Accepts specific model+period+news combos.
+    Returns predictions + consensus.
+    """
     api = get_api()
+    ticker = req.ticker.upper()
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    tickers = [t.upper() for t in req.tickers] if req.tickers else ALL_TICKERS
     if req.refresh_data:
-        api.refresh_tickers(tickers, verbose=False)
+        api.refresh_tickers([ticker], verbose=False)
 
-    # Determine which models to run
-    if "all" in req.models:
-        models_to_run = ALL_MODELS
-    else:
-        models_to_run = req.models
+    log.info(f"Running {len(req.items)} prediction(s) for {ticker}")
 
-    predictions = []
-    cached_count = 0
+    results: list[dict] = []
+    for item in req.items:
+        variant = VARIANT_BY_LABEL.get(item.model)
+        if not variant:
+            results.append(
+                {
+                    "ticker": ticker,
+                    "model": item.model,
+                    "period": item.period,
+                    "prediction": "N/A",
+                    "confidence": 0,
+                    "last_price": 0,
+                    "sentiment": "",
+                    "sentiment_score": 0,
+                    "headlines": [],
+                    "timestamp": today,
+                    "error": f"Unknown: {item.model}",
+                }
+            )
+            continue
 
-    for ticker in tickers:
-        for model in models_to_run:
-            # Check cache first
-            cached = _load_cached(ticker, model, req.period)
-            if cached and req.refresh_data is False:
-                predictions.append(cached)
-                cached_count += 1
-                continue
+        row = _run_one(api, ticker, item.period, variant, news=item.news)
+        if row:
+            results.append(row)
+        else:
+            results.append(
+                {
+                    "ticker": ticker,
+                    "model": f"{variant['label']} (failed)",
+                    "period": item.period,
+                    "prediction": "N/A",
+                    "confidence": 0,
+                    "last_price": 0,
+                    "sentiment": "",
+                    "sentiment_score": 0,
+                    "headlines": [],
+                    "timestamp": today,
+                }
+            )
 
-            # Run prediction
-            for tw in [False, True]:
-                try:
-                    cfg = PredictionConfig(
-                        ticker=ticker,
-                        period=req.period,
-                        model_type=model,
-                        use_time_weights=tw,
-                        include_news=req.include_news,
-                    )
-                    result = api.get_prediction(cfg)
+    # Consensus from valid results
+    valid = [r for r in results if r["prediction"] in ("UP", "DOWN")]
+    up = sum(1 for r in valid if r["prediction"] == "UP")
+    down = len(valid) - up
+    total = up + down
 
-                    model_label = f"{model}"
-                    if tw:
-                        model_label += " TW"
-                    if req.include_news and result.sentiment_score != 0:
-                        model_label += " + News"
+    # Cache
+    existing = _load_cache(ticker, today) or []
+    keys = {f"{r.get('model')}|{r.get('period')}" for r in existing}
+    merged = list(existing)
+    for r in results:
+        k = f"{r['model']}|{r['period']}"
+        if k not in keys:
+            merged.append(r)
+            keys.add(k)
+    _save_cache(ticker, today, merged)
 
-                    row = PredictionRow(
-                        ticker=ticker,
-                        model=model_label,
-                        period=req.period,
-                        prediction=result.prediction,
-                        confidence=float(result.confidence.rstrip("%")) / 100,
-                        last_price=result.last_price,
-                        sentiment=result.sentiment,
-                        sentiment_score=result.sentiment_score,
-                        headlines=result.headlines,
-                        timestamp=result.timestamp,
-                    )
-                    predictions.append(row)
-                    _save_cache(row)
-
-                except Exception:
-                    continue
-
-    return PredictResponse(
-        predictions=predictions,
-        cached=cached_count > 0,
-    )
+    return {
+        "predictions": results,
+        "consensus": {
+            "direction": "UP" if up > down else ("DOWN" if down > up else "SPLIT"),
+            "up": up,
+            "down": down,
+            "total": total,
+            "agreement": max(up, down) / total if total > 0 else 0,
+        },
+    }
 
 
-@router.get("/consensus/{ticker}")
-def get_consensus(ticker: str, period: str = "1y"):
-    """Get consensus across all models for a ticker."""
+@router.get("/cached")
+def list_cached():
+    if not CACHE_DIR.exists():
+        return []
+    out = []
+    for td in sorted(CACHE_DIR.iterdir()):
+        if not td.is_dir():
+            continue
+        for f in sorted(td.glob("*.json"), reverse=True):
+            data = json.loads(f.read_text())
+            out.append({"ticker": td.name, "date": f.stem, "count": len(data)})
+    return out
+
+
+@router.post("/historical")
+def predict_historical(ticker: str, date: str, period: str = "1y"):
     api = get_api()
     ticker = ticker.upper()
 
-    up_count, down_count = 0, 0
-    model_votes = []
+    cached = _load_cache(ticker, date)
+    if cached:
+        filtered = [r for r in cached if r.get("period") == period]
+        if filtered:
+            return {"predictions": filtered, "cached": True, "date": date}
 
-    for model in ALL_MODELS:
-        for tw in [False, True]:
-            try:
-                cfg = PredictionConfig(
-                    ticker=ticker,
-                    period=period,
-                    model_type=model,
-                    use_time_weights=tw,
-                    include_news=False,
-                )
-                result = api.get_prediction(cfg)
-                label = f"{model}{' TW' if tw else ''}"
-                model_votes.append(
-                    {
-                        "model": label,
-                        "prediction": result.prediction,
-                        "confidence": float(result.confidence.rstrip("%")) / 100,
-                    }
-                )
-                if result.prediction == "UP":
-                    up_count += 1
-                else:
-                    down_count += 1
-            except Exception:
-                continue
+    df = api.db.get_prices(ticker)
+    if df.empty:
+        return {"predictions": [], "date": date, "error": "No data"}
 
-    total = up_count + down_count
-    return {
-        "ticker": ticker,
-        "period": period,
-        "consensus": "UP" if up_count > down_count else "DOWN",
-        "up_votes": up_count,
-        "down_votes": down_count,
-        "total": total,
-        "agreement": max(up_count, down_count) / total if total > 0 else 0,
-        "votes": model_votes,
-    }
+    df["_date"] = pd.to_datetime(df["date"]).dt.date
+    cutoff = pd.to_datetime(date).date()
+    df_hist = df[df["_date"] <= cutoff].drop(columns=["_date"])
+    if len(df_hist) < 30:
+        return {"predictions": [], "date": date, "error": "Not enough data"}
+
+    results: list[dict] = []
+    for v in MODEL_VARIANTS:
+        try:
+            model = api._get_model(str(v["type"]), ticker, period)
+            pred, conf = model.predict(df_hist, use_time_weights=v["tw"], sentiment_score=0.0)
+            results.append(
+                {
+                    "ticker": ticker,
+                    "model": v["label"],
+                    "period": period,
+                    "prediction": pred,
+                    "confidence": conf,
+                    "date": date,
+                }
+            )
+        except Exception:
+            continue
+
+    if results:
+        _save_cache(ticker, date, results)
+    return {"predictions": results, "cached": False, "date": date}

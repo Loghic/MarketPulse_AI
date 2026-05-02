@@ -158,34 +158,23 @@ To add a new strict module, move it from the lenient override to the strict over
 
 ## Web GUI architecture
 
-The web layer (`web/`) wraps `StockAppAPI` without duplicating business logic:
+See [web.md](web.md) for full documentation (pages, API endpoints, components, caching).
 
 ```
-┌──────────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  React Frontend      │────▶│  FastAPI Backend  │────▶│  StockAppAPI     │
-│  localhost:5173      │     │  localhost:8000   │     │  (unchanged)     │
-│  Vite proxies /api   │     │  /api/* routes    │     │  engine/ layer   │
-└──────────────────────┘     └──────────────────┘     └──────────────────┘
+React Frontend  ────▸  FastAPI Backend  ────▸  StockAppAPI (unchanged)
+localhost:5173        localhost:8000           engine/ layer
+Vite proxies /api     /api/* routes
 ```
 
-**Backend** (`web/backend/`):
-- `app.py` — FastAPI app with CORS for React dev server, mounts all route modules
-- `schemas.py` — Pydantic models matching engine dataclasses (with validation)
-- `routes/data.py` — ticker CRUD, OHLCV data from DB, refresh trigger
-- `routes/predict.py` — predictions with file-based caching, consensus endpoint
-- `routes/backtest.py` — delegates to `Backtester` + `run_single_backtest()`
-- `routes/train.py` — LSTM training via `BackgroundTasks`, model file inventory
-- `routes/settings.py` — user settings persisted to `data/settings.json`
-- `routes/analysis.py` — News vs No-News paired comparison for academic paper
+**Key decisions:**
+- One `StockAppAPI` instance shared across all routes (`routes/data.py:get_api()`)
+- Unified `POST /api/predict/run` with per-model config (model + period + news per item)
+- Prediction caching: `predictions/{ticker}/{date}.json`
+- Consensus auto-computed from results (no separate consensus call needed)
+- Reusable `PriceChart` and `DataTable` components across pages
+- Settings: `data/settings.json` via GET/PUT/PATCH
 
-**Frontend** (`web/frontend/`):
-- Single `main.tsx` with React Router (6 routes) + TanStack Query for data fetching
-- `lib/api.ts` — typed fetch wrappers matching every backend endpoint
-- Pages: Dashboard (functional), Predict/Backtest/Training/Analysis/Settings (stubs)
-
-**Shared API instance:** `routes/data.py:get_api()` creates one `StockAppAPI` reused across all routes. No separate initialization — same instance as CLI would use.
-
-**Running:** `./web/dev.sh` starts both servers. API docs auto-generated at `/docs` (Swagger).
+**Completed pages:** Dashboard, Predict, Settings. **Stubs:** Backtest, Training, Analysis (backend endpoints ready).
 
 ## Adding new endpoints
 
