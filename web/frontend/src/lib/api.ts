@@ -74,6 +74,8 @@ export interface BacktestDayRow {
   trade_pnl: number;
   trade_pnl_net: number;
   stopped_out: boolean;
+  /** Per-day sentiment fed into the model. 0.0 for price-only rows. */
+  sentiment_score: number;
 }
 
 export interface BacktestModelResult {
@@ -152,6 +154,26 @@ export const api = {
     request<RefreshStatus[]>("/data/refresh", {
       method: "POST",
       body: JSON.stringify({ tickers }),
+    }),
+
+  /** Bulk news fetch with full source/scorer/history-days knobs. */
+  refreshNews: (params: {
+    tickers?: string[];
+    sentiment_method?: string;
+    news_source?: string[];
+    news_history_days?: number;
+    force_news?: boolean;
+  }) =>
+    request<{
+      ticker: string;
+      headlines_pulled: number;
+      mean_sentiment: number;
+      method: string;
+      sources: string[];
+      error?: string | null;
+    }[]>("/data/refresh-news", {
+      method: "POST",
+      body: JSON.stringify(params),
     }),
 
   // Predictions

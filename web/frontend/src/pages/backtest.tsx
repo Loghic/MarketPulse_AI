@@ -60,6 +60,13 @@ export default function Backtest() {
   const [buyHold, setBuyHold] = useState(true);
   const [refreshData, setRefreshData] = useState(false);
 
+  // News / sentiment knobs — match the CLI defaults (config.py).
+  // Forwarded to POST /api/backtest so the backend's per-day sentiment
+  // provider uses the same scorer + lookback window + decay half-life.
+  const [sentimentMethod, setSentimentMethod] = useState<"vader" | "finbert" | "naive">("vader");
+  const [newsLookback, setNewsLookback] = useState("7");
+  const [newsHalfLife, setNewsHalfLife] = useState("3");
+
   const [items, setItems] = useState<BItem[]>([]);
   const [buildSel, setBuildSel] = useState<Set<string>>(new Set());
 
@@ -176,10 +183,17 @@ export default function Backtest() {
           stop_loss_pct: parseFloat(globalSL) || 0,
           buy_hold: buyHold,
           refresh_data: refreshData,
-          // News stays as a hint to the user; the backend always produces
-          // both "+ News" and price-only variants if news is present.
-          // We could thread sentiment_method through here later.
-          ...(newsRequested ? {} : {}),
+          // News knobs — only sent when the user actually wants news.
+          // The backend always produces "+ News" variants if news is in
+          // the DB, but these knobs control WHICH scorer / lookback /
+          // half-life it uses when computing the per-day sentiment.
+          ...(newsRequested
+            ? {
+                sentiment_method: sentimentMethod,
+                news_lookback_days: parseInt(newsLookback) || 7,
+                news_half_life_days: parseFloat(newsHalfLife) || 0,
+              }
+            : {}),
         }),
       }).then((r) => r.json());
     },
@@ -401,6 +415,28 @@ export default function Backtest() {
           <SelRow label="News">
             {(["no", "yes", "both"] as const).map((v) => <Chip key={v} label={v === "no" ? "Without" : v === "yes" ? "With" : "Both"} active={selNews === v} onClick={() => setSelNews(v)} accent={selNews === v} />)}
           </SelRow>
+          {selNews !== "no" && (
+            <>
+              <SelRow label="Scorer">
+                {(["vader", "finbert", "naive"] as const).map((m) => (
+                  <Chip
+                    key={m}
+                    label={m === "vader" ? "VADER" : m === "finbert" ? "FinBERT" : "Naive"}
+                    active={sentimentMethod === m}
+                    onClick={() => setSentimentMethod(m)}
+                    accent={sentimentMethod === m}
+                  />
+                ))}
+              </SelRow>
+              <SelRow label="News cfg">
+                <NumField label="Lookback days" value={newsLookback} onChange={setNewsLookback} width={50} />
+                <NumField label="Half-life days" value={newsHalfLife} onChange={setNewsHalfLife} width={50} />
+                <span style={{ fontSize: 10, color: s.muted, alignSelf: "center" }}>
+                  0 = no decay (uniform within window)
+                </span>
+              </SelRow>
+            </>
+          )}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
             <NumField label="Fee %" value={globalFee} onChange={setGlobalFee} width={60} />
             <NumField label="SL %" value={globalSL} onChange={setGlobalSL} width={60} />
@@ -496,8 +532,30 @@ export default function Backtest() {
               {resFilters.size > 0 && <SmBtn label="Clear filters" color={s.accent} onClick={() => setResFilters(new Set())} />}
               <span style={{ fontSize: 11, color: s.muted }}>{sortedResults.length}/{results.length}</span>
               <SmBtn label="Export CSV" color={s.muted} onClick={() => {
-                const cols = ["model", "ticker", "period", "total_return", "accuracy", "profit_factor", "sharpe_ratio", "max_drawdown", "buy_hold_return", "fee_pct", "stop_loss_pct"];
-                const h = cols.join(",") + "\n"; const csv = sortedResults.map((r) => cols.map((c) => r[c] ?? "").join(",")).join("\n");
+                const cols = [
+                  "model", "ticker", "period",
+                  "total_return", "accuracy", "profit_factor", "sharpe_ratio",
+                  "max_drawdown", "buy_hold_return", "fee_pct", "stop_loss_pct",
+                  // Per-day sentiment summary so the user can quickly see
+                  // "did this model see news, and how much?" outside the UI.
+                  "mean_sentiment", "sentiment_active_days",
+                ];
+                // The API response has per-day sentiment in r.days[]; the
+                // mean_sentiment / sentiment_active_days columns are derived
+                // client-side so the CSV matches what the row shows in the UI.
+                const h = cols.join(",") + "\n";
+                const csv = sortedResults.map((r) => {
+                  const days = (r.days as { sentiment_score?: number }[] | undefined) ?? [];
+                  const sents = days.map((d) => d.sentiment_score ?? 0);
+                  const meanS = sents.length ? sents.reduce((a, b) => a + b, 0) / sents.length : 0;
+                  const activeS = sents.filter((x) => x !== 0).length;
+                  const enriched: Record<string, unknown> = {
+                    ...r,
+                    mean_sentiment: meanS.toFixed(4),
+                    sentiment_active_days: activeS,
+                  };
+                  return cols.map((c) => enriched[c] ?? "").join(",");
+                }).join("\n");
                 const b = new Blob([h + csv], { type: "text/csv" }); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `backtest_${days}d.csv`; a.click();
               }} />
             </div>
@@ -527,11 +585,18 @@ export default function Backtest() {
                 <STh col="max_drawdown" l="DD" sort={resSort} onSort={handleResSort} />
                 <STh col="buy_hold_return" l="B&H" sort={resSort} onSort={handleResSort} />
                 <STh col="win_trades" l="W/L" sort={resSort} onSort={handleResSort} />
+                <th style={rTh}>Sent</th>
                 <th style={rTh}>Beat?</th>
               </tr></thead>
               <tbody>{sortedResults.map((r, i) => {
-                if (r.error) return <tr key={i} style={{ borderBottom: `1px solid ${s.border}`, opacity: 0.4 }}><td style={{ padding: "4px 8px" }} colSpan={11}>{String(r.model)} — {String(r.error)}</td></tr>;
+                if (r.error) return <tr key={i} style={{ borderBottom: `1px solid ${s.border}`, opacity: 0.4 }}><td style={{ padding: "4px 8px" }} colSpan={12}>{String(r.model)} — {String(r.error)}</td></tr>;
                 const ret = (r.total_return as number) ?? 0; const bh = (r.buy_hold_return as number) ?? 0; const beat = ret > bh;
+                // Mean per-day sentiment fed into this row's model. Non-zero
+                // only for "+ News" variants. Per-day data is in r.days[].
+                const days = (r.days as { sentiment_score?: number }[] | undefined) ?? [];
+                const sentiments = days.map((d) => d.sentiment_score ?? 0);
+                const meanSent = sentiments.length ? sentiments.reduce((a, b) => a + b, 0) / sentiments.length : 0;
+                const activeDays = sentiments.filter((x) => x !== 0).length;
                 return (
                   <tr key={i} style={{ borderBottom: `1px solid ${s.border}` }} onMouseEnter={(e) => { e.currentTarget.style.background = s.hover; }} onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}>
                     <td style={{ padding: "4px 8px", color: s.text, whiteSpace: "nowrap" }}>{String(r.model)}</td>
@@ -544,6 +609,16 @@ export default function Backtest() {
                     <td style={{ padding: "4px 8px", textAlign: "center", color: s.red }}>{pct((r.max_drawdown as number) * 100)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center", color: bh >= 0 ? s.green : s.red }}>{pct(bh * 100)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center" }}>{String(r.win_trades)}/{String(r.loss_trades)}</td>
+                    <td
+                      title={`mean per-day sentiment · active days: ${activeDays}/${sentiments.length}`}
+                      style={{
+                        padding: "4px 8px",
+                        textAlign: "center",
+                        color: meanSent > 0 ? s.green : meanSent < 0 ? s.red : s.muted,
+                      }}
+                    >
+                      {activeDays === 0 ? "—" : (meanSent >= 0 ? "+" : "") + meanSent.toFixed(2)}
+                    </td>
                     <td style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: beat ? s.green : s.red }}>{beat ? "✓" : "✗"}</td>
                   </tr>);
               })}</tbody>

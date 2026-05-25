@@ -118,6 +118,10 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* News refresh — bulk-pull historical headlines for "+ News" backtests */}
+      <NewsRefreshPanel currentTicker={ticker} tickers={tickers ?? []} />
+
+
       {/* Stats */}
       {rows.length > 1 && <StatsCards rows={rows} />}
 
@@ -227,5 +231,190 @@ function StatsCards({ rows }: { rows: OHLCVRow[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// News refresh panel — equivalent to the CLI's `refresh.py --news-source ...`.
+// ----------------------------------------------------------------------
+
+type NewsScope = "this" | "stocks" | "crypto" | "all";
+
+function NewsRefreshPanel({
+  currentTicker,
+  tickers,
+}: {
+  currentTicker: string;
+  tickers: TickerInfo[];
+}) {
+  const [scope, setScope] = useState<NewsScope>("this");
+  const [method, setMethod] = useState<"vader" | "finbert" | "naive">("vader");
+  const [sources, setSources] = useState<Set<"yahoo" | "gdelt">>(new Set(["yahoo"]));
+  const [historyDays, setHistoryDays] = useState("30");
+
+  const stockTickers = tickers.filter((t) => t.asset_type === "stock").map((t) => t.ticker);
+  const cryptoTickers = tickers.filter((t) => t.asset_type === "crypto").map((t) => t.ticker);
+
+  const resolvedTickers = useMemo(() => {
+    if (scope === "this") return [currentTicker];
+    if (scope === "stocks") return stockTickers;
+    if (scope === "crypto") return cryptoTickers;
+    return [...stockTickers, ...cryptoTickers];
+  }, [scope, currentTicker, stockTickers, cryptoTickers]);
+
+  const mut = useMutation({
+    mutationFn: () =>
+      api.refreshNews({
+        tickers: resolvedTickers,
+        sentiment_method: method,
+        news_source: [...sources],
+        news_history_days: parseInt(historyDays) || 30,
+        force_news: true,
+      }),
+  });
+
+  const toggleSource = (src: "yahoo" | "gdelt") => {
+    const n = new Set(sources);
+    if (n.has(src)) { if (n.size > 1) n.delete(src); }
+    else n.add(src);
+    setSources(n);
+  };
+
+  return (
+    <Panel title="News refresh — pull historical headlines for backtests">
+      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: s.muted, minWidth: 60 }}>Scope</span>
+          {(["this", "stocks", "crypto", "all"] as const).map((sc) => (
+            <NewsChip
+              key={sc}
+              label={sc === "this" ? currentTicker : sc === "all" ? "All" : sc[0].toUpperCase() + sc.slice(1)}
+              active={scope === sc}
+              onClick={() => setScope(sc)}
+            />
+          ))}
+          <span style={{ fontSize: 10, color: s.muted }}>
+            ({resolvedTickers.length} ticker{resolvedTickers.length !== 1 ? "s" : ""})
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: s.muted, minWidth: 60 }}>Scorer</span>
+          {(["vader", "finbert", "naive"] as const).map((m) => (
+            <NewsChip
+              key={m}
+              label={m === "vader" ? "VADER" : m === "finbert" ? "FinBERT" : "Naive"}
+              active={method === m}
+              onClick={() => setMethod(m)}
+              hint={
+                m === "finbert"
+                  ? "transformer · ~400 MB download first time · best for finance"
+                  : m === "vader"
+                    ? "rule-based · fast · general-purpose"
+                    : "keyword baseline"
+              }
+            />
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: s.muted, minWidth: 60 }}>Source</span>
+          {(["yahoo", "gdelt"] as const).map((src) => (
+            <NewsChip
+              key={src}
+              label={src === "yahoo" ? "Yahoo" : "GDELT"}
+              active={sources.has(src)}
+              onClick={() => toggleSource(src)}
+              hint={src === "yahoo" ? "~7-day window, no key" : "years of history, no key, ~15min lag"}
+            />
+          ))}
+          <span style={{ fontSize: 10, color: s.muted }}>
+            (multi-source dedupes by headline)
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: s.muted }}>
+            History days
+            <input
+              type="text"
+              inputMode="decimal"
+              value={historyDays}
+              onChange={(e) => setHistoryDays(e.target.value)}
+              style={{
+                width: 70, padding: "4px 6px", borderRadius: 4, fontSize: 12,
+                fontFamily: s.mono, fontWeight: 600, background: "transparent",
+                border: `1px solid ${s.border}`, color: s.accent, textAlign: "right", outline: "none",
+              }}
+            />
+          </label>
+          <span style={{ fontSize: 10, color: s.muted, fontStyle: "italic" }}>
+            Yahoo caps at ~7. GDELT honours larger values up to 250 articles per call.
+          </span>
+          <div style={{ marginLeft: "auto" }}>
+            <Btn
+              onClick={() => mut.mutate()}
+              loading={mut.isPending}
+              label={mut.isPending ? "Pulling…" : `Fetch news for ${resolvedTickers.length} ticker${resolvedTickers.length !== 1 ? "s" : ""}`}
+            />
+          </div>
+        </div>
+
+        {/* Results */}
+        {mut.data && mut.data.length > 0 && (
+          <div style={{ marginTop: 4, fontSize: 11 }}>
+            <div style={{ color: s.muted, marginBottom: 4 }}>
+              {mut.data.reduce((sum, r) => sum + r.headlines_pulled, 0)} total headlines pulled across {mut.data.length} tickers
+            </div>
+            <div style={{ maxHeight: 160, overflowY: "auto", border: `1px solid ${s.border}`, borderRadius: 4 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: s.mono }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${s.border}` }}>
+                    <th style={{ padding: "4px 8px", color: s.muted, textAlign: "left" }}>Ticker</th>
+                    <th style={{ padding: "4px 8px", color: s.muted, textAlign: "right" }}>Headlines</th>
+                    <th style={{ padding: "4px 8px", color: s.muted, textAlign: "right" }}>Mean sentiment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mut.data.map((r) => (
+                    <tr key={r.ticker} style={{ borderBottom: `1px solid ${s.border}` }}>
+                      <td style={{ padding: "3px 8px", color: s.text }}>{r.ticker}</td>
+                      <td style={{ padding: "3px 8px", textAlign: "right", color: r.headlines_pulled > 0 ? s.text : s.muted }}>
+                        {r.headlines_pulled}
+                      </td>
+                      <td style={{
+                        padding: "3px 8px", textAlign: "right",
+                        color: r.mean_sentiment > 0 ? s.green : r.mean_sentiment < 0 ? s.red : s.muted,
+                      }}>
+                        {r.error ? "—" : (r.mean_sentiment >= 0 ? "+" : "") + r.mean_sentiment.toFixed(3)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function NewsChip({
+  label, active, onClick, hint,
+}: { label: string; active: boolean; onClick: () => void; hint?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={hint}
+      style={{
+        padding: "4px 10px", borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: "pointer",
+        border: `1px solid ${active ? s.accent : s.border}`,
+        background: active ? "rgba(59,130,246,0.18)" : "transparent",
+        color: active ? s.accent : s.muted,
+      }}
+    >
+      {label}
+    </button>
   );
 }
