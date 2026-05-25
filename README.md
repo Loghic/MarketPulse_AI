@@ -377,35 +377,44 @@ Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 
 ## Roadmap
 
-- [x] k-NN model — naive + enhanced
-- [x] Linear Regression — naive + enhanced
+- [x] k-NN model — naive + enhanced (+ time-weighted variants)
+- [x] Linear Regression — naive + enhanced (+ time-weighted variants)
 - [x] LSTM neural network (presets, early stopping, save/load)
 - [x] Shared feature engineering (RSI, MACD, volume, volatility)
 - [x] VADER sentiment + naive fallback
+- [x] **FinBERT sentiment (ProsusAI/finbert, finance-specific transformer)**
+- [x] **Pluggable news sources — Yahoo Finance + GDELT 2.0 (free, historical, no key)**
+- [x] **Look-ahead-safe per-day news in backtests (no future-news leakage)**
+- [x] **Exponential time-decay weighting + configurable news lookback window**
 - [x] Walk-forward backtesting (P/L, profit factor, streaks)
 - [x] Trading fees + stop-loss + buy-and-hold benchmark
 - [x] Risk metrics (max drawdown, Sharpe, Sortino, yearly rolling performance)
+- [x] **Data sanity guards (drop close ≤ 0; skip > 50% single-day moves)**
 - [x] Batch runner with organized output (`run_all.py`)
+- [x] **`scripts/news_impact.py` — quantifies news-vs-no-news across a run_all tree**
+- [x] **`scripts/clean_prices.py` — one-off DB cleanup tool**
 - [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
 - [x] Centralized config, CLI filtering, CSV/JSON export
-- [x] Documentation (`docs/` + `AGENTS.md`)
-- [x] Pytest suite (103 tests: models, backtester, benchmarks, web API, export, logger)
+- [x] Documentation (`docs/` + `AGENTS.md` + `docs/run.md` runbook)
+- [x] Pytest suite (~140 tests: models, backtester, news pipeline, web API, persistence)
 - [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
 - [x] Pre-commit hooks (ruff auto-fix + format + mypy on every commit)
 - [x] Web GUI scaffold (FastAPI + React + TypeScript, 6 pages, typed API client)
 - [x] Web GUI: Dashboard (zoomable chart, OHLCV table, stats, custom period, export CSV)
-- [x] Web GUI: Predict (builder with per-model config, 9 models incl. LSTM, consensus, caching, historical)
+- [x] Web GUI: Predict (per-ticker backend cache with timestamp, optional chart, 9 model variants, consensus, historical)
+- [x] **Web GUI: Backtest (grouped ticker picker, multi-period, news/SL/B&H knobs, live progress bar, persisted runs + cached redisplay)**
+- [x] **Web GUI: Training (LSTM model inventory with timestamps + active-preset marker, one-click training)**
+- [x] **Web GUI: Analysis (results-dir browser, news-vs-no-news leaderboards, cross-run comparison)**
 - [x] Web GUI: Settings (persistent JSON, k-NN k, fees, SL, LSTM preference, developer section)
-- [ ] Web GUI: Backtest page (configurator, results, equity curve)
-- [ ] Web GUI: Training page (LSTM progress, model inventory)
-- [ ] Web GUI: Analysis page (News vs No-News for paper)
-- [ ] FinBERT sentiment (finance-specific transformer)
 - [ ] Authentication (API key for public deploy)
+- [ ] Multi-asset portfolio backtests (current is single-ticker × period)
 
 ## Tech Stack
 
-**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · PyTorch (LSTM) · NumPy · tqdm · SQLite
+**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · transformers + PyTorch (FinBERT + LSTM, optional `ai` extra) · NumPy · tqdm · SQLite
+
+**News sources:** Yahoo Finance · GDELT 2.0 Doc API (free, no key, multi-year history)
 
 **Web:** FastAPI · uvicorn · React 19 · TypeScript · Vite · TanStack Query · Plotly.js
 
-**Dev:** pytest · ruff · mypy · GitHub Actions · Codecov · uv
+**Dev:** pytest · ruff · mypy · pre-commit · GitHub Actions · Codecov · uv
