@@ -175,6 +175,7 @@ Every CLI script accepts the same ticker-selection flags:
 | `train.py`    | Train LSTM models for future use |
 | `run_all.py`  | Batch wrapper that runs `--compare-periods` per ticker into subdirectories |
 | `scripts/news_impact.py` | Post-processes a `run_all.py` result tree to quantify news-vs-no-news per ticker, model, and overall |
+| `scripts/clean_prices.py` | Reports/removes rows with NULL or non-positive close in `data/market_data.db`, plus flags suspicious adjacent-day moves. Run this if you ever see absurd `total_return` numbers (>200% in days). |
 
 All five auto-refresh data on startup unless you pass `--no-refresh`. They all
 share the news/sentiment flags introduced in the 2026 refactor.
@@ -863,6 +864,9 @@ uv run mypy engine/ interface/ web/backend/
 | GDELT returns nothing | Network blocks `api.gdeltproject.org`, or you searched an obscure ticker not in `TICKER_NAMES` | Verify with the curl command in §3; extend `TICKER_NAMES` in `engine/news_sources.py` |
 | `sqlite3.OperationalError: disk I/O error` | Usually a stale `data/` mount or read-only volume | Remove `data/market_data.db` and let it rebuild |
 | `sqlite3.OperationalError: unable to open database file` mid-batch | Transient — macOS Spotlight indexing the WAL/SHM files, Time Machine snapshot, or FD pressure | Since 2026 the walk-forward loop pre-fetches news once per ticker (no thousands of per-day DB calls) and `run_all.py` wraps each ticker in try/except, so a single failure no longer kills the batch. If you still see it, re-run with `--no-refresh` once the DB is populated and check `Activity Monitor → Disk` for whatever's hammering `data/`. |
+| `total_return` in the hundreds (e.g. 385.58 for 5 days) | A single bad row in `data/market_data.db` with close = 0 or NULL → trade_pnl = `(exit - 0) / 0` is clipped to a huge value | Run `uv run python scripts/clean_prices.py` to report bad rows, then `--apply` to delete them. New writes are filtered automatically (`db_manager.save_prices`) and the backtester itself drops days with > 50% single-day moves since 2026. Re-run `refresh.py` after cleanup. |
+| Test runs show up in the Analysis tab picker (e.g. `custom_5d_…` dirs you never created) | `tests/test_web_api.py::TestBacktest` was missing the autouse `_redirect_persistence` fixture before 2026 | Fixed in 2026: the autouse fixture points `CACHE_DIR` + `RESULTS_DIR` at `tmp_path` for every backtest test. Manually clean any leftover test artifacts with `rm -rf results/custom_* backtests/*custom*`. If you add a new backtest-triggering test elsewhere, copy that fixture. |
+| Pre-commit hook hangs on `mypy`, files appear "deleted" after CTRL+C | Pre-commit stashes unstaged changes before running hooks; CTRL+C between stash and restore leaves the changes locked in the stash | `git stash list` → you'll see a `pre-commit autosquash` stash. `git stash apply stash@{0}` recovers the files. To prevent: either let mypy finish (~20-60s), kill `mypy` itself (not `git`) in another terminal, or drop the mypy hook from `.pre-commit-config.yaml` and rely on CI. |
 | `RuntimeError: LSTM requires PyTorch` | `ai` extra not installed | `uv pip install -e ".[ai]"` (and re-train with `train.py`) |
 | `RuntimeError: No trained LSTM for X (period=Y)` | LSTM weights file missing | `uv run python train.py --ticker X --period Y --preset standard` |
 | `--news-history-days 365` is slow | GDELT call + scoring 250 headlines each ticker | One-off; you only need to do it once. Add `--no-refresh` to subsequent backtests. |

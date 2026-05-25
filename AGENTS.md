@@ -294,3 +294,35 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - k-NN time-weighting uses exponential decay × distance (not data trimming).
 - Early stopping in LSTM: patience 10/20/50 for quick/standard/cluster.
 - `run_all.py` creates subdirectories: `results/{scope}_{days}d[_fee][_sl][_bh]/`.
+
+## 2026 changes
+
+### News pipeline (no look-ahead)
+
+- `Backtester.run(sentiment_provider=...)` calls the provider once per backtest day. `backtest_helpers.run_single_backtest()` pre-fetches the ticker's full news history once via `api.db.get_news(ticker)` and filters it in memory — the closure honours `effective_date = COALESCE(published_at, date) < asof_date`, the lookback window, and the exponential half-life. Same semantics as `db.get_news_before()` but ~100× faster and no SQLite FD exhaustion on long batches. The constant `sentiment_score` argument is kept for backward compat only.
+- `engine/sentiment.py` exposes `get_scorer("vader" | "finbert" | "naive")`, cached per-process. `engine/news_sources.py` exposes `get_provider("yahoo" | "gdelt" | [...])`, with the MultiProvider deduplicating by `(date, headline)`. The news table has `published_at` / `source` / `method` columns (auto-migrated on existing DBs).
+
+### Data sanity guards
+
+- `db_manager.save_prices()` drops rows with NULL or non-positive close before persisting; `engine/backtester.py` further drops any backtest day whose price ratio exceeds `MAX_PLAUSIBLE_DAILY_MOVE = 0.5` (±50%). Both log a warning. Without these, a single corrupt row (yfinance occasionally returns close=0 on partial bars) would yield total_return ≈ 385 (38,500%) for a 5-day run.
+- `scripts/clean_prices.py` reports and optionally deletes any existing bad rows in `data/market_data.db`, plus flags suspicious adjacent-day moves above a threshold.
+
+### Backtest persistence
+
+- Every `POST /api/backtest` writes `backtests/{run_id}.json` (full response for tab-redisplay) plus per-ticker CSVs + `_summary.csv` to `results/{scope}_{days}d…_{YYYYMMDD-HHMMSS}/`. Timestamp in the dir means re-runs never overwrite.
+- `GET /api/backtest/progress` exposes a module-level dict updated as the route iterates tickers/periods; FastAPI runs the sync route in a threadpool so the progress endpoint stays responsive.
+- `GET /api/backtest/runs` and `GET /api/backtest/runs/{run_id}` list and load persisted runs.
+
+### Web GUI
+
+- All six tabs in `web/frontend/src/pages/` are wired in `main.tsx`. Predict has per-ticker backend caching via `GET /api/predict/cached/{ticker}`. Predict + Backtest have an opt-in chart toggle (default hidden). Analysis consumes the `results/` tree via `GET /api/analysis/results-dirs` + `GET /api/analysis/result-csv`.
+- Backtest tab uses explicit `setInterval`-based polling for `/api/backtest/progress` (not TanStack Query's `refetchInterval` predicate — that was flaky) and a separate per-second `nowTick` so the "Elapsed: Ns" counter advances between polls.
+
+### Test isolation
+
+- `TestBacktest` in `tests/test_web_api.py` uses an autouse `_redirect_persistence` fixture that points `CACHE_DIR` + `RESULTS_DIR` at `tmp_path`. Without it, every backtest test would pollute the developer's real `backtests/` and `results/` (which the Analysis tab picker then reads). Add the same redirect to any new test that triggers `POST /api/backtest`.
+
+### Helper scripts
+
+- `scripts/news_impact.py` — post-processor for a `run_all.py` result tree. Pairs `+ News` rows with their no-news siblings, emits `_news_vs_no_news_{TICKER}.csv`, `_news_vs_no_news_summary.csv`, `_news_vs_no_news_overall.csv`. Pure-function helpers (`pair_rows`, `summarize_per_ticker_model`, `overall_stats`) are unit-tested in `tests/test_news_impact.py`. The same pairing logic is reimplemented in TypeScript in `web/frontend/src/pages/Analysis.tsx` so the browser doesn't need a round-trip.
+- `scripts/clean_prices.py` — one-off DB cleanup, see *Data sanity guards* above.
