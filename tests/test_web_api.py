@@ -249,6 +249,23 @@ class TestBacktest:
     key — the "summary" concept is the two best-of pointers.
     """
 
+    @pytest.fixture(autouse=True)
+    def _redirect_persistence(self, tmp_path, monkeypatch):
+        """
+        Every test in this class triggers POST /api/backtest, which writes
+        cache JSON + results CSVs to disk. Redirect both directories to
+        tmp_path so the developer's real ``backtests/`` and ``results/``
+        trees aren't polluted by test runs (those artifacts would then
+        show up in the Analysis tab picker).
+        """
+        from pathlib import Path
+
+        from web.backend.routes import backtest as _bt
+
+        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
+        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
+        yield
+
     @staticmethod
     def _body(**overrides) -> dict:
         """Default backtest request body — override per-test."""
@@ -342,16 +359,13 @@ class TestBacktest:
         data = r.json()
         assert "running" in data
 
-    def test_backtest_persists_to_disk(self, refreshed_client, tmp_path, monkeypatch):
-        """A successful backtest writes JSON cache + results/ CSVs."""
-        from pathlib import Path
+    def test_backtest_persists_to_disk(self, refreshed_client, tmp_path):
+        """A successful backtest writes JSON cache + results/ CSVs.
 
-        from web.backend.routes import backtest as _bt
-
-        # Redirect persistence directories to a tmp location so the test is hermetic
-        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
-        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
-
+        The autouse ``_redirect_persistence`` fixture already pointed
+        ``CACHE_DIR`` + ``RESULTS_DIR`` at ``tmp_path``, so this just
+        exercises that the write actually happens.
+        """
         r = refreshed_client.post("/api/backtest", json=self._body(fee_pct=0.03))
         assert r.status_code == 200
 
@@ -371,15 +385,8 @@ class TestBacktest:
         # _summary.csv should be present
         assert (sub / "_summary.csv").exists()
 
-    def test_backtest_runs_listing(self, refreshed_client, tmp_path, monkeypatch):
+    def test_backtest_runs_listing(self, refreshed_client):
         """After a backtest, ``GET /api/backtest/runs`` shows it; loading round-trips."""
-        from pathlib import Path
-
-        from web.backend.routes import backtest as _bt
-
-        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
-        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
-
         refreshed_client.post("/api/backtest", json=self._body())
 
         r = refreshed_client.get("/api/backtest/runs")

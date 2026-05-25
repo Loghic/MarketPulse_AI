@@ -125,19 +125,37 @@ export default function Backtest() {
   // we just hide what wasn't selected).
   // ------------------------------------------------------------------
   // Live progress polling — the backend updates a module-level dict as
-  // it iterates tickers/periods. The query is always mounted, but only
-  // *polls* while a run is in flight (refetchInterval returns false when
-  // the backend reports running=false, which auto-pauses the timer).
+  // it iterates tickers/periods. We drive polling explicitly with a
+  // setInterval (rather than refetchInterval's predicate) because the
+  // predicate-based approach was flaky: TanStack would sometimes settle
+  // into "running=false" between renders and stop polling before the
+  // backtest finished. Direct setInterval gives us deterministic 500ms
+  // ticks while ``polling`` is true.
   // ------------------------------------------------------------------
   const [polling, setPolling] = useState(false);
-  const { data: progress } = useQuery({
+  const { data: progress, refetch: refetchProgress } = useQuery({
     queryKey: ["backtestProgress"],
     queryFn: api.backtestProgress,
-    refetchInterval: (q) => {
-      const data = q.state.data;
-      return polling || data?.running ? 500 : false;
-    },
+    staleTime: 0,
   });
+
+  useEffect(() => {
+    if (!polling) return;
+    // Kick once immediately, then poll every 500ms.
+    refetchProgress();
+    const id = setInterval(() => refetchProgress(), 500);
+    return () => clearInterval(id);
+  }, [polling, refetchProgress]);
+
+  // Separate per-second tick so the "Elapsed: 12s" counter keeps
+  // advancing between polls (rather than freezing on whatever the last
+  // payload's started_at was).
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    if (!polling) return;
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [polling]);
 
   const runMut = useMutation({
     mutationFn: () => {
@@ -426,7 +444,7 @@ export default function Backtest() {
         </div>
       </Panel>
 
-      {runMut.isPending && <ProgressPanel p={progress} />}
+      {runMut.isPending && <ProgressPanel p={progress} tick={nowTick} />}
 
       {/* Summary */}
       {results.length > 0 && (
@@ -597,7 +615,16 @@ function STh({ col, l, al, sort, onSort }: { col: string; l: string; al?: string
   return (<th onClick={() => onSort(col)} style={{ ...rTh, textAlign: (al ?? "center") as "left" | "center", cursor: "pointer", userSelect: "none", color: a ? s.text : s.muted }}>
     {l}{a && <span style={{ marginLeft: 3, opacity: 0.6 }}>{sort.asc ? "↑" : "↓"}</span>}</th>);
 }
-function ProgressPanel({ p }: { p: Awaited<ReturnType<typeof api.backtestProgress>> | undefined }) {
+function ProgressPanel({
+  p,
+  tick,
+}: {
+  p: Awaited<ReturnType<typeof api.backtestProgress>> | undefined;
+  tick: number;
+}) {
+  // `tick` is read so the linter sees it as used and the component
+  // re-renders on each second-level tick. The actual value is irrelevant.
+  void tick;
   const total = p?.total_units ?? 0;
   const done = p?.completed_units ?? 0;
   const fraction = total > 0 ? done / total : 0;
