@@ -87,11 +87,22 @@ class BacktestRequest(BaseModel):
     tickers: list[str] = Field(default_factory=list)
     days: int = 20
     period: str = "max"
+    periods: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit list of periods to backtest (overrides period + "
+            "compare_periods). e.g. ['1y', '2y']."
+        ),
+    )
     fee_pct: float = 0.05
     stop_loss_pct: float = 0.0
     compare_periods: bool = False
     buy_hold: bool = True
     refresh_data: bool = True
+    # News / sentiment knobs (default to config values when omitted)
+    sentiment_method: str | None = None
+    news_lookback_days: int | None = None
+    news_half_life_days: float | None = None
 
 
 class BacktestDayRow(BaseModel):

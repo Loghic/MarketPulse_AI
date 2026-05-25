@@ -223,6 +223,60 @@ def list_cached():
     return out
 
 
+@router.get("/cached/{ticker}")
+def cached_for_ticker(ticker: str):
+    """
+    Latest cached prediction set for one ticker.
+
+    Returns the most recent (by file date) cache entry so the frontend can
+    re-render a previous prediction on tab switch without re-running every
+    model. Includes:
+        * ``date`` – the YYYY-MM-DD bucket the cache was written under
+        * ``cached_at`` – ISO timestamp of when the JSON file was last
+          modified (used to show "cached X minutes ago" on the UI)
+        * ``predictions`` – the same row shape as POST /run returns
+        * ``consensus`` – recomputed from the cached rows
+
+    Empty payload (``predictions: []``) when no cache exists yet — the
+    frontend should hide its "cached" badge in that case.
+    """
+    ticker = ticker.upper()
+    td = CACHE_DIR / ticker
+    if not td.exists():
+        return {"ticker": ticker, "predictions": [], "consensus": None}
+
+    files = sorted(td.glob("*.json"), reverse=True)
+    if not files:
+        return {"ticker": ticker, "predictions": [], "consensus": None}
+
+    latest = files[0]
+    try:
+        rows = json.loads(latest.read_text())
+    except Exception:
+        return {"ticker": ticker, "predictions": [], "consensus": None}
+
+    valid = [r for r in rows if r.get("prediction") in ("UP", "DOWN")]
+    up = sum(1 for r in valid if r["prediction"] == "UP")
+    down = len(valid) - up
+    total = up + down
+
+    cached_at = datetime.fromtimestamp(latest.stat().st_mtime).isoformat(timespec="seconds")
+
+    return {
+        "ticker": ticker,
+        "date": latest.stem,
+        "cached_at": cached_at,
+        "predictions": rows,
+        "consensus": {
+            "direction": "UP" if up > down else ("DOWN" if down > up else "SPLIT"),
+            "up": up,
+            "down": down,
+            "total": total,
+            "agreement": max(up, down) / total if total > 0 else 0,
+        },
+    }
+
+
 @router.post("/historical")
 def predict_historical(ticker: str, date: str, period: str = "1y"):
     api = get_api()

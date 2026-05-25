@@ -422,3 +422,83 @@ class TestAnalysis:
             assert "diff" in row
             assert "sharpe_no_news" in row
             assert "accuracy_no_news" in row
+
+    def test_results_dirs_empty_ok(self, client):
+        """The directory browser must never crash when results/ is missing."""
+        r = client.get("/api/analysis/results-dirs")
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+
+    def test_result_csv_404_on_missing(self, client):
+        """Bad dir / file should return 404, not 500."""
+        r = client.get("/api/analysis/result-csv?dir=does_not_exist&file=AAPL")
+        assert r.status_code == 404
+
+    def test_result_csv_path_traversal_blocked(self, client):
+        """Path traversal attempts must be rejected with 400."""
+        r = client.get("/api/analysis/result-csv?dir=..&file=etc")
+        assert r.status_code == 400
+
+    def test_result_csv_roundtrip(self, client, tmp_path, monkeypatch):
+        """Write a fake CSV under results/ and confirm the endpoint serves it."""
+        import csv as _csv
+        from pathlib import Path
+
+        from web.backend.routes import analysis as _analysis_module
+
+        # Redirect RESULTS_DIR to tmp_path/results for this test
+        results = tmp_path / "results"
+        sub = results / "stocks_5d_fee003_bh"
+        sub.mkdir(parents=True)
+        with open(sub / "AAPL.csv", "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=["ticker", "period", "model", "total_return"])
+            w.writeheader()
+            w.writerow({"ticker": "AAPL", "period": "1y", "model": "k-NN", "total_return": "0.05"})
+
+        monkeypatch.setattr(_analysis_module, "RESULTS_DIR", Path(str(results)))
+
+        r = client.get("/api/analysis/results-dirs")
+        assert r.status_code == 200
+        names = [d["name"] for d in r.json()]
+        assert "stocks_5d_fee003_bh" in names
+
+        r = client.get("/api/analysis/result-csv?dir=stocks_5d_fee003_bh&file=AAPL")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["row_count"] == 1
+        assert data["rows"][0]["ticker"] == "AAPL"
+        assert data["rows"][0]["total_return"] == "0.05"
+
+
+# ------------------------------------------------------------------
+# Per-ticker cached prediction endpoint
+# ------------------------------------------------------------------
+
+
+class TestPredictCacheByTicker:
+    def test_cached_empty(self, client):
+        """No cache yet → empty payload, never 404."""
+        r = client.get("/api/predict/cached/NEVER_FETCHED")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["predictions"] == []
+        assert data["consensus"] is None
+
+    def test_cached_after_run(self, refreshed_client):
+        """After a /predict/run the per-ticker cache returns the rows + timestamp."""
+        refreshed_client.post(
+            "/api/predict/run",
+            json={
+                "ticker": "TEST",
+                "items": [{"model": "k-NN", "period": "1y", "news": False}],
+                "refresh_data": False,
+            },
+        )
+        r = refreshed_client.get("/api/predict/cached/TEST")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ticker"] == "TEST"
+        assert len(data["predictions"]) > 0
+        assert "cached_at" in data
+        # ISO-ish timestamp with seconds
+        assert "T" in data["cached_at"]

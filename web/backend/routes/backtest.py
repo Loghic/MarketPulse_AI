@@ -83,6 +83,24 @@ def run_backtest(req: BacktestRequest):
         stop_loss_pct=req.stop_loss_pct,
     )
 
+    # Resolve which periods to run.
+    # Priority: explicit ``periods`` list > ``compare_periods`` flag > single ``period``.
+    if req.periods:
+        periods = req.periods
+    elif req.compare_periods:
+        periods = ALL_PERIODS
+    else:
+        periods = [req.period]
+
+    # Forward the news / sentiment knobs to run_single_backtest when given.
+    news_kwargs: dict = {}
+    if req.sentiment_method is not None:
+        news_kwargs["sentiment_method"] = req.sentiment_method
+    if req.news_lookback_days is not None:
+        news_kwargs["news_lookback_days"] = req.news_lookback_days
+    if req.news_half_life_days is not None:
+        news_kwargs["news_half_life_days"] = req.news_half_life_days
+
     all_results = []
 
     for ticker in tickers:
@@ -90,13 +108,10 @@ def run_backtest(req: BacktestRequest):
         if df.empty:
             continue
 
-        if req.compare_periods:
-            periods = ALL_PERIODS
-        else:
-            periods = [req.period]
-
         for period in periods:
-            results = run_single_backtest(api, backtester, ticker, df, period, req.days, full=False)
+            results = run_single_backtest(
+                api, backtester, ticker, df, period, req.days, full=False, **news_kwargs
+            )
             if not results:
                 continue
 
