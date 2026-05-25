@@ -80,12 +80,34 @@ class DatabaseManager:
     # ------------------------------------------------------------------
 
     def save_prices(self, ticker: str, df: pd.DataFrame, asset_type: str):
-        """Uloží DataFrame do DB (upsert přes INSERT OR REPLACE)."""
+        """Uloží DataFrame do DB (upsert přes INSERT OR REPLACE).
+
+        Defensively drops rows with missing or non-positive ``close`` —
+        these otherwise produce nonsensical day-over-day ratios in the
+        backtester (a single zero-price row yields a 10,000×+ trade PnL).
+        """
         if df.empty:
             return
 
         with sqlite3.connect(self.db_path) as conn:
             df = df.copy().reset_index()
+
+            # Drop garbage rows up front so they never make it into the DB.
+            # yfinance occasionally returns a zero/NaN close for very-recent
+            # rows or holidays; both are useless for the backtester.
+            close_col_candidates = ("close", "Close")
+            for cname in close_col_candidates:
+                if cname in df.columns:
+                    before = len(df)
+                    df = df[df[cname].notna() & (df[cname] > 0)]
+                    dropped = before - len(df)
+                    if dropped:
+                        print(
+                            f"  DB: dropped {dropped} {ticker} rows with missing/non-positive close"
+                        )
+                    break
+            if df.empty:
+                return
 
             # Normalizace sloupců
             df.columns = [c.lower() for c in df.columns]

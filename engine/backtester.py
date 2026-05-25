@@ -14,11 +14,21 @@ import numpy as np
 import pandas as pd
 
 from config import DEFAULT_STOP_LOSS_PCT, DEFAULT_TRADING_FEE_PCT
+from engine.logger import get_logger
 
 # Type alias for a per-day sentiment lookup function.
 # Receives the prediction date as "YYYY-MM-DD" string and must return a
 # float in [-1, 1] computed from news strictly published BEFORE that date.
 SentimentProvider = Callable[[str], float]
+
+log = get_logger("backtester")
+
+# A single-day move bigger than this is treated as a data-integrity error
+# (typically a stray row with close ≈ 0 or a stale ancient price mixed
+# into recent data — that would otherwise yield a 100×+ ratio and wreck
+# the metrics). The offending day is logged + dropped, the rest of the
+# backtest continues.
+MAX_PLAUSIBLE_DAILY_MOVE = 0.5  # ±50%
 
 
 @dataclass
@@ -415,6 +425,33 @@ class Backtester:
 
             entry_price = float(train_df["close"].iloc[-1])
             close_actual = float(df["close"].iloc[eval_idx])
+
+            # Defensive data sanity check: drop days where prices are
+            # missing, non-positive, or differ by more than MAX_PLAUSIBLE_
+            # DAILY_MOVE. Without this, a single bad row (close=0,
+            # stale ancient price, etc.) would produce a single trade_pnl
+            # of 300×+ and wreck total_return / Sharpe / Sortino.
+            if (
+                not np.isfinite(entry_price)
+                or not np.isfinite(close_actual)
+                or entry_price <= 0
+                or close_actual <= 0
+            ):
+                log.warning(
+                    f"{ticker} {df['date'].iloc[eval_idx]}: bad price data "
+                    f"(entry={entry_price}, close={close_actual}); dropping day"
+                )
+                continue
+            move = abs(close_actual - entry_price) / entry_price
+            if move > MAX_PLAUSIBLE_DAILY_MOVE:
+                log.warning(
+                    f"{ticker} {df['date'].iloc[eval_idx]}: implausible "
+                    f"day-over-day move {move:+.1%} "
+                    f"(entry={entry_price}, close={close_actual}); "
+                    "dropping day — check price data for bad rows"
+                )
+                continue
+
             actual_direction = "UP" if close_actual > entry_price else "DOWN"
 
             # Per-day sentiment lookup. ``train_df`` only contains rows
