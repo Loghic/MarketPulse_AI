@@ -44,6 +44,34 @@ class RefreshStatus(BaseModel):
     news_count: int
 
 
+class RefreshNewsRequest(BaseModel):
+    """Dedicated news refresh — matches ``refresh.py``'s news-only flags."""
+
+    tickers: list[str] = Field(default_factory=list, description="Empty = all tickers")
+    sentiment_method: str | None = Field(
+        default=None, description="vader | finbert | naive (None = config default)"
+    )
+    news_source: list[str] | None = Field(
+        default=None,
+        description="One or more of yahoo / gdelt. Combined with deduplication when multiple.",
+    )
+    news_history_days: int = Field(
+        default=7, description="How many days of news to pull per ticker"
+    )
+    force_news: bool = Field(
+        default=True, description="Bypass the same-day cache check (recommended for bulk fetch)"
+    )
+
+
+class RefreshNewsStatus(BaseModel):
+    ticker: str
+    headlines_pulled: int
+    mean_sentiment: float
+    method: str
+    sources: list[str]
+    error: str | None = None
+
+
 # ------------------------------------------------------------------
 # Predictions
 # ------------------------------------------------------------------
@@ -114,6 +142,9 @@ class BacktestDayRow(BaseModel):
     trade_pnl: float
     trade_pnl_net: float
     stopped_out: bool
+    # Sentiment that drove this day's prediction (0.0 for price-only rows).
+    # Lets the Backtest tab chart "how news contributed each day".
+    sentiment_score: float = 0.0
 
 
 class BacktestModelResult(BaseModel):

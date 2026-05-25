@@ -88,6 +88,7 @@ def _result_to_schema(
             trade_pnl=round(d.trade_pnl, 8),
             trade_pnl_net=round(d.trade_pnl_net, 8),
             stopped_out=d.stopped_out,
+            sentiment_score=round(d.sentiment_score, 4),
         )
         for d in r.days
     ]
@@ -156,6 +157,16 @@ def _results_dir_name(
 
 def _row_to_csv_dict(r: BacktestModelResult) -> dict:
     """Flatten a BacktestModelResult for CSV export — matches run_all.py columns."""
+    # Per-day sentiment summary — non-zero only for "+ News" model variants.
+    # ``mean_sentiment`` answers "what was the average mood of the news the
+    # model saw across the holdout window"; ``sentiment_active_days`` answers
+    # "on how many days did news actually influence the call" (for the
+    # paper / poster narrative around news-vs-no-news).
+    sentiments = [d.sentiment_score for d in r.days]
+    nonzero = [v for v in sentiments if v != 0]
+    mean_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
+    sentiment_active_days = len(nonzero)
+
     row = {
         "ticker": r.ticker,
         "period": r.period,
@@ -179,6 +190,8 @@ def _row_to_csv_dict(r: BacktestModelResult) -> dict:
         "worst_day": round(r.worst_day, 8),
         "longest_win_streak": r.longest_win_streak,
         "longest_loss_streak": r.longest_loss_streak,
+        "mean_sentiment": round(mean_sentiment, 4),
+        "sentiment_active_days": sentiment_active_days,
     }
     for bench, bret in (r.benchmarks or {}).items():
         row[f"bench_{bench}"] = bret

@@ -9,10 +9,12 @@ import logging
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
-from config import ALL_TICKERS
+from config import ALL_TICKERS, DEFAULT_SENTIMENT_METHOD
 from interface.api import StockAppAPI
 from web.backend.schemas import (
     OHLCVRow,
+    RefreshNewsRequest,
+    RefreshNewsStatus,
     RefreshRequest,
     RefreshStatus,
     TickerDataResponse,
@@ -135,4 +137,65 @@ def refresh_data(req: RefreshRequest):
             )
 
     log.info(f"Refresh complete: {len(results)} tickers processed")
+    return results
+
+
+@router.post("/refresh-news", response_model=list[RefreshNewsStatus])
+def refresh_news(req: RefreshNewsRequest):
+    """
+    Bulk-fetch news for the given tickers with explicit source + scorer +
+    history-days knobs — equivalent to::
+
+        uv run python refresh.py --tickers <T...> \\
+            --news-source <yahoo|gdelt|...> \\
+            --news-history-days <N> \\
+            --sentiment-method <vader|finbert|naive> \\
+            --force-news
+
+    Returns one row per ticker with the number of headlines pulled and the
+    mean sentiment. Use this from the web UI to populate the DB with deep
+    historical news before running ``+ News`` backtests.
+    """
+    api = get_api()
+    tickers = [t.upper() for t in req.tickers] if req.tickers else ALL_TICKERS
+    method = req.sentiment_method or DEFAULT_SENTIMENT_METHOD
+    sources = req.news_source or ["yahoo"]
+
+    log.info(
+        f"News refresh: {len(tickers)} tickers · sources={sources} · "
+        f"method={method} · history={req.news_history_days}d"
+    )
+
+    results: list[RefreshNewsStatus] = []
+    for ticker in tickers:
+        try:
+            score, headlines = api._process_news_with_db(
+                ticker,
+                method=method,
+                source=sources,
+                lookback_days=req.news_history_days,
+                force_refresh=req.force_news,
+            )
+            results.append(
+                RefreshNewsStatus(
+                    ticker=ticker,
+                    headlines_pulled=len(headlines),
+                    mean_sentiment=round(float(score), 4) if headlines else 0.0,
+                    method=method,
+                    sources=sources,
+                )
+            )
+            log.info(f"  {ticker}: {len(headlines)} headlines, mean sentiment {score:+.3f}")
+        except Exception as e:
+            log.error(f"  {ticker}: news refresh failed — {e}")
+            results.append(
+                RefreshNewsStatus(
+                    ticker=ticker,
+                    headlines_pulled=0,
+                    mean_sentiment=0.0,
+                    method=method,
+                    sources=sources,
+                    error=str(e),
+                )
+            )
     return results

@@ -116,6 +116,29 @@ class TestData:
         results = r.json()
         assert len(results) > 0
 
+    def test_refresh_news_dedicated_endpoint(self, client):
+        """POST /api/data/refresh-news with explicit source/scorer/history knobs."""
+        r = client.post(
+            "/api/data/refresh-news",
+            json={
+                "tickers": ["TEST"],
+                "sentiment_method": "naive",
+                "news_source": ["yahoo"],
+                "news_history_days": 7,
+                "force_news": True,
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        row = data[0]
+        assert row["ticker"] == "TEST"
+        assert "headlines_pulled" in row
+        assert "mean_sentiment" in row
+        assert row["method"] == "naive"
+        assert row["sources"] == ["yahoo"]
+
     def test_get_ticker_data(self, refreshed_client):
         r = refreshed_client.get("/api/data/ticker/TEST?period=1y&limit=100")
         assert r.status_code == 200
@@ -300,6 +323,13 @@ class TestBacktest:
         r = refreshed_client.post("/api/backtest", json=self._body())
         result = r.json()["results"][0]
         assert len(result.get("days", [])) == 5
+        # Each day must expose the sentiment_score field (the per-day
+        # value the engine fed into model.predict()). For the default
+        # request body the model variants this row covers are all
+        # price-only, so sentiment is 0.0 everywhere.
+        for d in result["days"]:
+            assert "sentiment_score" in d
+            assert isinstance(d["sentiment_score"], int | float)
 
     def test_backtest_with_stop_loss(self, refreshed_client):
         """With SL>0, run_single_backtest runs each model twice (baseline + SL variant)."""

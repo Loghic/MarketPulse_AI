@@ -46,6 +46,10 @@ class DayResult:
     trade_pnl: float
     trade_pnl_net: float
     stopped_out: bool
+    # Sentiment that was actually fed into model.predict() for this day.
+    # 0.0 for price-only variants (no news). For "+ News" variants this is
+    # the time-decay-weighted score from news strictly older than ``date``.
+    sentiment_score: float = 0.0
 
 
 @dataclass
@@ -503,6 +507,7 @@ class Backtester:
                     trade_pnl=raw_pnl,
                     trade_pnl_net=net_pnl,
                     stopped_out=stopped_out,
+                    sentiment_score=float(sentiment_today),
                 )
             )
 
