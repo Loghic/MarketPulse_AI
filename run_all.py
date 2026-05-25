@@ -36,6 +36,9 @@ from config import (
     ALL_TICKERS,
     CRYPTO,
     CRYPTO_BENCHMARKS,
+    DEFAULT_NEWS_HALF_LIFE_DAYS,
+    DEFAULT_NEWS_LOOKBACK_DAYS,
+    DEFAULT_SENTIMENT_METHOD,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TRADING_FEE_PCT,
     STOCK_BENCHMARKS,
@@ -59,7 +62,12 @@ RESULTS_DIR = Path("results")
 
 
 def build_dir_name(
-    scope: str, n_days: int, fee_pct: float, stop_loss_pct: float, buy_hold: bool
+    scope: str,
+    n_days: int,
+    fee_pct: float,
+    stop_loss_pct: float,
+    buy_hold: bool,
+    sentiment_method: str | None = None,
 ) -> str:
     """
     Build subdirectory name from run parameters.
@@ -69,6 +77,7 @@ def build_dir_name(
         crypto_20d_fee015_sl3
         all_50d_fee010_sl2_bh
         custom_20d
+        stocks_100d_fee003_bh_finbert
     """
     parts = [scope, f"{n_days}d"]
     if fee_pct > 0:
@@ -77,10 +86,26 @@ def build_dir_name(
         parts.append(f"sl{stop_loss_pct:g}")
     if buy_hold:
         parts.append("bh")
+    # Only tag the dir when the user explicitly overrode the default scorer,
+    # so legacy result directories keep their old names.
+    if sentiment_method and sentiment_method != DEFAULT_SENTIMENT_METHOD:
+        parts.append(sentiment_method)
     return "_".join(parts)
 
 
-def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct, buy_hold, run_dir):
+def run_ticker_comparison(
+    api,
+    ticker,
+    n_days,
+    fee_pct,
+    stop_loss_pct,
+    buy_hold,
+    run_dir,
+    *,
+    news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
+    news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
+    sentiment_method: str | None = None,
+):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
     df = api.get_data(ticker, period="max")
@@ -94,7 +119,18 @@ def run_ticker_comparison(api, ticker, n_days, fee_pct, stop_loss_pct, buy_hold,
     bench = None
 
     for period in ALL_PERIODS:
-        results = run_single_backtest(api, backtester, ticker, df, period, n_days, full=False)
+        results = run_single_backtest(
+            api,
+            backtester,
+            ticker,
+            df,
+            period,
+            n_days,
+            full=False,
+            news_lookback_days=news_lookback_days,
+            news_half_life_days=news_half_life_days,
+            sentiment_method=sentiment_method,
+        )
         if not results:
             filtered = filter_by_period(df, period)
             print(f"  {ticker} period={period}: skipped ({len(filtered)} rows)")
@@ -201,6 +237,44 @@ def main():
     parser.add_argument(
         "--dir", type=str, default="results", help="Root output directory (default: results/)"
     )
+    parser.add_argument(
+        "--sentiment-method",
+        choices=["vader", "finbert", "naive"],
+        default=DEFAULT_SENTIMENT_METHOD,
+        help=(
+            "Sentiment scorer for the '+ News' variants. Only news rows scored "
+            f"with this method (or NULL legacy rows) are used. Default: {DEFAULT_SENTIMENT_METHOD}."
+        ),
+    )
+    parser.add_argument(
+        "--news-source",
+        nargs="+",
+        choices=["yahoo", "gdelt"],
+        default=None,
+        help=(
+            "News provider(s) used by the upfront refresh step (when --no-refresh "
+            "is NOT set). Defaults to config.DEFAULT_NEWS_SOURCES."
+        ),
+    )
+    parser.add_argument(
+        "--news-lookback-days",
+        type=int,
+        default=DEFAULT_NEWS_LOOKBACK_DAYS,
+        help=(
+            "Per-day backtest window: only news published in the N days before "
+            "each prediction date contributes to sentiment "
+            "(default: %(default)s, 0 = unbounded)."
+        ),
+    )
+    parser.add_argument(
+        "--news-half-life-days",
+        type=float,
+        default=DEFAULT_NEWS_HALF_LIFE_DAYS,
+        help=(
+            "Exponential decay half-life for per-day sentiment weighting "
+            "(default: %(default)s, 0 = no decay)."
+        ),
+    )
     args = parser.parse_args()
 
     # Determine tickers and scope label
@@ -221,7 +295,14 @@ def main():
         scope = "all"
 
     # Build output directory
-    dir_name = build_dir_name(scope, args.days, args.fees, args.stop_loss, args.buy_hold)
+    dir_name = build_dir_name(
+        scope,
+        args.days,
+        args.fees,
+        args.stop_loss,
+        args.buy_hold,
+        sentiment_method=args.sentiment_method,
+    )
     run_dir = Path(args.dir) / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -237,11 +318,19 @@ def main():
     print(f" Output: {run_dir.resolve()}/")
     print(f"{'=' * 80}\n")
 
-    api = StockAppAPI()
+    api = StockAppAPI(
+        sentiment_method=args.sentiment_method,
+        news_sources=args.news_source,
+    )
 
     if not args.no_refresh:
         all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
-        api.refresh_tickers(all_to_refresh)
+        api.refresh_tickers(
+            all_to_refresh,
+            news_lookback_days=args.news_lookback_days,
+            sentiment_method=args.sentiment_method,
+            news_sources=args.news_source,
+        )
 
     best_per_ticker = []
 
@@ -254,6 +343,9 @@ def main():
             args.stop_loss,
             args.buy_hold,
             run_dir,
+            news_lookback_days=args.news_lookback_days,
+            news_half_life_days=args.news_half_life_days,
+            sentiment_method=args.sentiment_method,
         )
         if best:
             best_per_ticker.append(best)
