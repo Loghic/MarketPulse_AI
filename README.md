@@ -121,10 +121,10 @@ chmod +x web/dev.sh
 | Tab | Status | Description |
 |---|---|---|
 | **Dashboard** | ✓ | Ticker selector, zoomable chart (line/candle, pan bar), stats cards, OHLCV table with Δ% sorting, custom period, export CSV |
-| **Predict** | ✓ | Prediction builder (per-model period + news), quick presets, 9 model variants incl. LSTM, auto consensus, caching, historical predictions |
-| **Backtest** | stub | Walk-forward backtest configurator, results table, best models, equity curve |
-| **Training** | stub | LSTM preset selection, progress tracking, saved model inventory |
-| **Analysis** | stub | News vs No-News model comparison, paired metrics, export for academic paper |
+| **Predict** | ✓ | Prediction builder (per-model period + news), quick presets, 9 model variants incl. LSTM, auto consensus, **per-ticker backend caching with timestamp + re-run**, historical predictions, optional price chart |
+| **Backtest** | ✓ | Grouped ticker selector (All Stocks / All Crypto / individual), multi-period builder, global Fee/SL/B&H, results filtering, best-models with ties, optional price chart |
+| **Training** | ✓ | LSTM model inventory with timestamps, active-model marker (preset priority cluster > standard > quick), one-click "Start training" with live status polling |
+| **Analysis** | ✓ | Research tab: pick a `results/` directory, see best-models, news-vs-no-news win rates with leaderboards, **compare two runs side-by-side** (e.g. VADER vs FinBERT) |
 | **Settings** | ✓ | Persistent k, fees, SL, LSTM preference with fallback, developer settings (collapsible) |
 
 ### API Endpoints
@@ -136,13 +136,17 @@ chmod +x web/dev.sh
 | POST | `/api/data/refresh` | Download latest prices + news |
 | GET | `/api/predict/info` | Available models, periods, next trading day |
 | POST | `/api/predict/run` | Unified prediction (per-model period + news) |
-| GET | `/api/predict/cached` | List cached prediction files |
+| GET | `/api/predict/cached` | List all cached prediction files (every ticker × date) |
+| GET | `/api/predict/cached/{ticker}` | Latest cached prediction for one ticker + `cached_at` timestamp (powers the in-page cache badge) |
 | POST | `/api/predict/historical` | Predict for any past date |
-| POST | `/api/backtest` | Walk-forward backtest |
-| GET | `/api/train/models` | List saved LSTM models |
+| POST | `/api/backtest` | Walk-forward backtest (multi-period via `periods: list[str]`, news/sentiment knobs) |
+| GET | `/api/train/models` | List saved LSTM models with training timestamps |
 | POST | `/api/train/start` | Start LSTM training (background) |
+| GET | `/api/train/status/{key}` | Live training status (used for the Training tab spinner) |
 | GET/PUT/PATCH | `/api/settings` | User settings (persistent JSON) |
 | POST | `/api/analysis/news-comparison` | News vs No-News paired comparison |
+| GET | `/api/analysis/results-dirs` | Enumerate `results/{scope}_…/` subdirectories with metadata |
+| GET | `/api/analysis/result-csv?dir=…&file=…` | Return one CSV from a results subdir as JSON rows |
 
 See [docs/web.md](docs/web.md) for full API documentation with request/response examples.
 
