@@ -1,0 +1,10 @@
+{
+  "default_period": "1y",
+  "default_fee_pct": 0.05,
+  "default_stop_loss_pct": 0.0,
+  "default_backtest_days": 20,
+  "knn_k": 5,
+  "knn_enhanced_k": 5,
+  "lstm_preset": "standard",
+  "log_mode": "gui"
+}
