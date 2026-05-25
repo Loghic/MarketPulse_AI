@@ -48,7 +48,7 @@ function getTags(m: string): string[] {
 export default function Predict() {
   const [ticker, setTicker] = useState("AAPL");
   const [chartPeriod, setChartPeriod] = useState("1y");
-  const [showChart, setShowChart] = useState(true);
+  const [showChart, setShowChart] = useState(false);
   const [refreshData, setRefreshData] = useState(true);
   const [histDate, setHistDate] = useState("");
   const [histPeriod, setHistPeriod] = useState("1y");

@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import PriceChart from "../components/PriceChart";
 import { s, Panel, Btn, pct } from "../components/ui";
@@ -49,7 +49,7 @@ export default function Backtest() {
   const [selTickers, setSelTickers] = useState<Set<string>>(new Set(["AAPL"]));
   const [chartTicker, setChartTicker] = useState("AAPL");
   const [chartPeriod, setChartPeriod] = useState("1y");
-  const [showChart, setShowChart] = useState(true);
+  const [showChart, setShowChart] = useState(false);
 
   const [selModels, setSelModels] = useState<Set<string>>(new Set(ALL_MODELS));
   const [selPeriods, setSelPeriods] = useState<Set<string>>(new Set(["1y"]));
@@ -73,11 +73,40 @@ export default function Backtest() {
   const [resSearch, setResSearch] = useState("");
   const [newsTicker, setNewsTicker] = useState("all");
 
+  const queryClient = useQueryClient();
   const { data: tickers } = useQuery({ queryKey: ["tickers"], queryFn: api.getTickers });
   const { data: tickerData } = useQuery({
     queryKey: ["tickerData", chartTicker, chartPeriod],
     queryFn: () => api.getTickerData(chartTicker, chartPeriod),
     enabled: showChart && !!chartTicker,
+  });
+
+  // ------------------------------------------------------------------
+  // Persisted runs — every successful POST /api/backtest writes
+  // backtests/{run_id}.json plus per-ticker CSVs to results/{...}/.
+  // On mount we list them so the user can (a) see the latest result
+  // without re-running and (b) pick an older run from a dropdown.
+  // ------------------------------------------------------------------
+  const { data: persistedRuns } = useQuery({
+    queryKey: ["backtestRuns"],
+    queryFn: api.listBacktestRuns,
+    staleTime: 5_000,
+  });
+
+  // Which persisted run (if any) the user wants to display. By default
+  // we auto-select the newest so the tab is never blank.
+  const [loadedRunId, setLoadedRunId] = useState<string | null>(null);
+  useEffect(() => {
+    if (loadedRunId !== null) return;
+    if (persistedRuns && persistedRuns.length > 0) {
+      setLoadedRunId(persistedRuns[0].run_id);
+    }
+  }, [persistedRuns, loadedRunId]);
+
+  const { data: loadedRun } = useQuery({
+    queryKey: ["backtestRun", loadedRunId],
+    queryFn: () => api.loadBacktestRun(loadedRunId!),
+    enabled: !!loadedRunId,
   });
   const chartRows = useMemo(() => [...(tickerData?.data ?? [])].reverse(), [tickerData]);
 
@@ -94,6 +123,22 @@ export default function Backtest() {
   // Models selected in the builder are kept client-side and used purely as
   // a filter on the response (the backend always returns every variant —
   // we just hide what wasn't selected).
+  // ------------------------------------------------------------------
+  // Live progress polling — the backend updates a module-level dict as
+  // it iterates tickers/periods. The query is always mounted, but only
+  // *polls* while a run is in flight (refetchInterval returns false when
+  // the backend reports running=false, which auto-pauses the timer).
+  // ------------------------------------------------------------------
+  const [polling, setPolling] = useState(false);
+  const { data: progress } = useQuery({
+    queryKey: ["backtestProgress"],
+    queryFn: api.backtestProgress,
+    refetchInterval: (q) => {
+      const data = q.state.data;
+      return polling || data?.running ? 500 : false;
+    },
+  });
+
   const runMut = useMutation({
     mutationFn: () => {
       const periodList = items.length
@@ -120,10 +165,27 @@ export default function Backtest() {
         }),
       }).then((r) => r.json());
     },
-    onSuccess: () => setSumTickers(new Set()),
+    onMutate: () => {
+      setPolling(true);
+      // Immediately kick the progress query so we don't wait the full 500ms
+      // before the first frame paints.
+      queryClient.invalidateQueries({ queryKey: ["backtestProgress"] });
+    },
+    onSuccess: () => {
+      setSumTickers(new Set());
+      // A fresh run just landed — refresh the persisted-runs list so the
+      // new run_id appears in the picker.
+      queryClient.invalidateQueries({ queryKey: ["backtestRuns"] });
+    },
+    onSettled: () => setPolling(false),
   });
 
-  const allResults: Res[] = runMut.data?.results ?? [];
+  // Prefer fresh run results, fall back to the loaded cached run.
+  // Each row's shape is identical between the two sources.
+  const allResults: Res[] = (runMut.data?.results as Res[] | undefined)
+    ?? ((loadedRun?.response?.results as Res[] | undefined))
+    ?? [];
+  const fromCachedRun = !runMut.data && (loadedRun?.response?.results?.length ?? 0) > 0;
   // Apply client-side model filter (backend always returns every variant
   // produced by run_single_backtest; we narrow to what the user selected).
   // Empty selection = show all (treat as "no filter").
@@ -273,6 +335,40 @@ export default function Backtest() {
         </Panel>
       )}
 
+      {/* Cached runs picker */}
+      {persistedRuns && persistedRuns.length > 0 && (
+        <Panel
+          title={`Saved runs (${persistedRuns.length})`}
+          extra={fromCachedRun && loadedRun?.saved_at ? (
+            <span style={{ fontSize: 11, color: s.muted }}>
+              <span style={{ padding: "2px 8px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: s.muted, fontWeight: 600, marginRight: 6 }}>CACHED</span>
+              {fmtRel(loadedRun.saved_at)} · CSV: <code style={{ fontFamily: s.mono, color: s.accent }}>{loadedRun.results_dir}</code>
+            </span>
+          ) : undefined}
+        >
+          <div style={{ padding: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: s.muted }}>Load run:</span>
+            <select
+              value={loadedRunId ?? ""}
+              onChange={(e) => { setLoadedRunId(e.target.value || null); runMut.reset(); }}
+              style={{ ...selSt, fontSize: 12, maxWidth: 360 }}
+            >
+              <option value="">— don't load —</option>
+              {persistedRuns.map((r) => (
+                <option key={r.run_id} value={r.run_id}>
+                  {r.run_id} · {r.result_count} results · {fmtShortDate(r.saved_at)}
+                </option>
+              ))}
+            </select>
+            {loadedRunId && (
+              <span style={{ fontSize: 11, color: s.muted }}>
+                {loadedRun?.tickers?.length ?? 0} tickers
+              </span>
+            )}
+          </div>
+        </Panel>
+      )}
+
       {/* Builder */}
       <Panel title="Backtest Builder">
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -330,7 +426,7 @@ export default function Backtest() {
         </div>
       </Panel>
 
-      {runMut.isPending && <div style={{ textAlign: "center", padding: 32, color: s.muted }}>Running backtests...</div>}
+      {runMut.isPending && <ProgressPanel p={progress} />}
 
       {/* Summary */}
       {results.length > 0 && (
@@ -501,6 +597,79 @@ function STh({ col, l, al, sort, onSort }: { col: string; l: string; al?: string
   return (<th onClick={() => onSort(col)} style={{ ...rTh, textAlign: (al ?? "center") as "left" | "center", cursor: "pointer", userSelect: "none", color: a ? s.text : s.muted }}>
     {l}{a && <span style={{ marginLeft: 3, opacity: 0.6 }}>{sort.asc ? "↑" : "↓"}</span>}</th>);
 }
+function ProgressPanel({ p }: { p: Awaited<ReturnType<typeof api.backtestProgress>> | undefined }) {
+  const total = p?.total_units ?? 0;
+  const done = p?.completed_units ?? 0;
+  const fraction = total > 0 ? done / total : 0;
+  const elapsed = p?.started_at ? Math.max(0, Math.floor((Date.now() - new Date(p.started_at).getTime()) / 1000)) : 0;
+  const m = Math.floor(elapsed / 60);
+  const sec = elapsed % 60;
+  const elapsedStr = m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  // Rough ETA based on per-unit average so far
+  const etaStr = (() => {
+    if (done < 1 || elapsed < 1 || total <= done) return "—";
+    const perUnit = elapsed / done;
+    const remaining = Math.round(perUnit * (total - done));
+    const mm = Math.floor(remaining / 60);
+    const ss = remaining % 60;
+    return mm > 0 ? `~${mm}m ${ss}s` : `~${ss}s`;
+  })();
+  return (
+    <Panel title={`Running backtest — ${done}/${total || "?"}`}>
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+          <span style={{ color: s.muted }}>Ticker:</span>
+          <strong style={{ color: s.text, fontFamily: s.mono }}>
+            {p?.ticker ?? "—"} ({p?.ticker_idx ?? 0}/{p?.ticker_total ?? 0})
+          </strong>
+          <span style={{ color: s.muted }}>Period:</span>
+          <strong style={{ color: s.text, fontFamily: s.mono }}>
+            {p?.period ?? "—"} ({p?.period_idx ?? 0}/{p?.period_total ?? 0})
+          </strong>
+          <span style={{ color: s.muted, marginLeft: "auto" }}>
+            Elapsed: <span style={{ color: s.text }}>{elapsedStr}</span>
+            {" · ETA: "}<span style={{ color: s.text }}>{etaStr}</span>
+            {" · Rows: "}<span style={{ color: s.accent }}>{p?.results_so_far ?? 0}</span>
+          </span>
+        </div>
+        <div style={{ height: 8, borderRadius: 4, background: s.hover, overflow: "hidden", border: `1px solid ${s.border}` }}>
+          <div style={{
+            width: `${fraction * 100}%`,
+            height: "100%",
+            background: s.accent,
+            transition: "width 0.3s ease",
+          }} />
+        </div>
+        <div style={{ fontSize: 10, color: s.muted, fontStyle: "italic" }}>
+          Backend stage: <strong>{p?.stage ?? "preparing"}</strong>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function fmtRel(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const ms = Date.now() - d.getTime();
+    if (isNaN(ms)) return iso;
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+  } catch { return iso; }
+}
+
+function fmtShortDate(iso: string | undefined): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch { return iso; }
+}
+
 const selSt: React.CSSProperties = { padding: "6px 10px", borderRadius: 6, fontSize: 13, fontWeight: 600, background: s.surface, color: s.text, border: `1px solid ${s.border}`, cursor: "pointer" };
 const thSt: React.CSSProperties = { padding: "5px 6px", fontSize: 10, fontWeight: 500, color: s.muted, borderBottom: `1px solid ${s.border}`, textAlign: "center", position: "sticky", top: 0, background: s.surface };
 const rTh: React.CSSProperties = { padding: "5px 8px", fontSize: 10, fontWeight: 500, color: s.muted, borderBottom: `1px solid ${s.border}`, textAlign: "center", position: "sticky", top: 0, background: s.surface };
