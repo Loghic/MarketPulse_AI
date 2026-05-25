@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, NavLink, Outlet } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Predict from "./pages/Predict";
+import Backtest from "./pages/Backtest";
+import Training from "./pages/Training";
+import Analysis from "./pages/Analysis";
 import Settings from "./pages/Settings";
 import { s } from "./components/ui";
 import "./app.css";
@@ -57,20 +60,6 @@ function Layout() {
   );
 }
 
-function Stub({ title, icon }: { title: string; icon: string }) {
-  return (
-    <div>
-      <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>{title}</h2>
-      <div style={{
-        background: s.surface, border: `1px solid ${s.border}`, borderRadius: 8,
-        padding: 48, textAlign: "center", color: s.muted,
-      }}>
-        {icon} Coming next
-      </div>
-    </div>
-  );
-}
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={qc}>
@@ -80,9 +69,9 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/predict" element={<Predict />} />
-            <Route path="/backtest" element={<Stub title="Backtest" icon="📈" />} />
-            <Route path="/training" element={<Stub title="Training" icon="🧠" />} />
-            <Route path="/analysis" element={<Stub title="Analysis" icon="📝" />} />
+            <Route path="/backtest" element={<Backtest />} />
+            <Route path="/training" element={<Training />} />
+            <Route path="/analysis" element={<Analysis />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

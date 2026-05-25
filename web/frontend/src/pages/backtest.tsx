@@ -86,19 +86,63 @@ export default function Backtest() {
   const stockTickers = stocks.map((t) => t.ticker);
   const cryptoTickers = crypto.map((t) => t.ticker);
 
+  // The 2026 backend takes a single global fee_pct + stop_loss_pct per
+  // request and runs *all* model variants per (ticker × period). The
+  // "items[]" / per-row fee that the old API exposed is gone. Periods
+  // selected in the builder are forwarded as the new ``periods: list[str]``
+  // parameter so the user can pick a subset (or all of them via "All").
+  // Models selected in the builder are kept client-side and used purely as
+  // a filter on the response (the backend always returns every variant —
+  // we just hide what wasn't selected).
   const runMut = useMutation({
-    mutationFn: () =>
-      fetch("/api/backtest/run", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+    mutationFn: () => {
+      const periodList = items.length
+        ? Array.from(new Set(items.map((r) => r.period)))
+        : [...selPeriods];
+      const newsRequested = items.length
+        ? items.some((r) => r.news)
+        : selNews !== "no";
+      return fetch("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tickers: [...selTickers], items: items.map((r) => ({ model: r.model, period: r.period, news: r.news, fee_pct: r.fee, stop_loss_pct: r.sl })),
-          days: parseInt(days) || 20, buy_hold: buyHold, refresh_data: refreshData,
+          tickers: [...selTickers],
+          periods: periodList,
+          days: parseInt(days) || 20,
+          fee_pct: parseFloat(globalFee) || 0,
+          stop_loss_pct: parseFloat(globalSL) || 0,
+          buy_hold: buyHold,
+          refresh_data: refreshData,
+          // News stays as a hint to the user; the backend always produces
+          // both "+ News" and price-only variants if news is present.
+          // We could thread sentiment_method through here later.
+          ...(newsRequested ? {} : {}),
         }),
-      }).then((r) => r.json()),
+      }).then((r) => r.json());
+    },
     onSuccess: () => setSumTickers(new Set()),
   });
 
-  const results: Res[] = runMut.data?.results ?? [];
+  const allResults: Res[] = runMut.data?.results ?? [];
+  // Apply client-side model filter (backend always returns every variant
+  // produced by run_single_backtest; we narrow to what the user selected).
+  // Empty selection = show all (treat as "no filter").
+  const results: Res[] = useMemo(() => {
+    if (selModels.size === 0 || selModels.size === ALL_MODELS.length) return allResults;
+    const familyMatch = (modelName: string) => {
+      // model names from backend include suffixes like " + News", " SL2%",
+      // and "Enh." abbrev. Match against the selected variant labels.
+      const name = String(modelName);
+      for (const sel of selModels) {
+        if (name === sel) return true;
+        // Strip news / SL suffix for fuzzy match
+        if (name.startsWith(sel)) return true;
+      }
+      return false;
+    };
+    return allResults.filter((r) => familyMatch(String(r.model ?? "")));
+  }, [allResults, selModels]);
+
   const newsData: Record<string, string[]> = runMut.data?.news ?? {};
 
   // Ticker toggle helpers

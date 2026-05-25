@@ -179,16 +179,31 @@ export const api = {
 
   listCached: () => request<{ ticker: string; date: string; count: number; models: string[] }[]>("/predict/cached"),
 
+  /** Latest cached prediction for one ticker (or empty payload if none). */
+  cachedForTicker: (ticker: string) =>
+    request<{
+      ticker: string;
+      date?: string;
+      cached_at?: string;
+      predictions: PredictionRow[];
+      consensus: { direction: string; up: number; down: number; total: number; agreement: number } | null;
+    }>(`/predict/cached/${ticker}`),
+
   // Backtest
   backtest: (params: {
     tickers?: string[];
     days?: number;
     period?: string;
+    /** Multi-period selection — overrides `period` + `compare_periods` if set. */
+    periods?: string[];
     fee_pct?: number;
     stop_loss_pct?: number;
     compare_periods?: boolean;
     buy_hold?: boolean;
     refresh_data?: boolean;
+    sentiment_method?: string;
+    news_lookback_days?: number;
+    news_half_life_days?: number;
   }) =>
     request<{
       results: BacktestModelResult[];
@@ -232,4 +247,38 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }),
+
+  /** Enumerate the `results/{scope}_{days}d…/` subdirectories. */
+  listResultsDirs: () =>
+    request<{
+      name: string;
+      modified: string;
+      csv_count: number;
+      ticker_csvs: string[];
+      has_summary: boolean;
+      has_news_impact: boolean;
+    }[]>("/analysis/results-dirs"),
+
+  /** Read one CSV from a results subdir as a list of string-valued rows. */
+  readResultCsv: (dir: string, file: string) =>
+    request<{
+      dir: string;
+      file: string;
+      rows: Record<string, string>[];
+      row_count: number;
+    }>(`/analysis/result-csv?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`),
+
+  // Training
+  trainingStatus: (key: string) =>
+    request<{
+      ticker: string;
+      period: string;
+      preset: string;
+      status: string;
+      epoch: number;
+      total_epochs: number;
+      val_loss: number;
+      val_accuracy: number;
+      message: string;
+    }>(`/train/status/${key}`),
 };

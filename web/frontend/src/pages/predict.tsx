@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import PriceChart from "../components/PriceChart";
 import { s, Panel, Btn, pct } from "../components/ui";
@@ -66,6 +66,8 @@ export default function Predict() {
   const [consSearch, setConsSearch] = useState("");
   const [resSort, setResSort] = useState<{ col: string; asc: boolean }>({ col: "confidence", asc: false });
 
+  const queryClient = useQueryClient();
+
   const { data: tickers } = useQuery({ queryKey: ["tickers"], queryFn: api.getTickers });
   const { data: predictInfo } = useQuery({
     queryKey: ["predictInfo"],
@@ -75,6 +77,19 @@ export default function Predict() {
     queryKey: ["tickerData", ticker, chartPeriod],
     queryFn: () => api.getTickerData(ticker, chartPeriod),
     enabled: !!ticker && showChart,
+  });
+
+  // Per-ticker cached prediction loader.
+  // The backend writes predictions/{ticker}/{date}.json after every run; this
+  // query reads back the most recent file so switching tabs or reloading the
+  // page redisplays the latest results instead of forcing a re-run. Each
+  // ticker gets its own cache, so AAPL can be 10 days old while MSFT is
+  // 5 minutes old.
+  const { data: cachedPred } = useQuery({
+    queryKey: ["cachedPrediction", ticker],
+    queryFn: () => api.cachedForTicker(ticker),
+    enabled: !!ticker,
+    staleTime: 5_000, // refetch on tab return after a short delay
   });
   const chartRows = useMemo(() => [...(tickerData?.data ?? [])].reverse(), [tickerData]);
   const nextDay = predictInfo?.next_trading_day ?? "—";
@@ -92,15 +107,51 @@ export default function Predict() {
       setConsChecked(valid);
       setConsFilters(new Set());
       setConsSearch("");
+      // Invalidate the per-ticker cache so the badge picks up the new timestamp
+      queryClient.invalidateQueries({ queryKey: ["cachedPrediction", ticker] });
     },
   });
+
+  // When ticker changes, reset the in-memory mutation result so the next
+  // page render shows the freshly-loaded cache for this ticker instead of
+  // the previous ticker's run.
+  useEffect(() => {
+    runMut.reset();
+    setConsChecked(new Set());
+    setConsFilters(new Set());
+    setConsSearch("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticker]);
+
+  // When the cached prediction set arrives (or refreshes), pre-select all
+  // valid rows for consensus — same behaviour as after a fresh run, so the
+  // consensus widget works on tab return without the user having to tick
+  // every box again.
+  useEffect(() => {
+    if (runMut.data) return; // a fresh run already populated consChecked
+    if (!cachedPred?.predictions?.length) return;
+    const valid = new Set<number>();
+    cachedPred.predictions.forEach((p, i) => {
+      if (p.prediction === "UP" || p.prediction === "DOWN") valid.add(i);
+    });
+    setConsChecked(valid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cachedPred]);
 
   const histMut = useMutation({
     mutationFn: () =>
       fetch(`/api/predict/historical?ticker=${ticker}&date=${histDate}&period=${histPeriod}`, { method: "POST" }).then((r) => r.json()),
   });
 
-  const predictions: Pred[] = runMut.data?.predictions ?? [];
+  // Show fresh-run results first; otherwise fall back to whatever the
+  // backend has cached for this ticker.
+  const predictions: Pred[] =
+    (runMut.data?.predictions as Pred[] | undefined) ??
+    (cachedPred?.predictions as unknown as Pred[] | undefined) ??
+    [];
+  const fromCache = !runMut.data && (cachedPred?.predictions?.length ?? 0) > 0;
+  const cachedAt = cachedPred?.cached_at;
+  const cachedDate = cachedPred?.date;
 
   // Live consensus
   const liveConsensus = useMemo(() => {
@@ -290,7 +341,10 @@ export default function Predict() {
 
       {/* ======== RESULTS + CONSENSUS ======== */}
       {predictions.length > 0 && (
-        <Panel title={`Results & Consensus`}>
+        <Panel
+          title={`Results & Consensus`}
+          extra={fromCache ? <CachedBadge at={cachedAt} date={cachedDate} onRerun={() => items.length > 0 && runMut.mutate()} disabled={items.length === 0} /> : undefined}
+        >
           <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
 
             {/* Live consensus bar */}
@@ -468,6 +522,46 @@ function ConsBar({ up, down }: { up: number; down: number }) {
     <div style={{ flex: 1, background: s.red }} /></div>);
 }
 function Ld({ text }: { text: string }) { return <div style={{ textAlign: "center", padding: 32, color: s.muted }}>{text}</div>; }
+
+function CachedBadge({ at, date, onRerun, disabled }: { at?: string; date?: string; onRerun: () => void; disabled?: boolean }) {
+  // Show a human-readable "X minutes ago" when possible
+  const rel = at ? relTime(at) : null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: s.muted }}>
+      <span style={{ padding: "2px 8px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: s.muted, fontWeight: 600 }}>CACHED</span>
+      <span>
+        {date ? `${date}` : ""}
+        {rel ? `  ·  ${rel}` : at ? `  ·  ${at}` : ""}
+      </span>
+      <button
+        onClick={onRerun}
+        disabled={disabled}
+        title={disabled ? "Build at least one item first" : "Re-run the same models"}
+        style={{
+          padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
+          border: `1px solid ${s.accent}30`, background: `${s.accent}10`, color: s.accent,
+          opacity: disabled ? 0.5 : 1,
+        }}
+      >
+        Re-run
+      </button>
+    </div>
+  );
+}
+
+function relTime(iso: string): string {
+  const d = new Date(iso);
+  const ms = Date.now() - d.getTime();
+  if (isNaN(ms)) return iso;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  return `${days}d ago`;
+}
 
 function SortTh({ col, label, align, sort, onSort }: {
   col: string; label: string; align?: string;
