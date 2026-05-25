@@ -239,28 +239,39 @@ class TestPredict:
 
 
 class TestBacktest:
+    """
+    The 2026 backend exposes a single endpoint, ``POST /api/backtest``,
+    that takes one shared ``fee_pct`` / ``stop_loss_pct`` per request and
+    fans out across every model variant produced by
+    ``engine.backtest_helpers.run_single_backtest``. The response uses
+    ``BacktestResponse`` (``results`` list + ``best_by_return`` and
+    ``best_by_sharpe``); there is no per-item config and no ``summary``
+    key — the "summary" concept is the two best-of pointers.
+    """
+
+    @staticmethod
+    def _body(**overrides) -> dict:
+        """Default backtest request body — override per-test."""
+        body = {
+            "tickers": ["TEST"],
+            "days": 5,
+            "period": "1y",
+            "fee_pct": 0.0,
+            "stop_loss_pct": 0.0,
+            "compare_periods": False,
+            "buy_hold": False,
+            "refresh_data": False,
+        }
+        body.update(overrides)
+        return body
+
     def test_backtest_basic(self, refreshed_client):
-        r = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0.03,
-                        "stop_loss_pct": 0,
-                    }
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
+        r = refreshed_client.post("/api/backtest", json=self._body(fee_pct=0.03))
         assert r.status_code == 200
         data = r.json()
         assert "results" in data
-        assert "summary" in data
+        assert "best_by_return" in data
+        assert "best_by_sharpe" in data
         results = data["results"]
         assert len(results) > 0
         result = results[0]
@@ -269,149 +280,60 @@ class TestBacktest:
         assert "total_return" in result
 
     def test_backtest_has_daily_data(self, refreshed_client):
-        r = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    }
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
-        results = r.json()["results"]
-        result = results[0]
+        r = refreshed_client.post("/api/backtest", json=self._body())
+        result = r.json()["results"][0]
         assert len(result.get("days", [])) == 5
 
     def test_backtest_with_stop_loss(self, refreshed_client):
-        r = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    },
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 2.0,
-                    },
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
+        """With SL>0, run_single_backtest runs each model twice (baseline + SL variant)."""
+        r = refreshed_client.post("/api/backtest", json=self._body(stop_loss_pct=2.0))
         assert r.status_code == 200
         results = r.json()["results"]
-        names = [r["model"] for r in results]
+        names = [item["model"] for item in results]
+        # Baseline rows (no SL suffix) AND SL rows must both appear.
         assert any("SL" in n for n in names)
         assert any("SL" not in n for n in names)
 
     def test_backtest_with_fees(self, refreshed_client):
-        r_no = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    }
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
-        r_fee = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0.5,
-                        "stop_loss_pct": 0,
-                    }
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
-        no_ret = r_no.json()["results"][0]["total_return"]
-        fee_ret = r_fee.json()["results"][0]["total_return"]
-        assert fee_ret < no_ret
+        """Higher fees must reduce realised return for at least one matching model."""
+        r_no = refreshed_client.post("/api/backtest", json=self._body(fee_pct=0.0))
+        r_fee = refreshed_client.post("/api/backtest", json=self._body(fee_pct=0.5))
+        no_results = {row["model"]: row["total_return"] for row in r_no.json()["results"]}
+        fee_results = {row["model"]: row["total_return"] for row in r_fee.json()["results"]}
+        # Every shared model should have a lower (or equal) return under fees.
+        # Assert it's strictly lower for at least one variant — sanity check
+        # that the fee parameter is actually being honoured by the endpoint.
+        shared = set(no_results) & set(fee_results)
+        assert shared, "expected overlap between no-fee and with-fee runs"
+        assert any(fee_results[m] < no_results[m] for m in shared)
 
-    def test_backtest_summary(self, refreshed_client):
-        r = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    }
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
+    def test_backtest_best_by_return_and_sharpe(self, refreshed_client):
+        """The 'summary' concept is now best_by_return and best_by_sharpe."""
+        r = refreshed_client.post("/api/backtest", json=self._body())
         data = r.json()
-        assert "summary" in data
-        summary = data["summary"]
-        assert "total_return" in summary
-        assert "sharpe_ratio" in summary
+        assert "best_by_return" in data
+        assert "best_by_sharpe" in data
+        best_ret = data["best_by_return"]
+        best_sharpe = data["best_by_sharpe"]
+        # Both must be populated when there are results.
+        assert best_ret is not None
+        assert best_sharpe is not None
+        assert "total_return" in best_ret
+        assert "sharpe_ratio" in best_sharpe
+        # Sanity: best_by_return really IS the row with the highest return.
+        all_returns = [row["total_return"] for row in data["results"]]
+        assert best_ret["total_return"] == max(all_returns)
 
-    def test_backtest_multiple_tickers(self, refreshed_client):
-        r = refreshed_client.post(
-            "/api/backtest/run",
-            json={
-                "tickers": ["TEST"],
-                "items": [
-                    {
-                        "model": "k-NN",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    },
-                    {
-                        "model": "k-NN (TW)",
-                        "period": "1y",
-                        "news": False,
-                        "fee_pct": 0,
-                        "stop_loss_pct": 0,
-                    },
-                ],
-                "days": 5,
-                "refresh_data": False,
-            },
-        )
+    def test_backtest_compare_periods(self, refreshed_client):
+        """compare_periods=True fans out across every period in ALL_PERIODS."""
+        r = refreshed_client.post("/api/backtest", json=self._body(compare_periods=True))
         assert r.status_code == 200
         results = r.json()["results"]
-        assert len(results) >= 2
+        # Each period × N model variants. With 400 days of mock data, at least
+        # the short periods (1mo, 1y) should yield rows.
+        periods = {row["period"] for row in results}
+        assert len(periods) >= 2, f"expected results from multiple periods, got {periods}"
+        assert len(results) >= 4  # at minimum a few model variants per period
 
 
 # ------------------------------------------------------------------
