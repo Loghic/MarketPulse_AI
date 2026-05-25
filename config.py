@@ -92,3 +92,31 @@ DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)
 # 0 = disabled (hold until end of day regardless).
 # 2.0 = close if price drops 2% from entry (long) or rises 2% (short).
 DEFAULT_STOP_LOSS_PCT = 0.0  # disabled by default
+
+# ------------------------------------------------------------------
+# News & sentiment defaults
+# ------------------------------------------------------------------
+
+# Which sentiment scorer to use by default.
+#   "vader"   – fast, general-purpose, no GPU. Default.
+#   "finbert" – ProsusAI/finbert. Slow first-load (~400 MB), best for
+#               financial text. Requires `transformers` + `torch`.
+#   "naive"   – keyword-matching baseline, zero deps.
+DEFAULT_SENTIMENT_METHOD = "vader"
+
+# Which news source(s) to use by default. Can be a single name or a list.
+#   "yahoo"  – yfinance (limited history, no key)
+#   "gdelt"  – GDELT 2.0 (years of history, no key, ~15 min indexing lag)
+# Pass a list to combine them and dedupe by headline.
+DEFAULT_NEWS_SOURCES: list[str] = ["yahoo"]
+
+# How many days of news to look back when computing sentiment for a given
+# prediction date. Only news strictly BEFORE the prediction date and
+# within the window contribute. 0 disables the window (use everything older).
+DEFAULT_NEWS_LOOKBACK_DAYS = 7
+
+# Exponential half-life for time-decay weighting of news.
+#   0.0 → all headlines weighted equally inside the lookback window
+#   3.0 → a 3-day-old headline carries half the weight of a 0-day-old one
+# Larger values mean a slower decay (older news still matters).
+DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0

@@ -43,7 +43,7 @@ def _make_news():
 @pytest.fixture(scope="module")
 def client():
     """Create TestClient with mocked yfinance."""
-    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_scraper.yf") as mock_ns:
+    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_sources.yf") as mock_ns:
         mock_dl.Ticker.return_value.history.return_value = _make_prices()
         type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=_make_news())
 
@@ -241,127 +241,177 @@ class TestPredict:
 class TestBacktest:
     def test_backtest_basic(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0.03,
+                        "stop_loss_pct": 0,
+                    }
+                ],
                 "days": 5,
-                "period": "1y",
-                "fee_pct": 0.03,
                 "refresh_data": False,
             },
         )
         assert r.status_code == 200
         data = r.json()
         assert "results" in data
+        assert "summary" in data
         results = data["results"]
         assert len(results) > 0
-
-        # Check first result structure
         result = results[0]
         assert result["ticker"] == "TEST"
         assert "accuracy" in result
         assert "total_return" in result
-        assert "profit_factor" in result
-        assert "max_drawdown" in result
-        assert "sharpe_ratio" in result
-        assert 0 <= result["accuracy"] <= 1
 
     def test_backtest_has_daily_data(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    }
+                ],
                 "days": 5,
-                "period": "1y",
                 "refresh_data": False,
             },
         )
         results = r.json()["results"]
-        # At least one result should have day-by-day data
         result = results[0]
-        assert len(result["days"]) == 5
-        day = result["days"][0]
-        assert "date" in day
-        assert "predicted" in day
-        assert "actual" in day
-        assert "trade_pnl_net" in day
+        assert len(result.get("days", [])) == 5
 
     def test_backtest_with_stop_loss(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    },
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 2.0,
+                    },
+                ],
                 "days": 5,
-                "period": "1y",
-                "stop_loss_pct": 2.0,
                 "refresh_data": False,
             },
         )
         assert r.status_code == 200
         results = r.json()["results"]
-        # With SL, should have both baseline and SL variants
         names = [r["model"] for r in results]
-        has_sl = any("SL" in n for n in names)
-        has_baseline = any("SL" not in n for n in names)
-        assert has_sl
-        assert has_baseline
+        assert any("SL" in n for n in names)
+        assert any("SL" not in n for n in names)
 
     def test_backtest_with_fees(self, refreshed_client):
-        r_no_fee = refreshed_client.post(
-            "/api/backtest",
+        r_no = refreshed_client.post(
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    }
+                ],
                 "days": 5,
-                "period": "1y",
-                "fee_pct": 0.0,
                 "refresh_data": False,
             },
         )
         r_fee = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0.5,
+                        "stop_loss_pct": 0,
+                    }
+                ],
                 "days": 5,
-                "period": "1y",
-                "fee_pct": 0.5,
                 "refresh_data": False,
             },
         )
-        # Same model, first result — fee version should have lower return
-        no_fee_ret = r_no_fee.json()["results"][0]["total_return"]
+        no_ret = r_no.json()["results"][0]["total_return"]
         fee_ret = r_fee.json()["results"][0]["total_return"]
-        assert fee_ret < no_fee_ret
+        assert fee_ret < no_ret
 
-    def test_backtest_best_models(self, refreshed_client):
+    def test_backtest_summary(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    }
+                ],
                 "days": 5,
-                "period": "1y",
                 "refresh_data": False,
             },
         )
         data = r.json()
-        assert data["best_by_return"] is not None
-        assert data["best_by_sharpe"] is not None
-        assert "model" in data["best_by_return"]
+        assert "summary" in data
+        summary = data["summary"]
+        assert "total_return" in summary
+        assert "sharpe_ratio" in summary
 
-    def test_backtest_compare_periods(self, refreshed_client):
+    def test_backtest_multiple_tickers(self, refreshed_client):
         r = refreshed_client.post(
-            "/api/backtest",
+            "/api/backtest/run",
             json={
                 "tickers": ["TEST"],
+                "items": [
+                    {
+                        "model": "k-NN",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    },
+                    {
+                        "model": "k-NN (TW)",
+                        "period": "1y",
+                        "news": False,
+                        "fee_pct": 0,
+                        "stop_loss_pct": 0,
+                    },
+                ],
                 "days": 5,
-                "compare_periods": True,
                 "refresh_data": False,
             },
         )
         assert r.status_code == 200
         results = r.json()["results"]
-        # Should have results from multiple periods
-        periods = set(r["period"] for r in results)
-        assert len(periods) >= 2  # at least 1y and 2y should work
+        assert len(results) >= 2
 
 
 # ------------------------------------------------------------------

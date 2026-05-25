@@ -6,6 +6,7 @@ max drawdown, Sharpe ratio, Sortino ratio, buy-and-hold benchmark,
 and yearly rolling performance breakdown.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,11 @@ import numpy as np
 import pandas as pd
 
 from config import DEFAULT_STOP_LOSS_PCT, DEFAULT_TRADING_FEE_PCT
+
+# Type alias for a per-day sentiment lookup function.
+# Receives the prediction date as "YYYY-MM-DD" string and must return a
+# float in [-1, 1] computed from news strictly published BEFORE that date.
+SentimentProvider = Callable[[str], float]
 
 
 @dataclass
@@ -376,8 +382,27 @@ class Backtester:
         ticker: str = "",
         use_time_weights: bool = False,
         sentiment_score: float = 0.0,
+        sentiment_provider: SentimentProvider | None = None,
     ) -> BacktestResult:
-        """Run walk-forward backtest with all metrics."""
+        """
+        Run walk-forward backtest with all metrics.
+
+        Args:
+            model, model_name, df, ticker, use_time_weights: as before.
+            sentiment_score: Constant sentiment applied to every day.
+                Kept for backward compatibility — set to 0.0 to disable.
+            sentiment_provider: Optional callback ``(prediction_date) → float``.
+                If provided, this is called once per backtest day to compute
+                the per-day sentiment from news strictly older than that
+                date (look-ahead-safe). Overrides ``sentiment_score``.
+
+        Why both arguments?
+            * ``sentiment_score`` is the legacy "one news snapshot for the
+              whole period" path. Quick and rough, but suffers from
+              look-ahead bias.
+            * ``sentiment_provider`` is the principled path: news as of
+              each historical day, no leakage.
+        """
         if len(df) < self.n_days + 20:
             raise ValueError(f"Not enough data: need {self.n_days + 20} rows, got {len(df)}")
 
@@ -392,10 +417,23 @@ class Backtester:
             close_actual = float(df["close"].iloc[eval_idx])
             actual_direction = "UP" if close_actual > entry_price else "DOWN"
 
+            # Per-day sentiment lookup. ``train_df`` only contains rows
+            # strictly older than ``eval_idx``, so passing the prediction
+            # date (= the date being evaluated) into the provider yields a
+            # sentiment that uses only earlier news — no leakage.
+            day_date = str(df["date"].iloc[eval_idx])
+            if sentiment_provider is not None:
+                try:
+                    sentiment_today = float(sentiment_provider(day_date))
+                except Exception:
+                    sentiment_today = 0.0
+            else:
+                sentiment_today = sentiment_score
+
             predicted, confidence = model.predict(
                 train_df,
                 use_time_weights=use_time_weights,
-                sentiment_score=sentiment_score,
+                sentiment_score=sentiment_today,
             )
 
             if predicted not in ("UP", "DOWN"):

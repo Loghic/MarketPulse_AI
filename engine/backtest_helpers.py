@@ -7,13 +7,23 @@ and display/print functions.
 
 import csv
 import json
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
-from config import get_benchmarks
+from config import (
+    DEFAULT_NEWS_HALF_LIFE_DAYS,
+    DEFAULT_NEWS_LOOKBACK_DAYS,
+    get_benchmarks,
+)
 from engine.backtester import BacktestResult
 from engine.logger import get_logger
+from engine.news_scraper import NewsScraper
 from engine.utils import period_to_start_date
+
+# (model, model_name, use_time_weights, sentiment_provider_or_None)
+ModelVariant = tuple[Any, str, bool, Callable[[str], float] | None]
 
 log = get_logger("helpers")
 
@@ -188,9 +198,36 @@ def export_rows(rows: list, output: str):
 # ------------------------------------------------------------------
 
 
-def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
+def run_single_backtest(
+    api,
+    backtester,
+    ticker,
+    df,
+    period,
+    n_days,
+    full,
+    news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
+    news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
+    sentiment_method: str | None = None,
+):
     """
     Run backtest for one ticker × one period. Returns list of BacktestResult.
+
+    News handling (no look-ahead):
+        Variants whose name contains "+ News" use a per-day sentiment
+        provider that looks up news strictly published BEFORE the
+        prediction date, within the ``news_lookback_days`` window, and
+        weighted by exponential decay with half-life
+        ``news_half_life_days`` (0 = no decay).
+
+        Variants without "+ News" pass sentiment_score=0.0 (no news).
+
+    Args:
+        news_lookback_days: How many days of news to consider. 0 = unbounded.
+        news_half_life_days: Decay half-life for the per-day weighted score.
+            0 disables decay (uniform within window).
+        sentiment_method: Restrict to news scored with this method
+            ("vader" | "finbert" | "naive"). None = whatever's in the DB.
 
     If backtester has stop-loss enabled, each model runs twice:
     once without SL (baseline) and once with SL — so you can compare.
@@ -199,27 +236,86 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     if len(filtered) < n_days + 20:
         return []
 
-    sentiment_score, headlines = api._process_news_with_db(ticker)
-    has_news = len(headlines) > 0
+    # Refresh today's news so the DB has at least *something* to query for
+    # the most-recent backtest days. Historical days still need historical
+    # news to have been ingested separately (e.g. via GDELT refresh).
+    # Tolerate transient DB hiccups (we'll fall through to a no-news backtest).
+    try:
+        _, headlines_today = api._process_news_with_db(ticker, method=sentiment_method)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"{ticker}: news refresh skipped ({e}); proceeding without news.")
+        headlines_today = []
 
-    variants = [
-        (api.knn, "k-NN", False, 0.0),
-        (api.knn, "k-NN Time-Weighted", True, 0.0),
-        (api.knn_enhanced, "k-NN Enhanced", False, 0.0),
-        (api.knn_enhanced, "k-NN Enh. TW", True, 0.0),
-        (api.linreg, "LinReg", False, 0.0),
-        (api.linreg, "LinReg Time-Weighted", True, 0.0),
-        (api.linreg_enhanced, "LinReg Enhanced", False, 0.0),
-        (api.linreg_enhanced, "LinReg Enh. TW", True, 0.0),
+    # Pre-fetch the FULL news history for this ticker ONCE and filter in
+    # memory in the per-day closure. The old per-call ``get_news_before``
+    # path opened thousands of SQLite connections (one per backtest day ×
+    # per "+ News" variant) which exhausted file descriptors on macOS during
+    # long ``run_all.py`` jobs. The in-memory version is also ~100× faster.
+    try:
+        all_news_df: pd.DataFrame = api.db.get_news(ticker)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"{ticker}: could not load news history ({e}); proceeding without news.")
+        all_news_df = pd.DataFrame()
+
+    if not all_news_df.empty:
+        # Restrict to the requested scoring method (NULL rows from the
+        # pre-2026 schema are kept for backward compatibility).
+        if sentiment_method is not None and "method" in all_news_df.columns:
+            mask = (all_news_df["method"] == sentiment_method) | all_news_df["method"].isna()
+            all_news_df = all_news_df[mask]
+        # Compute the effective publication date once.
+        if "published_at" in all_news_df.columns:
+            all_news_df = all_news_df.assign(
+                effective_date=all_news_df["published_at"].fillna(all_news_df["date"])
+            )
+        else:
+            all_news_df = all_news_df.assign(effective_date=all_news_df["date"])
+
+    has_news = bool(headlines_today) or not all_news_df.empty
+
+    # Build a per-day sentiment provider that uses only news from BEFORE
+    # the prediction date. This is the look-ahead-safe path — same
+    # semantics as ``db.get_news_before`` but evaluated in memory.
+    def per_day_sentiment(prediction_date: str) -> float:
+        if all_news_df.empty:
+            return 0.0
+        mask = all_news_df["effective_date"] < prediction_date
+        if news_lookback_days and news_lookback_days > 0:
+            cutoff = (
+                pd.to_datetime(prediction_date) - pd.Timedelta(days=news_lookback_days)
+            ).strftime("%Y-%m-%d")
+            mask &= all_news_df["effective_date"] >= cutoff
+        subset = all_news_df[mask]
+        if subset.empty:
+            return 0.0
+        return NewsScraper.weighted_score(
+            subset,
+            asof_date=prediction_date,
+            half_life_days=news_half_life_days,
+        )
+
+    # (model, name, use_time_weights, sentiment_provider_or_None)
+    # When the fourth tuple element is None, no news is used (constant 0).
+    # Explicit type annotation so mypy doesn't narrow the slot to ``None``
+    # (we extend with callable-bearing tuples below for the "+ News" variants).
+    variants: list[ModelVariant] = [
+        (api.knn, "k-NN", False, None),
+        (api.knn, "k-NN Time-Weighted", True, None),
+        (api.knn_enhanced, "k-NN Enhanced", False, None),
+        (api.knn_enhanced, "k-NN Enh. TW", True, None),
+        (api.linreg, "LinReg", False, None),
+        (api.linreg, "LinReg Time-Weighted", True, None),
+        (api.linreg_enhanced, "LinReg Enhanced", False, None),
+        (api.linreg_enhanced, "LinReg Enh. TW", True, None),
     ]
 
     if has_news:
         variants.extend(
             [
-                (api.knn, "k-NN TW + News", True, sentiment_score),
-                (api.knn_enhanced, "k-NN Enh. TW + News", True, sentiment_score),
-                (api.linreg, "LinReg TW + News", True, sentiment_score),
-                (api.linreg_enhanced, "LinReg Enh. TW + News", True, sentiment_score),
+                (api.knn, "k-NN TW + News", True, per_day_sentiment),
+                (api.knn_enhanced, "k-NN Enh. TW + News", True, per_day_sentiment),
+                (api.linreg, "LinReg TW + News", True, per_day_sentiment),
+                (api.linreg_enhanced, "LinReg Enh. TW + News", True, per_day_sentiment),
             ]
         )
 
@@ -227,9 +323,9 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
     if api.lstm_available:
         lstm_model = api._load_lstm(ticker, period)
         if lstm_model:
-            variants.append((lstm_model, "LSTM", False, 0.0))
+            variants.append((lstm_model, "LSTM", False, None))
             if has_news:
-                variants.append((lstm_model, "LSTM + News", False, sentiment_score))
+                variants.append((lstm_model, "LSTM + News", False, per_day_sentiment))
         else:
             log.info(
                 f"No trained LSTM for {ticker} (period={period}). "
@@ -248,7 +344,7 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
         )
 
     results = []
-    for model, name, tw, sent in variants:
+    for model, name, tw, sent_provider in variants:
         # Run without SL first (baseline)
         if has_sl:
             result_no_sl = backtester_no_sl.run(
@@ -257,7 +353,7 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
                 df=filtered,
                 ticker=ticker,
                 use_time_weights=tw,
-                sentiment_score=sent,
+                sentiment_provider=sent_provider,
             )
             results.append(result_no_sl)
 
@@ -268,7 +364,7 @@ def run_single_backtest(api, backtester, ticker, df, period, n_days, full):
             df=filtered,
             ticker=ticker,
             use_time_weights=tw,
-            sentiment_score=sent,
+            sentiment_provider=sent_provider,
         )
         results.append(result)
 

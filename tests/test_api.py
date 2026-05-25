@@ -127,19 +127,23 @@ class TestSentiment:
     """News scraper and sentiment scoring."""
 
     def test_naive_scoring(self):
-        from engine.news_scraper import NewsScraper
+        from engine.sentiment import NaiveScorer
 
-        s = NewsScraper()
-        score = s._score_naive(["Great profit and growth", "Market crash feared"])
-        assert isinstance(score, float)
-        assert -1.0 <= score <= 1.0
+        scorer = NaiveScorer()
+        scores = scorer.score_many(["Great profit and growth", "Market crash feared"])
+        assert all(isinstance(s, float) for s in scores)
+        assert all(-1.0 <= s <= 1.0 for s in scores)
+        # First headline has 2 positive words → positive score
+        assert scores[0] > 0
+        # Second has 1 negative word → negative score
+        assert scores[1] < 0
 
     def test_empty_headlines(self):
-        from engine.news_scraper import NewsScraper
+        from engine.sentiment import NaiveScorer
 
-        s = NewsScraper()
-        score = s._score_naive([])
-        assert score == 0.0
+        scorer = NaiveScorer()
+        assert scorer.score_one("") == 0.0
+        assert scorer.score_many([]) == []
 
     def test_sentiment_integration(self, api):
         score, headlines = api._process_news_with_db("TEST")

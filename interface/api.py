@@ -2,11 +2,19 @@
 api.py – Facade (StockAppAPI) bridging the UI layer with the engine logic.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import pandas as pd
 
+from config import (
+    DEFAULT_NEWS_HALF_LIFE_DAYS,
+    DEFAULT_NEWS_LOOKBACK_DAYS,
+    DEFAULT_NEWS_SOURCES,
+    DEFAULT_SENTIMENT_METHOD,
+)
 from engine.data_downloader import get_historical_data
 from engine.db_manager import DatabaseManager
 from engine.features import ALL_FEATURES
@@ -31,6 +39,10 @@ class PredictionConfig:
     model_type: str = "knn"
     use_time_weights: bool = False
     include_news: bool = True
+    sentiment_method: str = DEFAULT_SENTIMENT_METHOD  # "vader" | "finbert" | "naive"
+    news_sources: list[str] | None = None  # falls back to config default
+    news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS
+    news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS
 
 
 @dataclass
@@ -49,20 +61,27 @@ class PredictionResult:
 
 
 class StockAppAPI:
-    def __init__(self):
+    def __init__(
+        self,
+        sentiment_method: str = DEFAULT_SENTIMENT_METHOD,
+        news_sources: list[str] | str | None = None,
+    ):
         self.db = DatabaseManager()
         self.knn = KNNModel(k=5, features=["returns"])
         self.knn_enhanced = KNNModel(k=5, features=ALL_FEATURES)
         self.linreg = LinearRegressionModel(features=["returns"])
         self.linreg_enhanced = LinearRegressionModel(features=ALL_FEATURES)
-        self.news_scraper = NewsScraper()
-        self._lstm_cache = {}
+        self.news_scraper = NewsScraper(
+            default_method=sentiment_method,
+            default_source=news_sources or DEFAULT_NEWS_SOURCES,
+        )
+        self._lstm_cache: dict = {}
         self.lstm_available = TORCH_AVAILABLE
 
         models = "k-NN + k-NN Enh. + LinReg + LinReg Enh."
         if self.lstm_available:
             models += " + LSTM"
-        log.info(f"System initialized ({models} + News Engine)")
+        log.info(f"System initialized ({models} + News Engine [{sentiment_method}])")
 
     def set_knn_k(self, k: int):
         features_naive = self.knn.features
@@ -89,8 +108,32 @@ class StockAppAPI:
     # Data refresh
     # ------------------------------------------------------------------
 
-    def refresh_tickers(self, tickers: list[str], verbose: bool = True):
-        """Pre-fetch prices and news for all tickers into SQLite."""
+    def refresh_tickers(
+        self,
+        tickers: list[str],
+        verbose: bool = True,
+        news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
+        sentiment_method: str | None = None,
+        news_sources: str | list[str] | None = None,
+        force_news_refresh: bool = False,
+    ):
+        """
+        Pre-fetch prices and news for all tickers into SQLite.
+
+        Args:
+            tickers: Symbols to refresh.
+            news_lookback_days: How many days of news to pull from each
+                source. Yahoo will ignore values larger than its ~7-day
+                window; GDELT honours up to multi-year ranges (capped at
+                250 articles per call).
+            sentiment_method: Override the scorer for this run only
+                (None → use the scraper's default).
+            news_sources: Override the source(s) for this run only
+                (None → use the scraper's default).
+            force_news_refresh: If True, bypass the "already-fetched-today"
+                cache and re-pull news. Use this for bulk historical
+                fetches when populating the DB for backtests.
+        """
         log.info(f"Refreshing {len(tickers)} tickers...")
 
         for ticker in progress_bar(tickers, desc="Refreshing data"):
@@ -104,7 +147,13 @@ class StockAppAPI:
                 continue
 
             try:
-                self._process_news_with_db(ticker)
+                self._process_news_with_db(
+                    ticker,
+                    method=sentiment_method,
+                    source=news_sources,
+                    lookback_days=news_lookback_days,
+                    force_refresh=force_news_refresh,
+                )
             except Exception as e:
                 log.warning(f"{ticker}: news fetch failed: {e}")
 
@@ -180,26 +229,124 @@ class StockAppAPI:
     # News / sentiment
     # ------------------------------------------------------------------
 
-    def _process_news_with_db(self, ticker: str):
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        existing = self.db.get_news(ticker, date=today_str)
-        if not existing.empty:
-            headlines = existing["headline"].tolist()
-            if headlines:
-                return float(existing["sentiment_score"].mean()), headlines
+    def _process_news_with_db(
+        self,
+        ticker: str,
+        method: str | None = None,
+        source: str | list[str] | None = None,
+        lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
+        force_refresh: bool = False,
+    ) -> tuple[float, list[str]]:
+        """
+        Refresh news from the configured provider, store with real dates,
+        and return (mean_score_of_freshly_fetched_items, headlines).
 
-        score, headlines = self.news_scraper.get_sentiment(ticker)
-        if headlines:
-            news_df = pd.DataFrame(
+        Old call sites that used this only for the "current sentiment"
+        keep working — we still return today's average. The big change
+        is that each headline is now persisted with its **actual**
+        publication date in the ``published_at`` column, making the
+        DB suitable for look-ahead-safe backtests.
+
+        ``force_refresh=True`` skips the same-day cache check, which is
+        what you want for a bulk historical fetch (e.g. enabling GDELT
+        for the first time on a DB that already has a Yahoo entry from
+        earlier today).
+        """
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # Quick cache: if we've already pulled today, don't hit the network again.
+        # Bypassed when force_refresh=True or when caller wants deep history.
+        if not force_refresh and lookback_days <= DEFAULT_NEWS_LOOKBACK_DAYS:
+            try:
+                cached_today = self.db.get_news(ticker, date=today_str)
+            except Exception as e:  # noqa: BLE001
+                # Transient SQLite issues (e.g. macOS Spotlight indexing a
+                # WAL file) shouldn't kill a long-running batch. Skip the
+                # cache check and try the live fetch instead.
+                log.warning(f"{ticker}: news cache lookup failed ({e}); attempting live fetch.")
+                cached_today = pd.DataFrame()
+            if not cached_today.empty:
+                headlines = cached_today["headline"].tolist()
+                if headlines:
+                    return float(cached_today["sentiment_score"].mean()), headlines
+
+        items = self.news_scraper.fetch_and_score(
+            ticker,
+            lookback_days=lookback_days,
+            method=method,
+            source=source,
+        )
+
+        if not items:
+            return 0.0, []
+
+        rows = []
+        for it in items:
+            rows.append(
                 {
-                    "ticker": [ticker] * len(headlines),
-                    "date": [today_str] * len(headlines),
-                    "headline": headlines,
-                    "sentiment_score": [score] * len(headlines),
+                    "ticker": ticker,
+                    "date": today_str,  # bucket date = today (when fetched)
+                    "headline": it.headline,
+                    "sentiment_score": it.sentiment_score,
+                    "published_at": it.published_at,  # ★ real publication date
+                    "source": it.source,
+                    "method": it.method,
                 }
             )
-            self.db.save_news(ticker, news_df)
-        return score, headlines
+        news_df = pd.DataFrame(rows)
+        self.db.save_news(ticker, news_df)
+
+        score = sum(i.sentiment_score for i in items) / len(items)
+        return float(score), [i.headline for i in items]
+
+    def get_sentiment_asof(
+        self,
+        ticker: str,
+        asof_date: str,
+        lookback_days: int | None = None,
+        half_life_days: float | None = None,
+        method: str | None = None,
+    ) -> tuple[float, list[str]]:
+        """
+        Compute sentiment **as if today were ``asof_date``** — using only
+        news whose ``published_at`` is strictly older than that date.
+
+        This is the function the backtester calls per prediction day to
+        guarantee no look-ahead leakage. Combines:
+
+          * lookback window (drop news older than N days)
+          * exponential half-life decay (recent news weighted higher)
+
+        Args:
+            ticker: Asset symbol.
+            asof_date: "YYYY-MM-DD" – the prediction date. News on or
+                after this date is dropped.
+            lookback_days: How far back to search. None → use config default.
+                0 disables the window (use any history available).
+            half_life_days: Decay half-life. None → use config default.
+                0 disables decay (all news weighted equally).
+            method: Restrict to news scored by this method. None → use
+                whatever's stored. Useful for VADER vs FinBERT comparisons.
+
+        Returns:
+            (weighted_score in [-1, 1], headlines that contributed).
+        """
+        if lookback_days is None:
+            lookback_days = DEFAULT_NEWS_LOOKBACK_DAYS
+        if half_life_days is None:
+            half_life_days = DEFAULT_NEWS_HALF_LIFE_DAYS
+
+        df = self.db.get_news_before(
+            ticker,
+            asof_date=asof_date,
+            lookback_days=lookback_days if lookback_days > 0 else None,
+            method=method,
+        )
+        if df.empty:
+            return 0.0, []
+
+        score = NewsScraper.weighted_score(df, asof_date=asof_date, half_life_days=half_life_days)
+        return score, df["headline"].tolist()
 
     # ------------------------------------------------------------------
     # Prediction
@@ -220,10 +367,15 @@ class StockAppAPI:
 
         sentiment_label = "NEUTRAL"
         sentiment_score = 0.0
-        headlines = []
+        headlines: list[str] = []
 
         if config.include_news:
-            sentiment_score, headlines = self._process_news_with_db(ticker)
+            sentiment_score, headlines = self._process_news_with_db(
+                ticker,
+                method=config.sentiment_method,
+                source=config.news_sources,
+                lookback_days=config.news_lookback_days,
+            )
             if sentiment_score > 0.15:
                 sentiment_label = "POSITIVE"
             elif sentiment_score < -0.15:

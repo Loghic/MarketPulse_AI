@@ -66,7 +66,13 @@ def mock_yfinance():
     prices = _make_prices(400)
     news = _make_news()
 
-    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_scraper.yf") as mock_ns:
+    # News fetching moved to engine.news_sources in the 2026 refactor.
+    # We patch both download + news-source modules so old and new code
+    # paths see the same fake data.
+    with (
+        patch("engine.data_downloader.yf") as mock_dl,
+        patch("engine.news_sources.yf") as mock_ns,
+    ):
         mock_dl.Ticker.return_value.history.return_value = prices
         type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=news)
         yield mock_dl, mock_ns

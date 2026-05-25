@@ -48,7 +48,10 @@ def make_fake_news() -> list:
 
 
 # Patch yfinance so nothing hits the network
-with patch("engine.data_downloader.yf") as mock_yf, patch("engine.news_scraper.yf") as mock_news_yf:
+with (
+    patch("engine.data_downloader.yf") as mock_yf,
+    patch("engine.news_sources.yf") as mock_news_yf,
+):
     mock_yf.Ticker.return_value.history.return_value = make_fake_prices()
     type(mock_news_yf.Ticker.return_value).news = property(lambda self: make_fake_news())
 
@@ -58,6 +61,7 @@ with patch("engine.data_downloader.yf") as mock_yf, patch("engine.news_scraper.y
     from engine.knn_model import KNNModel
     from engine.lin_reg_model import LinearRegressionModel
     from engine.news_scraper import NewsScraper
+    from engine.sentiment import NaiveScorer, VADERScorer, get_scorer
     from interface.api import PredictionConfig, StockAppAPI
 
     api = StockAppAPI()
@@ -192,6 +196,7 @@ with patch("engine.data_downloader.yf") as mock_yf, patch("engine.news_scraper.y
     print(" TEST 8: News sentiment (VADER vs naive)")
     print("=" * 60)
     scraper = NewsScraper()
+    naive = NaiveScorer()
 
     headlines = [
         "Stock rally continues with strong growth",
@@ -199,18 +204,23 @@ with patch("engine.data_downloader.yf") as mock_yf, patch("engine.news_scraper.y
         "Company not expected to meet targets this quarter",
     ]
 
-    naive_score = scraper._score_naive(headlines)
-    print(f"  Naive score:  {naive_score:+.3f}")
+    naive_scores = naive.score_many(headlines)
+    naive_avg = sum(naive_scores) / len(naive_scores) if naive_scores else 0.0
+    print(f"  Naive score:  {naive_avg:+.3f}")
 
     if scraper.vader_available:
-        vader_score = scraper._score_vader(headlines)
-        print(f"  VADER score:  {vader_score:+.3f}")
-        for h in headlines:
-            n = scraper._score_naive([h])
-            v = scraper._score_vader([h])
+        vader = VADERScorer()
+        vader_scores = vader.score_many(headlines)
+        vader_avg = sum(vader_scores) / len(vader_scores) if vader_scores else 0.0
+        print(f"  VADER score:  {vader_avg:+.3f}")
+        for h, n, v in zip(headlines, naive_scores, vader_scores):
             print(f'    naive={n:+.2f}  vader={v:+.2f}  "{h}"')
     else:
         print("  VADER available: no (using naive fallback)")
+
+    # FinBERT scorer is loaded lazily; we don't require it for the smoke test
+    finbert_scorer = get_scorer("finbert")
+    print(f"  FinBERT available: {finbert_scorer.name == 'finbert'}")
 
     print("  ✓ PASS\n")
 

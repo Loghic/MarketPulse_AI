@@ -1,177 +1,244 @@
 """
-news_scraper.py – Fetch news headlines and compute sentiment scores via yfinance.
+news_scraper.py – News + sentiment orchestrator.
 
-Supports two scoring methods:
-    "vader" — NLTK VADER (context-aware, handles negation, intensifiers, caps)
-    "naive" — Simple keyword matching (original baseline, no dependencies)
+This module ties together two concerns that used to live here directly:
 
-If VADER fails to initialize (missing lexicon, no network), it falls back
-to naive scoring automatically.
+    1. WHERE headlines come from  →  engine/news_sources.py (Yahoo, GDELT, ...)
+    2. HOW headlines are scored   →  engine/sentiment.py    (VADER, FinBERT, naive)
 
-Compatible with yfinance >= 1.3.0 (new XHR news endpoint).
+``NewsScraper`` is the high-level facade the rest of the codebase talks to.
+It exposes three core methods:
+
+    get_sentiment(ticker, method="vader")
+        — Backward-compatible "current sentiment" call: fetch fresh headlines
+          from the configured provider, score them, return (score, headlines).
+
+    fetch_and_score(ticker, lookback_days, method, source)
+        — Returns ``list[ScoredNewsItem]`` with each item carrying its real
+          publication date and individual sentiment score. This is the
+          method the data-refresh path now uses so historical news can be
+          stored in the DB with their actual dates.
+
+    weighted_score(news_items, asof_date, half_life_days)
+        — Pure function. Given a list of ScoredNewsItem (with sentiment_score
+          set) and a reference date, return a single weighted average
+          sentiment score using exponential time-decay. Used inside the
+          backtester to compute a per-day sentiment from stored history.
 """
 
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
 from typing import Literal
 
-import yfinance as yf
+import pandas as pd
+
+from engine.news_sources import NewsItem, get_provider
+from engine.sentiment import get_scorer
+
+# Public type aliases. Both are deliberately *string* (not Literal) for the
+# function signatures: CLI args (argparse) hand us plain ``str`` values, and
+# the scorer factory falls back gracefully on unknown methods. The Literal
+# is kept around as ``ScoringMethod`` for documentation / IDE help where the
+# caller does have a literal in hand.
+SentimentMethod = str  # widened from Literal for runtime CLI strings
+ScoringMethod = Literal["vader", "finbert", "naive"]
+
+
+# ----------------------------------------------------------------------
+# Scored item dataclass
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class ScoredNewsItem:
+    """A NewsItem that has been scored by a specific sentiment method."""
+
+    ticker: str
+    published_at: str
+    headline: str
+    source: str
+    url: str
+    sentiment_score: float
+    method: str
 
 
 class NewsScraper:
-    def __init__(self):
-        self.sia = None
-        self._init_vader()
+    """
+    Facade around news sources + sentiment scorers.
 
-        # Legacy naive keyword sets (kept for baseline comparison)
-        self.pos_words = {
-            "up",
-            "bull",
-            "buy",
-            "growth",
-            "profit",
-            "surge",
-            "positive",
-            "win",
-            "high",
-            "boost",
-            "top",
-            "gain",
-            "rally",
-            "strong",
-            "beat",
-            "record",
-            "upgrade",
-            "outperform",
-        }
-        self.neg_words = {
-            "down",
-            "bear",
-            "sell",
-            "loss",
-            "drop",
-            "negative",
-            "fall",
-            "risk",
-            "debt",
-            "crash",
-            "short",
-            "decline",
-            "plunge",
-            "weak",
-            "miss",
-            "warning",
-            "downgrade",
-            "underperform",
-        }
+    The scraper is parameterised by:
+      * ``default_method`` — which sentiment scorer to use by default
+      * ``default_source`` — which news provider to use by default
 
-    def _init_vader(self):
-        """Try to initialize VADER. Falls back to naive if unavailable."""
-        try:
-            import nltk
-            from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    Both can be overridden per-call. Scorers and providers are cached so
+    instantiating multiple ``NewsScraper`` objects is cheap.
+    """
 
-            try:
-                nltk.data.find("sentiment/vader_lexicon.zip")
-            except LookupError:
-                nltk.download("vader_lexicon", quiet=True)
+    def __init__(
+        self,
+        default_method: SentimentMethod = "vader",
+        default_source: str | list[str] = "yahoo",
+    ) -> None:
+        self.default_method = default_method
+        self.default_source = default_source
 
-            self.sia = SentimentIntensityAnalyzer()
-        except Exception as e:
-            print(f"WARNING: VADER unavailable ({e}), using naive sentiment scoring.")
-            self.sia = None
+    # ------------------------------------------------------------------
+    # Capability flags (used by ``api.py`` and old tests)
+    # ------------------------------------------------------------------
 
     @property
     def vader_available(self) -> bool:
-        return self.sia is not None
+        return get_scorer("vader").name == "vader"
 
-    @staticmethod
-    def _extract_title(item: dict) -> str:
-        """
-        Extract headline from a yfinance news item.
+    @property
+    def finbert_available(self) -> bool:
+        try:
+            return get_scorer("finbert").name == "finbert"
+        except Exception:
+            return False
 
-        yfinance 1.3.0+ returns: {'content': {'title': '...'}, ...}
-        Older versions: {'title': '...'} or {'headline': '...'}
-        """
-        content = item.get("content", {})
-        if isinstance(content, dict):
-            title = content.get("title")
-            if title:
-                return title
-        return item.get("title") or item.get("headline") or item.get("summary") or ""
-
-    def _score_naive(self, titles: list[str]) -> float:
-        """Simple keyword-matching scoring. Returns score in [-1, 1]."""
-        if not titles:
-            return 0.0
-
-        score = 0
-        for title in titles:
-            words = title.lower().split()
-            for word in words:
-                if word in self.pos_words:
-                    score += 1
-                if word in self.neg_words:
-                    score -= 1
-
-        return max(-1.0, min(1.0, score / max(len(titles), 1)))
-
-    def _score_vader(self, titles: list[str]) -> float:
-        """
-        VADER sentiment scoring.
-
-        Uses the compound score which combines positive, negative, and neutral
-        into a single value in [-1, 1]. Averaged across all headlines.
-        """
-        if not titles or self.sia is None:
-            return 0.0
-
-        total_compound = 0.0
-        for title in titles:
-            scores = self.sia.polarity_scores(title)
-            total_compound += scores["compound"]
-
-        return total_compound / len(titles)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def get_sentiment(
         self,
         ticker: str,
-        method: Literal["vader", "naive"] = "vader",
+        method: SentimentMethod | None = None,
+        source: str | list[str] | None = None,
+        lookback_days: int = 7,
     ) -> tuple[float, list[str]]:
         """
-        Fetch recent news and return a sentiment score with headlines.
+        Fetch recent news and return (average sentiment, headlines).
+
+        Backward-compatible signature: existing callers can keep passing
+        ``method="vader"`` and ignore the new ``source`` and
+        ``lookback_days`` arguments.
+        """
+        items = self.fetch_and_score(
+            ticker,
+            lookback_days=lookback_days,
+            method=method or self.default_method,
+            source=source or self.default_source,
+        )
+        if not items:
+            return 0.0, []
+        avg = sum(i.sentiment_score for i in items) / len(items)
+        return float(avg), [i.headline for i in items]
+
+    def fetch_and_score(
+        self,
+        ticker: str,
+        lookback_days: int = 7,
+        method: SentimentMethod | None = None,
+        source: str | list[str] | None = None,
+    ) -> list[ScoredNewsItem]:
+        """
+        Fetch headlines from the requested source and score them.
+
+        Returns a list of ``ScoredNewsItem`` — each carries its real
+        publication date plus an individual sentiment score. Empty list
+        if the source yields nothing.
+        """
+        provider = get_provider(source or self.default_source)
+        scorer = get_scorer(method or self.default_method)
+
+        try:
+            raw_items: list[NewsItem] = provider.fetch(ticker, lookback_days=lookback_days)
+        except Exception as e:
+            print(f"WARNING: news fetch failed for {ticker} ({provider.name}): {e}")
+            return []
+
+        if not raw_items:
+            return []
+
+        scores = scorer.score_many([i.headline for i in raw_items])
+        scored = [
+            ScoredNewsItem(
+                ticker=item.ticker,
+                published_at=item.published_at,
+                headline=item.headline,
+                source=item.source,
+                url=item.url,
+                sentiment_score=float(score),
+                method=scorer.name,
+            )
+            for item, score in zip(raw_items, scores)
+        ]
+        return scored
+
+    # ------------------------------------------------------------------
+    # Look-ahead-safe weighted aggregation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def weighted_score(
+        items: list[ScoredNewsItem] | pd.DataFrame,
+        asof_date: str,
+        half_life_days: float = 0.0,
+    ) -> float:
+        """
+        Return a single weighted-average sentiment score.
 
         Args:
-            ticker: Asset symbol (e.g. 'AAPL', 'BTC-USD').
-            method: Scoring strategy — 'vader' (default) or 'naive'.
-                    Falls back to 'naive' if VADER is unavailable.
+            items: Either a list of ``ScoredNewsItem`` or a DataFrame with
+                ``sentiment_score`` and either ``published_at`` or
+                ``effective_date`` columns.
+            asof_date: Reference date ("YYYY-MM-DD"). Each item's age is
+                measured against this date. Items dated on or after
+                ``asof_date`` are dropped (look-ahead protection).
+            half_life_days: Exponential decay half-life. 0 (or negative)
+                disables decay and gives a plain average — every headline
+                counts equally regardless of age.
 
         Returns:
-            (score, headlines) — score in [-1, 1], up to 10 headlines.
+            Float in [-1, 1]. 0.0 if no items qualify.
         """
-        try:
-            stock = yf.Ticker(ticker)
-            raw_news = stock.news
-
-            if not raw_news:
-                return 0.0, []
-
-            # Extract titles (call _extract_title once per item)
-            titles = []
-            for item in raw_news[:10]:
-                title = self._extract_title(item)
-                if title:
-                    titles.append(title)
-
-            if not titles:
-                return 0.0, []
-
-            # Fall back to naive if VADER requested but not available
-            if method == "vader" and self.vader_available:
-                score = self._score_vader(titles)
+        if isinstance(items, pd.DataFrame):
+            df = items.copy()
+            if df.empty:
+                return 0.0
+            if "effective_date" in df.columns:
+                date_col = "effective_date"
+            elif "published_at" in df.columns:
+                date_col = "published_at"
             else:
-                score = self._score_naive(titles)
+                date_col = "date"
+            scores = df["sentiment_score"].astype(float).tolist()
+            dates = df[date_col].fillna(df.get("date", "")).astype(str).tolist()
+        else:
+            if not items:
+                return 0.0
+            scores = [it.sentiment_score for it in items]
+            dates = [it.published_at for it in items]
 
-            return score, titles
+        asof = pd.to_datetime(asof_date)
+        weighted_sum = 0.0
+        weight_total = 0.0
 
-        except Exception as e:
-            print(f"WARNING: News fetch failed for {ticker}: {e}")
-            return 0.0, []
+        for score, d in zip(scores, dates):
+            if not d:
+                continue
+            try:
+                dt = pd.to_datetime(d)
+            except Exception:
+                continue
+            age_days = (asof - dt).days
+            if age_days < 0:
+                # Look-ahead — drop. Shouldn't happen if caller used
+                # ``get_news_before``, but cheap to double-check.
+                continue
+
+            if half_life_days and half_life_days > 0:
+                weight = math.pow(0.5, age_days / half_life_days)
+            else:
+                weight = 1.0
+
+            weighted_sum += score * weight
+            weight_total += weight
+
+        if weight_total <= 0:
+            return 0.0
+        return float(weighted_sum / weight_total)

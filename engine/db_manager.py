@@ -1,5 +1,24 @@
 """
 db_manager.py – SQLite správce pro cenová data a news sentiment.
+
+News table schema (current):
+    news_sentiment(
+        ticker          TEXT,
+        date            TEXT,   -- "bucket" date (legacy; today's date for old rows)
+        headline        TEXT,
+        sentiment_score REAL,
+        published_at    TEXT,   -- ISO date of actual publication (added 2026)
+        source          TEXT,   -- "yahoo", "gdelt", ...
+        method          TEXT,   -- scoring method ("vader", "finbert", "naive")
+        PRIMARY KEY (ticker, date, headline)
+    )
+
+The ``published_at`` column is what enables look-ahead-safe backtests:
+sentiment for a given prediction date is computed only from rows whose
+``published_at`` strictly precedes that date.
+
+Old rows pre-dating the migration have ``published_at`` NULL — queries
+fall back to the ``date`` column via COALESCE.
 """
 
 import sqlite3
@@ -13,6 +32,7 @@ class DatabaseManager:
         self.db_path = Path("data") / db_name
         self.db_path.parent.mkdir(exist_ok=True)
         self._init_db()
+        self._migrate_news_columns()
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -36,10 +56,28 @@ class DatabaseManager:
                     date TEXT,
                     headline TEXT,
                     sentiment_score REAL,
+                    published_at TEXT,
+                    source TEXT,
+                    method TEXT,
                     PRIMARY KEY (ticker, date, headline)
                 )
             """)
             conn.commit()
+
+    def _migrate_news_columns(self):
+        """Add new columns to existing DBs created before the migration."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(news_sentiment)")
+            existing = {row[1] for row in cur.fetchall()}
+            for col in ("published_at", "source", "method"):
+                if col not in existing:
+                    cur.execute(f"ALTER TABLE news_sentiment ADD COLUMN {col} TEXT")
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Prices
+    # ------------------------------------------------------------------
 
     def save_prices(self, ticker: str, df: pd.DataFrame, asset_type: str):
         """Uloží DataFrame do DB (upsert přes INSERT OR REPLACE)."""
@@ -95,8 +133,20 @@ class DatabaseManager:
             query = "SELECT * FROM stock_prices WHERE ticker = ? ORDER BY date"
             return pd.read_sql_query(query, conn, params=[ticker])
 
+    # ------------------------------------------------------------------
+    # News
+    # ------------------------------------------------------------------
+
     def save_news(self, ticker: str, news_df: pd.DataFrame):
-        """Uloží zprávy (INSERT OR IGNORE pro deduplikaci)."""
+        """
+        Insert news rows with INSERT OR IGNORE for deduplication.
+
+        Accepts dataframes containing any subset of:
+            ticker, date, headline, sentiment_score, published_at, source, method
+
+        Missing columns are filled with sensible defaults so old call sites
+        keep working without modification.
+        """
         if news_df.empty:
             return
 
@@ -108,14 +158,39 @@ class DatabaseManager:
                 news_df.rename(columns={"title": "headline"}, inplace=True)
 
             news_df["ticker"] = ticker
-            cols = ["ticker", "date", "headline", "sentiment_score"]
-            news_df = news_df[[c for c in cols if c in news_df.columns]]
+            for col, default in [
+                ("date", None),
+                ("sentiment_score", 0.0),
+                ("published_at", None),
+                ("source", "unknown"),
+                ("method", None),
+            ]:
+                if col not in news_df.columns:
+                    news_df[col] = default
+
+            # If date is missing but published_at is present, use it as the bucket
+            news_df["date"] = news_df["date"].fillna(news_df["published_at"])
+
+            cols = [
+                "ticker",
+                "date",
+                "headline",
+                "sentiment_score",
+                "published_at",
+                "source",
+                "method",
+            ]
+            news_df = news_df[cols]
 
             news_df.to_sql("_temp_news", conn, if_exists="replace", index=False)
-            conn.execute("""
-                INSERT OR IGNORE INTO news_sentiment (ticker, date, headline, sentiment_score)
-                SELECT ticker, date, headline, sentiment_score FROM _temp_news
-            """)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO news_sentiment
+                    (ticker, date, headline, sentiment_score, published_at, source, method)
+                SELECT ticker, date, headline, sentiment_score, published_at, source, method
+                FROM _temp_news
+                """
+            )
             conn.execute("DROP TABLE IF EXISTS _temp_news")
             conn.commit()
 
@@ -127,3 +202,54 @@ class DatabaseManager:
             else:
                 query = "SELECT * FROM news_sentiment WHERE ticker = ? ORDER BY date DESC"
                 return pd.read_sql_query(query, conn, params=[ticker])
+
+    def get_news_before(
+        self,
+        ticker: str,
+        asof_date: str,
+        lookback_days: int | None = None,
+        method: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        Return news strictly published BEFORE ``asof_date`` (the prediction
+        date) — never on or after it. This is the look-ahead-safe query
+        used by the backtester.
+
+        ``COALESCE(published_at, date)`` lets old rows (NULL published_at)
+        still be queryable; they just may not have a faithful publication
+        timestamp.
+
+        Args:
+            ticker: Asset symbol.
+            asof_date: "YYYY-MM-DD". News must be strictly older than this.
+            lookback_days: Window. If set, news must also be newer than
+                ``asof_date - lookback_days``. None = no lower bound.
+            method: If set, restrict to rows scored by this method. Useful
+                when comparing VADER vs FinBERT in the same DB.
+
+        Returns:
+            DataFrame ordered by effective publication date ASC.
+        """
+        params: list = [ticker, asof_date]
+        clauses = [
+            "ticker = ?",
+            "COALESCE(published_at, date) < ?",
+        ]
+
+        if lookback_days is not None and lookback_days > 0:
+            cutoff = (pd.to_datetime(asof_date) - pd.Timedelta(days=lookback_days)).strftime(
+                "%Y-%m-%d"
+            )
+            clauses.append("COALESCE(published_at, date) >= ?")
+            params.append(cutoff)
+
+        if method is not None:
+            clauses.append("(method = ? OR method IS NULL)")
+            params.append(method)
+
+        query = (
+            "SELECT *, COALESCE(published_at, date) AS effective_date "
+            "FROM news_sentiment WHERE " + " AND ".join(clauses) + " ORDER BY effective_date ASC"
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            return pd.read_sql_query(query, conn, params=params)
