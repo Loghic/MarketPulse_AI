@@ -335,6 +335,77 @@ class TestBacktest:
         assert len(periods) >= 2, f"expected results from multiple periods, got {periods}"
         assert len(results) >= 4  # at minimum a few model variants per period
 
+    def test_backtest_progress_endpoint(self, client):
+        """``GET /api/backtest/progress`` returns the running flag even between runs."""
+        r = client.get("/api/backtest/progress")
+        assert r.status_code == 200
+        data = r.json()
+        assert "running" in data
+
+    def test_backtest_persists_to_disk(self, refreshed_client, tmp_path, monkeypatch):
+        """A successful backtest writes JSON cache + results/ CSVs."""
+        from pathlib import Path
+
+        from web.backend.routes import backtest as _bt
+
+        # Redirect persistence directories to a tmp location so the test is hermetic
+        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
+        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
+
+        r = refreshed_client.post("/api/backtest", json=self._body(fee_pct=0.03))
+        assert r.status_code == 200
+
+        # JSON cache should exist with at least one file
+        cache_files = list((tmp_path / "backtests").glob("*.json"))
+        assert len(cache_files) >= 1, "expected a backtest JSON cache file"
+
+        # CSV export directory should exist with at least one ticker CSV
+        results_subdirs = (
+            list((tmp_path / "results").iterdir()) if (tmp_path / "results").exists() else []
+        )
+        assert len(results_subdirs) == 1, "expected exactly one timestamped results subdir"
+        sub = results_subdirs[0]
+        # Subdir name encodes scope_days_fee + timestamp
+        assert "20d" in sub.name or sub.name.startswith("custom")
+        assert any(f.suffix == ".csv" for f in sub.iterdir()), "no CSV in results subdir"
+        # _summary.csv should be present
+        assert (sub / "_summary.csv").exists()
+
+    def test_backtest_runs_listing(self, refreshed_client, tmp_path, monkeypatch):
+        """After a backtest, ``GET /api/backtest/runs`` shows it; loading round-trips."""
+        from pathlib import Path
+
+        from web.backend.routes import backtest as _bt
+
+        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
+        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
+
+        refreshed_client.post("/api/backtest", json=self._body())
+
+        r = refreshed_client.get("/api/backtest/runs")
+        assert r.status_code == 200
+        runs = r.json()
+        assert len(runs) >= 1
+        first = runs[0]
+        assert "run_id" in first
+        assert "saved_at" in first
+        assert "results_dir" in first
+        assert first["result_count"] > 0
+
+        # Load that run back
+        r2 = refreshed_client.get(f"/api/backtest/runs/{first['run_id']}")
+        assert r2.status_code == 200
+        loaded = r2.json()
+        assert loaded["run_id"] == first["run_id"]
+        assert loaded["response"]["results"]
+
+        # Path traversal blocked — the run_id contains `..` but isn't a literal
+        # parent path (httpx would normalize that away), so the handler sees it.
+        r3 = refreshed_client.get("/api/backtest/runs/..%2Fetc")
+        assert r3.status_code in (400, 404)
+        r4 = refreshed_client.get("/api/backtest/runs/foo..bar")
+        assert r4.status_code == 400
+
 
 # ------------------------------------------------------------------
 # Training endpoints
