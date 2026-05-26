@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 data/*.db
+*.db
 .uv/
 results.*
 models/

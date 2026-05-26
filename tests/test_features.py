@@ -42,10 +42,13 @@ class TestFeatureMatrix:
         assert not np.isnan(X).any(), "NaN in feature matrix"
         assert not np.isnan(y).any(), "NaN in labels"
 
-    def test_fewer_rows_than_window(self, tiny_prices):
+    def test_fewer_rows_than_window(self, tiny_prices, tmp_path, monkeypatch):
         """With 10 rows and window 5+MACD warmup, should return None or tiny."""
         from unittest.mock import patch
 
+        # Isolate DB writes — see conftest.api docstring for the
+        # contamination story this guards against.
+        monkeypatch.chdir(tmp_path)
         with patch("engine.data_downloader.yf") as m:
             m.Ticker.return_value.history.return_value = tiny_prices
             from interface.api import StockAppAPI

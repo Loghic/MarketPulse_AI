@@ -41,21 +41,40 @@ def _make_news():
 
 
 @pytest.fixture(scope="module")
-def client():
-    """Create TestClient with mocked yfinance."""
-    with patch("engine.data_downloader.yf") as mock_dl, patch("engine.news_sources.yf") as mock_ns:
-        mock_dl.Ticker.return_value.history.return_value = _make_prices()
-        type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=_make_news())
+def client(tmp_path_factory):
+    """Create TestClient with mocked yfinance **and isolated DB**.
 
-        # Reset shared API instance
-        from web.backend.routes import data as data_module
+    The web backend lazily instantiates ``StockAppAPI()``, whose
+    ``DatabaseManager`` writes to ``Path("data") / "market_data.db"`` —
+    a path relative to CWD. Without chdir-to-tmp here, every
+    ``POST /api/data/refresh`` (especially ``test_refresh_all`` with an
+    empty ticker list) would persist the mocked synthetic fixture into
+    the developer's real ``data/market_data.db`` under real ticker
+    names. See scripts/clean_test_contamination.py for the cleanup of
+    that historical mess.
+    """
+    tmp = tmp_path_factory.mktemp("web_api_db")
+    mp = pytest.MonkeyPatch()
+    mp.chdir(tmp)
+    try:
+        with (
+            patch("engine.data_downloader.yf") as mock_dl,
+            patch("engine.news_sources.yf") as mock_ns,
+        ):
+            mock_dl.Ticker.return_value.history.return_value = _make_prices()
+            type(mock_ns.Ticker.return_value).news = PropertyMock(return_value=_make_news())
 
-        data_module._api = None
+            # Reset shared API instance
+            from web.backend.routes import data as data_module
 
-        from web.backend.app import app
+            data_module._api = None
 
-        with TestClient(app) as c:
-            yield c
+            from web.backend.app import app
+
+            with TestClient(app) as c:
+                yield c
+    finally:
+        mp.undo()
 
 
 @pytest.fixture(scope="module")

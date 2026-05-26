@@ -79,8 +79,17 @@ def mock_yfinance():
 
 
 @pytest.fixture
-def api(mock_yfinance):
-    """StockAppAPI with mocked data layer."""
+def api(mock_yfinance, tmp_path, monkeypatch):
+    """StockAppAPI with mocked data layer **and an isolated DB**.
+
+    ``DatabaseManager`` builds its path from ``Path("data") / db_name``,
+    which is relative to CWD. Without the ``monkeypatch.chdir`` below,
+    every test that touched ``api.get_data("SPY")`` etc. would persist
+    the mocked synthetic fixture into the real ``data/market_data.db``
+    under real ticker names — see scripts/clean_test_contamination.py
+    for the cleanup of that historical mess.
+    """
+    monkeypatch.chdir(tmp_path)
     from interface.api import StockAppAPI
 
     return StockAppAPI()
