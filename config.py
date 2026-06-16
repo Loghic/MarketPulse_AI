@@ -1,39 +1,168 @@
 """
 config.py – Centralized configuration for tickers, periods, and defaults.
 
-Add new tickers here. Everything else (main.py, backtest.py) reads from this file.
+The asset universe is data-driven: one ``AssetClass`` entry per class, and the
+flat names the rest of the codebase imports (``STOCKS``, ``CRYPTO``,
+``ALL_TICKERS``, ``STOCK_BENCHMARKS`` …) plus ``get_benchmarks`` and
+``TICKER_NAMES`` are *derived* from it. To add a ticker, append to a class's
+``tickers``; to add a whole class, append an ``AssetClass``.
 """
 
-# ------------------------------------------------------------------
-# Tickers by category
-# ------------------------------------------------------------------
+from __future__ import annotations
 
-STOCKS = [
-    "AAPL",  # Apple
-    "MSFT",  # Microsoft
-    "NVDA",  # NVIDIA
-    "META",  # Meta (Facebook)
-    "GOOGL",  # Alphabet (Google)
-    "AMD",  # AMD
-    "TSM",  # Taiwan Semiconductor (TSMC)
-    "ASML",  # ASML
-    "AVGO",  # Broadcom
-    "TSLA",  # Tesla
-    "INTC",  # Intel
+from dataclasses import dataclass, field
+
+# ==================================================================
+# Asset universe (single source of truth)
+# ==================================================================
+
+
+@dataclass(frozen=True)
+class AssetClass:
+    """One tradeable asset class.
+
+    key        : short id, also the ``asset_type`` stored in the DB.
+    label      : human-readable name (reports / GUI).
+    cli_flag   : argparse flag stem, e.g. ``"stocks"`` -> ``--stocks``.
+    tickers    : yfinance symbols traded in this class.
+    benchmarks : buy-&-hold comparison set (the ticker itself is auto-excluded).
+    news_names : ticker -> GDELT search query (the bare symbol matches few
+                 articles; a company / phrase matches many). Anything omitted
+                 falls back to the symbol minus ``-USD`` in news_sources.
+    """
+
+    key: str
+    label: str
+    cli_flag: str
+    tickers: list[str]
+    benchmarks: list[str]
+    news_names: dict[str, str] = field(default_factory=dict)
+
+
+# Equity ETFs proxy the index / commodity / FX classes so volume-based features
+# (RSI/MACD/volatility + LSTM) keep working — index spot (^GSPC) and FX spot
+# (EURUSD=X) return no volume from yfinance. VOO / QQQM (not SPY / QQQ) are used
+# for the indices so they stay distinct from the stock benchmark set below.
+ASSET_CLASSES: list[AssetClass] = [
+    AssetClass(
+        key="stock",
+        label="Stocks",
+        cli_flag="stocks",
+        tickers=[
+            "AAPL",
+            "MSFT",
+            "NVDA",
+            "META",
+            "GOOGL",
+            "AMD",
+            "TSM",
+            "ASML",
+            "AVGO",
+            "TSLA",
+            "INTC",
+        ],
+        benchmarks=["SPY", "QQQ"],
+        news_names={
+            "AAPL": "Apple",
+            "MSFT": "Microsoft",
+            "NVDA": "NVIDIA",
+            "META": "Meta Platforms",
+            "GOOGL": "Alphabet Google",
+            "AMD": "AMD",
+            "TSM": "TSMC Taiwan Semiconductor",
+            "ASML": "ASML",
+            "AVGO": "Broadcom",
+            "TSLA": "Tesla",
+            "INTC": "Intel",
+        },
+    ),
+    AssetClass(
+        key="crypto",
+        label="Crypto",
+        cli_flag="crypto",
+        tickers=["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"],
+        benchmarks=["BTC-USD"],
+        news_names={
+            "BTC-USD": "Bitcoin",
+            "ETH-USD": "Ethereum",
+            "SOL-USD": "Solana",
+            "BNB-USD": "Binance Coin",
+        },
+    ),
+    AssetClass(
+        key="commodity",
+        label="Commodities",
+        cli_flag="commodities",
+        tickers=["GLD"],  # SPDR Gold Shares (gold ETF proxy)
+        benchmarks=["SPY"],
+        news_names={"GLD": "gold price"},
+    ),
+    AssetClass(
+        key="index",
+        label="Indices",
+        cli_flag="indices",
+        tickers=["VOO", "QQQM"],  # S&P 500 (Vanguard) / Nasdaq-100 (Invesco) ETF proxies
+        benchmarks=["SPY", "QQQ"],
+        news_names={"VOO": "S&P 500", "QQQM": "Nasdaq 100"},
+    ),
+    AssetClass(
+        key="fx",
+        label="FX",
+        cli_flag="fx",
+        tickers=["FXE"],  # Invesco CurrencyShares Euro Trust (EUR/USD ETF proxy)
+        benchmarks=["SPY"],
+        news_names={"FXE": "euro dollar exchange rate"},
+    ),
 ]
 
-CRYPTO = [
-    "BTC-USD",  # Bitcoin
-    "ETH-USD",  # Ethereum
-    "SOL-USD",  # Solana
-]
+# --- Derived lookups (keep the old flat names working) ------------
+_CLASS_BY_KEY: dict[str, AssetClass] = {ac.key: ac for ac in ASSET_CLASSES}
 
-# Combined list — used as default in main.py and backtest.py
-ALL_TICKERS = STOCKS + CRYPTO
+STOCKS: list[str] = _CLASS_BY_KEY["stock"].tickers
+CRYPTO: list[str] = _CLASS_BY_KEY["crypto"].tickers
+COMMODITIES: list[str] = _CLASS_BY_KEY["commodity"].tickers
+INDICES: list[str] = _CLASS_BY_KEY["index"].tickers
+FX: list[str] = _CLASS_BY_KEY["fx"].tickers
 
-# ------------------------------------------------------------------
+# Combined list — used as default in main.py and backtest.py (--all)
+ALL_TICKERS: list[str] = [t for ac in ASSET_CLASSES for t in ac.tickers]
+
+# Benchmarks: stocks vs SPY+QQQ, crypto vs BTC-USD, others vs SPY (self excluded).
+STOCK_BENCHMARKS: list[str] = _CLASS_BY_KEY["stock"].benchmarks  # S&P 500, Nasdaq 100
+CRYPTO_BENCHMARKS: list[str] = _CLASS_BY_KEY["crypto"].benchmarks
+# Every benchmark symbol that must be downloaded even if not itself tradeable.
+ALL_BENCHMARKS: list[str] = sorted({b for ac in ASSET_CLASSES for b in ac.benchmarks})
+
+# ticker -> asset_type key (for db_manager / data_downloader tagging, if wired)
+ASSET_TYPE: dict[str, str] = {t: ac.key for ac in ASSET_CLASSES for t in ac.tickers}
+
+# ticker -> GDELT search query. Single source; engine/news_sources imports this.
+TICKER_NAMES: dict[str, str] = {t: n for ac in ASSET_CLASSES for t, n in ac.news_names.items()}
+
+# cli_flag -> asset-class key, for building the --stocks/--crypto/... selectors
+SCOPE_FLAGS: dict[str, str] = {ac.cli_flag: ac.key for ac in ASSET_CLASSES}
+
+
+def asset_type_of(ticker: str) -> str:
+    """Asset-type key for a ticker (defaults to 'stock' for benchmark-only symbols like SPY)."""
+    return ASSET_TYPE.get(ticker, "stock")
+
+
+def get_benchmarks(ticker: str) -> list[str]:
+    """Return benchmark tickers for comparison, excluding the ticker itself."""
+    ac = _CLASS_BY_KEY.get(asset_type_of(ticker))
+    return [b for b in (ac.benchmarks if ac else STOCK_BENCHMARKS) if b != ticker]
+
+
+def tickers_for_scope(*keys: str) -> list[str]:
+    """Tickers for one or more asset-class keys, e.g. tickers_for_scope('stock', 'index')."""
+    wanted = set(keys)
+    return [t for ac in ASSET_CLASSES if ac.key in wanted for t in ac.tickers]
+
+
+# ==================================================================
 # Periods
-# ------------------------------------------------------------------
+# ==================================================================
 
 ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
 
@@ -46,9 +175,9 @@ DEFAULT_PERIOD = "max"
 
 DEFAULT_BACKTEST_DAYS = 5
 
-# ------------------------------------------------------------------
+# ==================================================================
 # Logging & display mode
-# ------------------------------------------------------------------
+# ==================================================================
 
 # "cli" = verbose logging + progress bars (for terminal use)
 # "gui" = minimal logging, WARNING+ only (for future web/desktop UI)
@@ -57,20 +186,9 @@ LOG_MODE = "cli"
 # Log level override (DEBUG, INFO, WARNING, ERROR). None = auto from LOG_MODE.
 LOG_LEVEL = None
 
-# Stocks are compared against broad market indices
-STOCK_BENCHMARKS = ["SPY", "QQQ"]  # S&P 500, Nasdaq 100
-
-# Crypto is compared against Bitcoin
-CRYPTO_BENCHMARKS = ["BTC-USD"]
-
-
-# Returns the relevant benchmarks for a ticker
-def get_benchmarks(ticker: str) -> list[str]:
-    """Return benchmark tickers for comparison, excluding the ticker itself."""
-    if "-USD" in ticker:
-        return [b for b in CRYPTO_BENCHMARKS if b != ticker]
-    return STOCK_BENCHMARKS
-
+# ==================================================================
+# Trading
+# ==================================================================
 
 # Total cost per trade as a percentage of trade value.
 # Covers: broker commission + bid-ask spread + slippage.
@@ -93,9 +211,9 @@ DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)
 # 2.0 = close if price drops 2% from entry (long) or rises 2% (short).
 DEFAULT_STOP_LOSS_PCT = 0.0  # disabled by default
 
-# ------------------------------------------------------------------
+# ==================================================================
 # News & sentiment defaults
-# ------------------------------------------------------------------
+# ==================================================================
 
 # Which sentiment scorer to use by default.
 #   "vader"   – fast, general-purpose, no GPU. Default.
@@ -121,9 +239,9 @@ DEFAULT_NEWS_LOOKBACK_DAYS = 7
 # Larger values mean a slower decay (older news still matters).
 DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0
 
-# ------------------------------------------------------------------
-# Forecasting models (Prophet, Chronos-2, …)
-# ------------------------------------------------------------------
+# ==================================================================
+# Forecasting models (Prophet, Chronos-2, Kronos)
+# ==================================================================
 # (model_type, display label). backtest_helpers iterates this and silently
 # skips any whose library isn't installed. Add TiRex here later.
 
@@ -148,9 +266,9 @@ FORECAST_DEVICE: str | None = None  # None = auto (cuda if available else cpu)
 CHRONOS_MODEL_ID = "amazon/chronos-2"
 CHRONOS_CONTEXT = 512  # most-recent closes used as context
 
-# ------------------------------------------------------------------
+# ==================================================================
 # Model families (for the --models filter on backtest.py / run_all.py)
-# ------------------------------------------------------------------
+# ==================================================================
 # Single source of truth: CLI key -> display-name prefix used in result rows.
 # MODEL_FAMILIES is the list of valid --models choices; backtest_helpers derives
 # the reverse (label -> key) map from this, so the names live in one place.

@@ -31,6 +31,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+# Ticker → GDELT search query lives in config (the single asset registry), so
+# adding a ticker there automatically gives it a sensible news query here.
+from config import TICKER_NAMES
+
 # Imported at module level so tests can patch ``engine.news_sources.yf``.
 try:
     import yfinance as yf  # type: ignore[import-untyped]
@@ -56,26 +60,6 @@ class NewsItem:
     def __post_init__(self) -> None:
         # Normalize headline whitespace
         self.headline = " ".join(self.headline.split())
-
-
-# Ticker → company display name. Used to enrich GDELT free-text queries
-# (the bare symbol "AAPL" matches few articles; "AAPL OR Apple" matches many).
-TICKER_NAMES: dict[str, str] = {
-    "AAPL": "Apple",
-    "MSFT": "Microsoft",
-    "NVDA": "NVIDIA",
-    "META": "Meta Platforms",
-    "GOOGL": "Alphabet Google",
-    "AMD": "AMD",
-    "TSM": "TSMC Taiwan Semiconductor",
-    "ASML": "ASML",
-    "AVGO": "Broadcom",
-    "TSLA": "Tesla",
-    "INTC": "Intel",
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana",
-}
 
 
 # ----------------------------------------------------------------------
