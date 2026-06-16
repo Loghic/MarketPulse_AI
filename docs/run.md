@@ -193,22 +193,33 @@ You should see a `200 OK`.
 
 ## 4. Tickers
 
-Defined in `config.py`. Add a new ticker by editing `STOCKS` or `CRYPTO` — no
-other code changes needed.
+Defined in `config.py` as a data-driven asset registry (`ASSET_CLASSES`). Add a
+ticker by adding it to the relevant class's `tickers`; add a whole asset class by
+appending one `AssetClass` entry — flags, benchmarks, asset-type tags and GDELT
+news queries all derive from it. No other code changes needed.
 
 **Stocks:** AAPL, MSFT, NVDA, META, GOOGL, AMD, TSM, ASML, AVGO, TSLA, INTC
+**Crypto:** BTC-USD, ETH-USD, SOL-USD, BNB-USD
+**Commodities:** GLD (gold ETF)
+**Indices:** VOO (S&P 500), QQQM (Nasdaq-100)
+**FX:** FXE (EUR/USD)
 
-**Crypto:** BTC-USD, ETH-USD, SOL-USD
+The non-stock/crypto classes use ETF proxies (volume-bearing, so features + LSTM
+behave as for stocks). `VOO`/`QQQM` are deliberately distinct from the `SPY`/`QQQ`
+benchmark set.
 
-Every CLI script accepts the same ticker-selection flags:
+Every CLI script accepts the same scope flags, and the per-class flags **combine**:
 
 ```bash
---stocks            # only stocks
---crypto            # only crypto
---all               # both
---tickers AAPL NVDA # explicit list
+--stocks                  # only stocks
+--crypto                  # only crypto
+--commodities             # only commodities (GLD)
+--indices                 # only indices (VOO, QQQM)
+--fx                      # only FX (FXE)
+--commodities --fx        # combine classes (union: GLD + FXE)
+--all                     # every class
+--tickers AAPL NVDA GLD   # explicit list
 ```
-
 ---
 
 ## 5. The five CLI scripts
@@ -340,12 +351,12 @@ uv run python refresh.py --crypto \
 Crypto tickers (`BTC-USD`, `ETH-USD`, `SOL-USD`) are handled the same way as
 stocks. The `-USD` suffix is automatically stripped when building the GDELT
 search query, so `BTC-USD` becomes `"Bitcoin"`, `ETH-USD` → `"Ethereum"`,
-`SOL-USD` → `"Solana"` (lookup table in `engine/news_sources.TICKER_NAMES`).
+`SOL-USD` → `"Solana"` (the GDELT query map lives in `config.py`'s asset registry as TICKER_NAMER, re-exported by engine/news_sources)
 
 #### Stocks + crypto in one shot
 
 ```bash
-# All 14 tickers (stocks + crypto), Yahoo + GDELT combined and deduped
+# All 19 tickers (every asset class), Yahoo + GDELT combined and deduped
 uv run python refresh.py --all \
     --news-source yahoo gdelt --news-history-days 365 \
     --sentiment-method finbert --force-news
@@ -918,9 +929,16 @@ later in pandas or a spreadsheet.
 The bits you'll most likely tweak:
 
 ```python
-# Tickers
-STOCKS = ["AAPL", "MSFT", ...]
-CRYPTO = ["BTC-USD", "ETH-USD", "SOL-USD"]
+# Asset registry — one AssetClass per class. STOCKS/CRYPTO/COMMODITIES/INDICES/FX,
+# ALL_TICKERS, STOCK_BENCHMARKS/CRYPTO_BENCHMARKS/ALL_BENCHMARKS, TICKER_NAMES and
+# get_benchmarks() all DERIVE from this list.
+ASSET_CLASSES = [
+    AssetClass("stock",     "Stocks",      "stocks",      [...11 stocks...],                          ["SPY", "QQQ"]),
+    AssetClass("crypto",    "Crypto",      "crypto",      ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"], ["BTC-USD"]),
+    AssetClass("commodity", "Commodities", "commodities", ["GLD"],          ["SPY"]),       # gold ETF proxy
+    AssetClass("index",     "Indices",     "indices",     ["VOO", "QQQM"],  ["SPY", "QQQ"]),# S&P 500 / Nasdaq-100 ETF proxies
+    AssetClass("fx",        "FX",          "fx",          ["FXE"],          ["SPY"]),       # EUR/USD ETF proxy
+]
 
 # Periods + defaults
 ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
@@ -1009,7 +1027,7 @@ alone is fine; the `web.backend.*` "unused section" note is benign.
 | `WARNING: FinBERT unavailable (No module named 'transformers'). Falling back to VADER.` | `ai` extra not installed | `uv pip install -e ".[ai]"` |
 | `WARNING: VADER unavailable (...). Falling back to naive.` | NLTK lexicon not downloaded | `uv run python -c "import nltk; nltk.download('vader_lexicon')"` |
 | `+ News` variants show 0 sentiment for every historical day | Yahoo headlines only cover ~7 days; the rest of your backtest sees an empty DB lookup | Bulk-fetch with GDELT: `uv run python refresh.py --all --news-source gdelt --news-history-days 365 --force-news` |
-| GDELT returns nothing | Network blocks `api.gdeltproject.org`, or you searched an obscure ticker not in `TICKER_NAMES` | Verify with the curl command in §3; extend `TICKER_NAMES` in `engine/news_sources.py` |
+| GDELT returns nothing | Network blocks `api.gdeltproject.org`, or you searched an obscure ticker not in `TICKER_NAMES` | Verify with the curl command in §3; extend the class's `new_names` in `config.py`'s `ASSET_CLASSES`. |
 | `sqlite3.OperationalError: disk I/O error` | Usually a stale `data/` mount or read-only volume | Remove `data/market_data.db` and let it rebuild |
 | `sqlite3.OperationalError: unable to open database file` mid-batch | Transient — macOS Spotlight indexing the WAL/SHM files, Time Machine snapshot, or FD pressure | Since 2026 the walk-forward loop pre-fetches news once per ticker (no thousands of per-day DB calls) and `run_all.py` wraps each ticker in try/except, so a single failure no longer kills the batch. If you still see it, re-run with `--no-refresh` once the DB is populated and check `Activity Monitor → Disk` for whatever's hammering `data/`. |
 | `total_return` in the hundreds (e.g. 385.58 for 5 days) | A single bad row in `data/market_data.db` with close = 0 or NULL → trade_pnl = `(exit - 0) / 0` is clipped to a huge value | Run `uv run python scripts/clean_prices.py` to report bad rows, then `--apply` to delete them. New writes are filtered automatically (`db_manager.save_prices`) and the backtester itself drops days with > 50% single-day moves since 2026. Re-run `refresh.py` after cleanup. |

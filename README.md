@@ -38,19 +38,31 @@ uv pip install -e '.[kronos]'
 
 ## Supported tickers
 
-Configured in `config.py`. To add a new ticker, edit that file — nothing else changes.
+Configured in `config.py` as a data-driven asset registry (`ASSET_CLASSES`). To add a
+ticker, add it to the relevant class's `tickers`; to add a whole asset class, append one
+`AssetClass` entry — the CLI flags, benchmarks, asset-type tags, and GDELT news queries
+all derive from it automatically.
 
 **Stocks:** AAPL, MSFT, NVDA, META, GOOGL, AMD, TSM, ASML, AVGO, TSLA, INTC
+**Crypto:** BTC-USD, ETH-USD, SOL-USD, BNB-USD
+**Commodities:** GLD (gold ETF)
+**Indices:** VOO (S&P 500), QQQM (Nasdaq-100)
+**FX:** FXE (EUR/USD)
 
-**Crypto:** BTC-USD, ETH-USD, SOL-USD
+The index/commodity/FX classes use liquid **ETF proxies** so the volume-based features
+and LSTM work exactly as for stocks — index/FX *spot* symbols (`^GSPC`, `EURUSD=X`) carry
+no volume. `VOO`/`QQQM` are used (not `SPY`/`QQQ`) so the tradeable indices stay distinct
+from the `SPY`/`QQQ` benchmark set.
 
-All CLI scripts support `--stocks`, `--crypto`, `--all`, or `--tickers`:
+All CLI scripts share the same scope selectors — the per-class flags **combine** (union),
+and `--all` spans every class:
 
 ```bash
 uv run python main.py --stocks
-uv run python main.py --crypto
+uv run python main.py --crypto --commodities          # classes combine (union)
+uv run python main.py --indices --fx
 uv run python main.py --all
-uv run python main.py --tickers AAPL NVDA BTC-USD
+uv run python main.py --tickers AAPL NVDA BNB-USD GLD
 ```
 
 ## Models
@@ -256,7 +268,8 @@ marketpulse-ai/
 │       └── tests.yml            # CI: lint (ruff) + typecheck (mypy) + test (pytest+coverage)
 ├── .codecov.yml                 # Coverage thresholds and Codecov config
 ├── .pre-commit-config.yaml      # Git hooks: ruff + mypy before every commit
-├── config.py                # ★ Tickers, periods, fees, stop-loss, benchmarks, logging mode
+├── config.py                # ★ Asset registry (tickers/classes/benchmarks/news names), periods, fees, stop-loss, logging
+├── cli_helpers.py           # Shared CLI scope flags + resolver (--stocks/--crypto/--commodities/--indices/--fx/--all/--tickers)
 ├── main.py                  # CLI — prediction reports
 ├── backtest.py              # CLI — model evaluation
 ├── train.py                 # CLI — LSTM training
@@ -414,9 +427,6 @@ Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 
 Captured for later — not yet implemented.
 
-### More asset classes
-- Add BNB (crypto), gold, S&P 500, Nasdaq, EUR/USD — broadens beyond stocks/crypto into commodities, indices, and FX. Each needs its own yfinance symbol: `BNB-USD`, gold `GC=F` (futures) or `GLD` (ETF), S&P 500 `^GSPC` or `SPY`, Nasdaq `^IXIC`/`^NDX` or `QQQ`, EUR/USD `EURUSD=X`. Note: `SPY`/`QQQ` already serve as benchmarks, so adding the indices as tradeable tickers overlaps the benchmark set — pick index vs ETF deliberately.
-
 ### Richer signals (features.py / ALL_FEATURES)
 - **Volatility momentum** — momentum measured on volatility / vol-adjusted momentum.
 - **Cross-asset features** — feed correlated assets in as inputs (e.g. gold↔USD, BTC↔BNB, index↔constituent), not just the ticker's own history.
@@ -429,6 +439,45 @@ Captured for later — not yet implemented.
 - Predict an actual price level, not just UP/DOWN. The forecasting models already compute a point value (`ForecastResult.point`) that we currently collapse to a direction — surface it and score with regression metrics (MAE / RMSE / MAPE) instead of accuracy.
 - Explore minute / intraday bars. **Caveat:** yfinance only serves ~7 days of 1-minute data (~60 days for coarser intraday intervals), so minute-level backtests have a short lookback — a dedicated intraday data source is needed for real history.
 - Investigate whether news improves specific-price prediction. News can stay **daily** even when prices are intraday — daily sentiment as a slow-moving feature is fine; the granularity mismatch is acceptable.
+
+## Research roadmap (next experiments)
+
+Baseline finding: no directional edge (acc ~0.50 at every horizon); the daily
+strategy trails buy-and-hold, and the gap widens with horizon (beat-rate
+27%/19%/2% at 40/100/300d) due to fee compounding + B&H bull compounding.
+Benchmark to beat: buy-and-hold of the asset.
+
+1. Out-of-sample selection harness  [foundational]
+   - Select best model+period on window N; evaluate only on N+1.
+   - Report OOS beat-B&H rate + median return. Every experiment below is judged
+     on this, not on cherry-picked best-per-ticker.
+
+2. Confidence gating  [highest-value lever]
+   - First read confidence-calibration output: is high-conf actually more accurate?
+   - Add `--min-confidence θ`: days below θ are flat (0 P&L, no fee, excluded
+     from accuracy). Sweep θ ∈ {0.55, 0.60, 0.65, 0.70}.
+   - Track: accuracy on traded days, coverage (% days traded), return, fees saved.
+   - Pass bar: traded-day accuracy materially > 0.5 AND return improves vs θ=0.
+
+3. Turnover / fee realism
+   - Daily round-trips dominate cost (~30% over 300d). Test trading only on
+     signal *changes* (hold through same-direction days) or longer holds.
+
+4. Stop-loss sweep
+   - `--stop-loss ∈ {0, 5, 10, 15}` on 100d + 300d. Expect wide/off best for
+     daily holds; most informative on volatile names.
+
+5. LSTM focus
+   - Only family with positive median return/Sharpe. Tune lookback/features/epochs;
+     try LSTM-only confidence gating.
+
+6. k-NN k-sweep  [low priority]
+   - k ∈ {3,5,7,9,11}. Only meaningful under the OOS harness (exp 1); high
+     overfitting risk, worst family.
+
+7. Reframe success metric
+   - Beating B&H absolute in a bull market via daily flips is very hard. Also
+     track risk-adjusted (Sharpe/Sortino) and drawdown vs B&H.
 
 ## Roadmap
 
@@ -450,6 +499,7 @@ Captured for later — not yet implemented.
 - [x] **`scripts/clean_prices.py` — one-off DB cleanup tool**
 - [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
 - [x] Centralized config, CLI filtering, CSV/JSON export
+- [x] **Data-driven asset registry — commodities/indices/FX via ETF proxies (GLD, VOO, QQQM, FXE) + BNB; combinable `--commodities`/`--indices`/`--fx` scope flags via shared `cli_helpers.py`**
 - [x] Documentation (`docs/` + `AGENTS.md` + `docs/run.md` runbook)
 - [x] Pytest suite (~140 tests: models, backtester, news pipeline, web API, persistence)
 - [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)

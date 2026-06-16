@@ -13,8 +13,9 @@ Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, LST
 .codecov.yml                    → Coverage thresholds (60% target)
 .pre-commit-config.yaml         → Git hooks: ruff auto-fix + format + mypy before every commit
 
-config.py                   → ★ Tickers, periods, fees, stop-loss, forecasting-model config. Edit to add assets.
-main.py                     → CLI: prediction reports (--stocks/--crypto/--all/--tickers)
+config.py                   → ★ Asset registry (ASSET_CLASSES) + periods, fees, stop-loss, forecasting config. Edit ASSET_CLASSES to add assets.
+cli_helpers.py              → Shared CLI scope flags + resolver (--stocks/--crypto/--commodities/--indices/--fx/--all/--tickers), driven by ASSET_CLASSES
+main.py                     → CLI: prediction reports (scope flags via cli_helpers)
 backtest.py                 → CLI: model evaluation (--full/--compare-periods/--periods/--timing/--output/--stop-loss)
 train.py                    → CLI: LSTM training (--preset quick/standard/cluster)
 run_all.py                  → CLI: batch runner (--periods/--timing; organized subdirectories in results/)
@@ -90,19 +91,33 @@ docs/                       → In-depth docs for humans (see docs/forecasting.m
 ## Config
 
 ```python
-# Tickers
-STOCKS = ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMD", "TSM", "ASML", "AVGO", "TSLA", "INTC"]
-CRYPTO = ["BTC-USD", "ETH-USD", "SOL-USD"]
-ALL_TICKERS = STOCKS + CRYPTO
+# Asset universe — data-driven registry. One frozen AssetClass per class;
+# the rest (STOCKS/CRYPTO/COMMODITIES/INDICES/FX, ALL_TICKERS, STOCK_BENCHMARKS,
+# CRYPTO_BENCHMARKS, ALL_BENCHMARKS, ASSET_TYPE, TICKER_NAMES, get_benchmarks(),
+# tickers_for_scope(), SCOPE_FLAGS) all DERIVE from it.
+@dataclass(frozen=True)
+class AssetClass:
+    key: str; label: str; cli_flag: str
+    tickers: list[str]; benchmarks: list[str]
+    news_names: dict[str, str] = field(default_factory=dict)  # ticker -> GDELT query
+
+ASSET_CLASSES = [
+    AssetClass("stock",     "Stocks",      "stocks",      [AAPL,MSFT,NVDA,META,GOOGL,AMD,TSM,ASML,AVGO,TSLA,INTC], ["SPY","QQQ"]),
+    AssetClass("crypto",    "Crypto",      "crypto",      ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"],               ["BTC-USD"]),
+    AssetClass("commodity", "Commodities", "commodities", ["GLD"],          ["SPY"]),   # gold ETF proxy
+    AssetClass("index",     "Indices",     "indices",     ["VOO","QQQM"],   ["SPY","QQQ"]),  # S&P 500 / Nasdaq-100 ETF proxies
+    AssetClass("fx",        "FX",          "fx",          ["FXE"],          ["SPY"]),   # EUR/USD ETF proxy
+]
+# get_benchmarks(ticker) keeps its NAME (backtest_helpers imports it) but is now
+# registry-driven + self-excluding. news_names hold the GDELT query map exposed as
+# config.TICKER_NAMES (engine/news_sources imports it — single source).
+# ETF proxies (GLD/VOO/QQQM/FXE) carry volume so volume features + LSTM work unchanged;
+# VOO/QQQM (not SPY/QQQ) keep tradeable indices off the benchmark set.
 ALL_PERIODS = ["1mo", "1y", "2y", "5y", "max"]
 
 # Logging: "cli" = INFO + progress bars, "gui" = WARNING only
 LOG_MODE = "cli"
 LOG_LEVEL = None  # override: "DEBUG", "INFO", "WARNING", "ERROR"
-
-# Benchmarks: stocks vs SPY+QQQ, crypto vs BTC-USD (excluding self)
-STOCK_BENCHMARKS = ["SPY", "QQQ"]
-CRYPTO_BENCHMARKS = ["BTC-USD"]
 
 # Trading
 DEFAULT_TRADING_FEE_PCT = 0.05   # per side, round-trip = 2x
@@ -177,7 +192,8 @@ class BacktestResult:
 ```bash
 # Predictions
 uv run python main.py --stocks
-uv run python main.py --tickers NVDA TSLA
+uv run python main.py --commodities --fx          # per-class flags combine (union)
+uv run python main.py --tickers NVDA TSLA GLD
 
 # Training
 uv run python train.py --all --periods 1y 2y max --preset standard
@@ -208,7 +224,7 @@ uv run python run_all.py --stocks --days 20 --no-refresh
 
 ## Common tasks
 
-**Add a ticker:** Edit `config.py` → `STOCKS` or `CRYPTO`. Done.
+**Add a ticker:** Edit `config.py` → add it to the relevant `AssetClass.tickers` in `ASSET_CLASSES` (and optionally a `news_names` entry for its GDELT query). **Add an asset class:** append one `AssetClass(key, label, cli_flag, tickers, benchmarks, news_names)` — its CLI flag (`--<cli_flag>`, combinable), benchmarks, `asset_type` tag, and news query all derive automatically; no per-script edits. Done.
 
 **Add a model:** Create `engine/new_model.py` with `.predict()` → register in `api._get_model()` → add to `backtest_helpers.run_single_backtest()` variants → add to `main.py` → test.
 
@@ -329,6 +345,29 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 
 ## 2026 changes
 
+### Asset registry & CLI scope
+
+- `config.py` defines the asset universe as a data-driven `ASSET_CLASSES` list of frozen
+  `AssetClass(key, label, cli_flag, tickers, benchmarks, news_names)`. Everything else
+  derives: `STOCKS/CRYPTO/COMMODITIES/INDICES/FX`, `ALL_TICKERS`, `STOCK_BENCHMARKS`,
+  `CRYPTO_BENCHMARKS`, `ALL_BENCHMARKS`, `ASSET_TYPE`, `TICKER_NAMES`, `get_benchmarks()`
+  (kept name — `backtest_helpers` imports it; now registry-driven + self-excluding),
+  `asset_type_of()`, `tickers_for_scope()`, `SCOPE_FLAGS`. `engine/news_sources.py` imports
+  `TICKER_NAMES` from config (single source; the old local dict is gone).
+- Classes: stock, crypto (now incl. `BNB-USD`), commodity (`GLD`), index (`VOO`, `QQQM`),
+  fx (`FXE`). The non-stock/crypto classes use **ETF proxies** so volume features + LSTM work
+  unchanged (index/FX spot symbols carry no volume); `VOO`/`QQQM` (not `SPY`/`QQQ`) keep
+  tradeable indices off the benchmark set. The existing stock-vs-crypto `-USD` heuristic still
+  classifies them correctly without asset_type changes.
+- `cli_helpers.py` (repo root) is the single definition of the scope selectors. Every CLI calls
+  `add_scope_args(parser)` to register `--stocks/--crypto/--commodities/--indices/--fx/--all/--tickers`
+  and `resolve_scope(args, default=…)` to resolve them (precedence: tickers > all > class flags >
+  default; explicit `--tickers` upper-cased; a class name passed to `--tickers` warns). Per-class
+  flags **combine** (union), so `--commodities --fx` → GLD + FXE. `run_all.py` uses
+  `scope_label(args)` for the output-dir name (combined classes join with `-`, e.g. `commodities-fx`).
+  Defaults preserved: `main.py`/`backtest.py` fall back to the first 3 tickers, `run_all.py`/`refresh.py`
+  to all.
+
 ### News pipeline (no look-ahead)
 
 - `Backtester.run(sentiment_provider=...)` calls the provider once per backtest day. `backtest_helpers.run_single_backtest()` pre-fetches the ticker's full news history once via `api.db.get_news(ticker)` and filters it in memory — the closure honours `effective_date = COALESCE(published_at, date) < asof_date`, the lookback window, and the exponential half-life. Same semantics as `db.get_news_before()` but ~100× faster and no SQLite FD exhaustion on long batches. The constant `sentiment_score` argument is kept for backward compat only.
@@ -372,3 +411,4 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - `BacktestResult.elapsed_seconds` — `Backtester.run()` times each walk-forward run. `backtest.py --timing` prints a slowest-first per-model breakdown (`print_timing_table` in `backtest_helpers`) after the summary; `run_all.py` prints a time-by-model-family rollup (time / share / wins) at the end of a batch. Use these to drop a model that costs a lot and rarely wins.
 - `--periods 1y 2y 5y` — on `run_all.py` (batch) and `backtest.py --compare-periods` (matrix), restricts the period set; default is all of `ALL_PERIODS`. Note `backtest.py` also keeps the singular `--period` for single-period mode. See *Architecture notes* for why skipping `max` is near-free.
 - Empirical finding (100-day FinBERT stocks batch): direction accuracy ≈ coin flip (~0.49), only ~19% of combos beat their own buy & hold, headline returns are largely selection bias + bull market. Chronos-2 was the most useful of the new models; Prophet and Kronos the slowest and weakest on average. Treat results as research, not signal. (Details in `docs/forecasting.md`.)
+- Confirmed across horizons (40/100/300-day batches): accuracy stays ~0.49–0.51 everywhere (no edge at any horizon), and the strategy's beat-buy-and-hold rate *decays* 27% → 19% → 2% as the horizon lengthens — daily fees compound (~4%/6%/30% drag) while B&H rides the bull. Even cherry-picking the best model per ticker, only ~2/11 beat B&H over 300 days. LSTM was the only family with a positive median return/Sharpe at 300d; k-NN consistently worst. See the README *Research roadmap* for the prioritized next experiments (out-of-sample selection harness, confidence gating `--min-confidence`, turnover/fee realism, SL sweep, LSTM focus).
