@@ -6,6 +6,7 @@ max drawdown, Sharpe ratio, Sortino ratio, buy-and-hold benchmark,
 and yearly rolling performance breakdown.
 """
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -78,6 +79,7 @@ class BacktestResult:
     accuracy: float
     fee_pct: float = 0.0
     stop_loss_pct: float = 0.0
+    elapsed_seconds: float = 0.0  # wall time for this model's walk-forward run
     # Profit metrics (net of fees)
     total_return: float = 0.0
     profit_factor: float = 0.0
@@ -420,6 +422,7 @@ class Backtester:
         if len(df) < self.n_days + 20:
             raise ValueError(f"Not enough data: need {self.n_days + 20} rows, got {len(df)}")
 
+        _t0 = time.perf_counter()
         has_ohlc = "high" in df.columns and "low" in df.columns
         day_results = []
 
@@ -529,6 +532,7 @@ class Backtester:
         # Yearly breakdown
         yearly = self._compute_yearly_performance(day_results)
 
+        elapsed = time.perf_counter() - _t0
         return BacktestResult(
             model_name=model_name,
             ticker=ticker,
@@ -537,6 +541,7 @@ class Backtester:
             accuracy=round(correct_count / total, 4) if total > 0 else 0.0,
             fee_pct=self.fee_pct,
             stop_loss_pct=self.stop_loss_pct,
+            elapsed_seconds=round(elapsed, 4),
             buy_hold_return=buy_hold,
             buy_hold_max_drawdown=buy_hold_dd,
             stopped_out_count=stopped_count,

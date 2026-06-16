@@ -7,6 +7,8 @@ Usage:
     uv run python backtest.py --full --period 1y --buy-hold
     uv run python backtest.py --compare-periods --output results.csv
     uv run python backtest.py --stocks --compare-periods --buy-hold --fees 0.05
+    uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y --days 30 --timing
+    uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y --models knn lstm chronos --timing
 """
 
 import argparse
@@ -20,6 +22,7 @@ from config import (
     DEFAULT_PERIOD,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TRADING_FEE_PCT,
+    MODEL_FAMILIES,
     STOCK_BENCHMARKS,
     STOCKS,
 )
@@ -34,6 +37,7 @@ from engine.backtest_helpers import (
     print_next_day_forecast,
     print_profit_analysis,
     print_summary_table,
+    print_timing_table,
     result_to_daily_rows,
     result_to_summary_row,
     run_single_backtest,
@@ -60,6 +64,8 @@ def run_backtest(
     stop_loss_pct=0.0,
     buy_hold=False,
     no_refresh=False,
+    timing=False,
+    models=None,
 ):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
@@ -107,7 +113,9 @@ def run_backtest(
             )
             print(f"  Sentiment: {sl} ({sentiment_score:+.2f})")
 
-        results = run_single_backtest(api, backtester, ticker, df, period, n_days, full)
+        results = run_single_backtest(
+            api, backtester, ticker, df, period, n_days, full, models=models
+        )
         if not results:
             continue
 
@@ -116,6 +124,8 @@ def run_backtest(
 
         print()
         print_summary_table(results, show_buy_hold=buy_hold, benchmarks=bench)
+        if timing:
+            print_timing_table(results)
 
         if has_news:
             print(f"\n  News ({sentiment_score:+.2f}):")
@@ -155,9 +165,19 @@ def run_backtest(
 
 
 def run_compare_periods(
-    tickers, n_days, output=None, fee_pct=0.0, stop_loss_pct=0.0, buy_hold=False, no_refresh=False
+    tickers,
+    n_days,
+    output=None,
+    fee_pct=0.0,
+    stop_loss_pct=0.0,
+    buy_hold=False,
+    no_refresh=False,
+    timing=False,
+    periods=None,
+    models=None,
 ):
     """Run backtest across all periods, find optimal model+period."""
+    periods = periods or list(ALL_PERIODS)
     api = StockAppAPI()
     backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
     all_export_rows = []
@@ -184,8 +204,10 @@ def run_compare_periods(
 
         # Run all periods
         period_results = {}
-        for period in ALL_PERIODS:
-            results = run_single_backtest(api, backtester, ticker, df, period, n_days, full=False)
+        for period in periods:
+            results = run_single_backtest(
+                api, backtester, ticker, df, period, n_days, full=False, models=models
+            )
             if results:
                 period_results[period] = results
             else:
@@ -213,11 +235,11 @@ def run_compare_periods(
         # --- Accuracy matrix ---
         print(f"\n  Accuracy by period × model (holdout={n_days} days):\n")
         header = f"  {'MODEL':<25} |"
-        for p in ALL_PERIODS:
+        for p in periods:
             if p in period_results:
                 header += f" {p:^8} |"
         print(header)
-        print(f"  {'-' * (28 + sum(11 for p in ALL_PERIODS if p in period_results))}")
+        print(f"  {'-' * (28 + sum(11 for p in periods if p in period_results))}")
 
         best_per_model = {}
         all_combos = []
@@ -227,7 +249,7 @@ def run_compare_periods(
             best_acc = -1
             best_period = ""
 
-            for period in ALL_PERIODS:
+            for period in periods:
                 if period not in period_results:
                     continue
                 match = [r for r in period_results[period] if r.model_name == model_name]
@@ -409,6 +431,10 @@ def run_compare_periods(
                 if rank >= 5:
                     break
 
+        if timing:
+            all_period_results = [r for results in period_results.values() for r in results]
+            print_timing_table(all_period_results)
+
         print(f"\n{'*' * 80}")
 
     if output and all_export_rows:
@@ -431,7 +457,26 @@ def main():
     parser.add_argument("--period", default=DEFAULT_PERIOD, choices=ALL_PERIODS)
     parser.add_argument("--full", action="store_true", help="Detailed output")
     parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Print a per-model compute-time breakdown (slowest first) after the summary.",
+    )
+    parser.add_argument(
         "--compare-periods", action="store_true", help="Run all periods, show comparison matrix"
+    )
+    parser.add_argument(
+        "--periods",
+        nargs="+",
+        choices=ALL_PERIODS,
+        default=list(ALL_PERIODS),
+        help="Subset of periods for --compare-periods (default: all). e.g. --periods 1y 2y",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=MODEL_FAMILIES,
+        default=None,
+        help="Only run these model families (default: all). e.g. --models knn lstm chronos",
     )
     parser.add_argument("--output", type=str, default=None, help="Export to CSV or JSON")
     parser.add_argument(
@@ -476,6 +521,9 @@ def main():
             args.stop_loss,
             args.buy_hold,
             args.no_refresh,
+            args.timing,
+            periods=args.periods,
+            models=args.models,
         )
     else:
         run_backtest(
@@ -488,6 +536,8 @@ def main():
             args.stop_loss,
             args.buy_hold,
             args.no_refresh,
+            args.timing,
+            models=args.models,
         )
 
 

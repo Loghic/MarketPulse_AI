@@ -25,6 +25,7 @@ Usage:
     uv run python run_all.py --crypto --days 50 --fees 0.15 --stop-loss 3
     uv run python run_all.py --all --days 50 --fees 0.1 --stop-loss 2 --buy-hold
     uv run python run_all.py --tickers AAPL NVDA --days 20 --buy-hold
+    uv run python run_all.py --stocks --days 100 --periods 1y 2y 5y --models knn lstm chronos --buy-hold
 """
 
 import argparse
@@ -41,6 +42,7 @@ from config import (
     DEFAULT_SENTIMENT_METHOD,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TRADING_FEE_PCT,
+    MODEL_FAMILIES,
     STOCK_BENCHMARKS,
     STOCKS,
 )
@@ -59,6 +61,14 @@ log = get_logger("run_all")
 
 
 RESULTS_DIR = Path("results")
+
+
+def _family(name: str) -> str:
+    """Map a model variant name to its family (for the time rollup)."""
+    for f in ("k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "Kronos"):
+        if name.startswith(f):
+            return f
+    return "Other"
 
 
 def build_dir_name(
@@ -102,12 +112,16 @@ def run_ticker_comparison(
     buy_hold,
     run_dir,
     *,
+    periods: list[str] | None = None,
+    model_time: dict | None = None,
     news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
     news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
     sentiment_method: str | None = None,
+    models=None,
 ):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
+    periods = periods or list(ALL_PERIODS)
     df = api.get_data(ticker, period="max")
     if df.empty:
         print(f"  Skipping {ticker}: no data")
@@ -118,7 +132,7 @@ def run_ticker_comparison(
     all_combos = []
     bench = None
 
-    for period in ALL_PERIODS:
+    for period in periods:
         results = run_single_backtest(
             api,
             backtester,
@@ -130,6 +144,7 @@ def run_ticker_comparison(
             news_lookback_days=news_lookback_days,
             news_half_life_days=news_half_life_days,
             sentiment_method=sentiment_method,
+            models=models,
         )
         if not results:
             filtered = filter_by_period(df, period)
@@ -141,6 +156,10 @@ def run_ticker_comparison(
             bench = compute_benchmarks(api, ticker, results[0].days)
 
         for r in results:
+            if model_time is not None:
+                model_time[r.model_name] = model_time.get(r.model_name, 0.0) + getattr(
+                    r, "elapsed_seconds", 0.0
+                )
             all_rows.append(result_to_summary_row(r, ticker, period, benchmarks=bench))
             combo = {
                 "ticker": ticker,
@@ -222,6 +241,13 @@ def main():
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--days", type=int, default=20)
     parser.add_argument(
+        "--periods",
+        nargs="+",
+        choices=ALL_PERIODS,
+        default=list(ALL_PERIODS),
+        help=f"Periods to test (default: all {ALL_PERIODS}). e.g. --periods 1y 2y 5y to skip max.",
+    )
+    parser.add_argument(
         "--fees",
         type=float,
         default=DEFAULT_TRADING_FEE_PCT,
@@ -256,6 +282,32 @@ def main():
             "is NOT set). Defaults to config.DEFAULT_NEWS_SOURCES."
         ),
     )
+
+    parser.add_argument(
+        "--news-history-days",
+        type=int,
+        default=DEFAULT_NEWS_LOOKBACK_DAYS,
+        help=(
+            "How many days of news history to PULL during the upfront refresh "
+            "(bulk fetch). Yahoo caps at ~7 days; GDELT honours larger values "
+            "up to 250 articles per call. Distinct from --news-lookback-days, "
+            "which is the per-day window applied inside the backtest. "
+            "Ignored with --no-refresh. Default: %(default)s."
+        ),
+    )
+
+    parser.add_argument(
+        "--force-news",
+        action="store_true",
+        help=(
+            "Bypass the 'already fetched today' cache during the upfront refresh "
+            "and re-pull news from the provider. Use when adding a second source, "
+            "or re-scoring the same headlines with a different --sentiment-method, "
+            "on the same day. Not needed for --news-history-days > 7 (that already "
+            "bypasses the cache). Ignored with --no-refresh."
+        ),
+    )
+
     parser.add_argument(
         "--news-lookback-days",
         type=int,
@@ -274,6 +326,13 @@ def main():
             "Exponential decay half-life for per-day sentiment weighting "
             "(default: %(default)s, 0 = no decay)."
         ),
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=MODEL_FAMILIES,
+        default=None,
+        help="Only run these model families (default: all). e.g. --models knn lstm chronos",
     )
     args = parser.parse_args()
 
@@ -312,7 +371,7 @@ def main():
 
     print(f"{'=' * 80}")
     print(
-        f" BATCH BACKTEST: {len(tickers)} tickers × {len(ALL_PERIODS)} periods "
+        f" BATCH BACKTEST: {len(tickers)} tickers × {len(args.periods)} periods "
         f"× {args.days} days{fee_info}{sl_info}{bh_info}"
     )
     print(f" Output: {run_dir.resolve()}/")
@@ -327,12 +386,14 @@ def main():
         all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
         api.refresh_tickers(
             all_to_refresh,
-            news_lookback_days=args.news_lookback_days,
+            news_lookback_days=args.news_history_days,
             sentiment_method=args.sentiment_method,
             news_sources=args.news_source,
+            force_news_refresh=args.force_news,
         )
 
     best_per_ticker = []
+    model_time: dict[str, float] = {}
 
     for ticker in progress_bar(tickers, desc="Batch backtest"):
         best = run_ticker_comparison(
@@ -343,9 +404,12 @@ def main():
             args.stop_loss,
             args.buy_hold,
             run_dir,
+            periods=args.periods,
+            model_time=model_time,
             news_lookback_days=args.news_lookback_days,
             news_half_life_days=args.news_half_life_days,
             sentiment_method=args.sentiment_method,
+            models=args.models,
         )
         if best:
             best_per_ticker.append(best)
@@ -418,6 +482,33 @@ def main():
 
         print(f"\n  Results: {run_dir}/")
         print(f"  Summary: {summary_file}")
+
+        # --- Time-by-family rollup (compute time vs. how often a family won) ---
+    if model_time:
+        fam_time: dict[str, float] = {}
+        for name, secs in model_time.items():
+            fam_time[_family(name)] = fam_time.get(_family(name), 0.0) + secs
+        fam_wins: dict[str, int] = {}
+        for b in best_per_ticker:
+            fam_wins[_family(b["model"])] = fam_wins.get(_family(b["model"]), 0) + 1
+        total_t = sum(fam_time.values())
+
+        print(f"\n{'=' * 80}")
+        print(" TIME BY MODEL FAMILY  (compute time across all tickers × periods)")
+        print(f"{'=' * 80}")
+        print(f"  {'FAMILY':<12} {'TIME':>10} {'SHARE':>8} {'WINS':>6}")
+        print(f"  {'-' * 40}")
+        for fam in sorted(fam_time, key=lambda k: fam_time[k], reverse=True):
+            secs = fam_time[fam]
+            share = secs / total_t if total_t else 0.0
+            print(f"  {fam:<12} {secs:>9.1f}s {share:>7.0%} {fam_wins.get(fam, 0):>6}")
+        print(f"  {'-' * 40}")
+        print(f"  {'TOTAL':<12} {total_t:>9.1f}s")
+        print(
+            "\n  WINS = times this family had the best return for a ticker "
+            f"(of {len(best_per_ticker)})."
+        )
+        print("  High SHARE + 0 WINS → a candidate to drop for speed.")
 
     print(f"\n{'*' * 80}")
 

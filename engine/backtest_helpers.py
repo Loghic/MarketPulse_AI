@@ -15,12 +15,17 @@ import pandas as pd
 from config import (
     DEFAULT_NEWS_HALF_LIFE_DAYS,
     DEFAULT_NEWS_LOOKBACK_DAYS,
+    FORECAST_MODELS,
+    MODEL_FAMILY_LABELS,
     get_benchmarks,
 )
 from engine.backtester import BacktestResult
 from engine.logger import get_logger
 from engine.news_scraper import NewsScraper
 from engine.utils import period_to_start_date
+
+_FAMILY_ORDER = ["k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "TiRex", "Kronos", "Other"]
+_FAMILY_KEYS = {label: key for key, label in MODEL_FAMILY_LABELS.items()}
 
 # (model, model_name, use_time_weights, sentiment_provider_or_None)
 ModelVariant = tuple[Any, str, bool, Callable[[str], float] | None]
@@ -209,6 +214,7 @@ def run_single_backtest(
     news_lookback_days: int = DEFAULT_NEWS_LOOKBACK_DAYS,
     news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
     sentiment_method: str | None = None,
+    models: list[str] | None = None,
 ):
     """
     Run backtest for one ticker × one period. Returns list of BacktestResult.
@@ -332,6 +338,25 @@ def run_single_backtest(
                 f"Train: uv run python train.py --ticker {ticker} --period {period}"
             )
 
+    # Forecasting models (Prophet, Chronos-2, …): one plain variant each,
+    # plus "+ News" when news exists. Flows through the same SL-duplication
+    # and Backtester.run loop below, unchanged.
+    for mt, label in FORECAST_MODELS:
+        if not api.forecast_available(mt):
+            continue
+        try:
+            fmodel = api._get_model(mt, ticker, period)
+        except Exception as e:  # noqa: BLE001
+            log.info(f"{label} unavailable for {ticker}: {e}")
+            continue
+        variants.append((fmodel, label, False, None))
+        if has_news:
+            variants.append((fmodel, f"{label} + News", False, per_day_sentiment))
+
+    # --- Keep only requested model families (--models). None/empty = all. ---
+    if models:
+        allowed = set(models)
+        variants = [v for v in variants if _family_key(v[1]) in allowed]
     # If stop-loss is enabled, also create a no-SL backtester for comparison
     has_sl = backtester.stop_loss_pct > 0
     if has_sl:
@@ -381,43 +406,118 @@ def pf_str(pf: float) -> str:
     return f"{pf:.2f}" if pf < 100 else "∞"
 
 
-def print_summary_table(
-    results: list[BacktestResult],
-    show_buy_hold: bool = False,
-    benchmarks: dict[str, float] | None = None,
-):
-    """Print the summary table."""
+def _family_key(name: str) -> str:
+    """Lowercase family key for --models filtering (e.g. 'k-NN Enh. TW' -> 'knn')."""
+    return _FAMILY_KEYS.get(_model_family(name), "other")
+
+
+def _model_family(name: str) -> str:
+    for fam in ("k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "Chronos", "TiRex", "Kronos"):
+        if name.startswith(fam):
+            return "Chronos-2" if fam == "Chronos" else fam
+    return "Other"
+
+
+def print_summary_table(results, show_buy_hold=False, benchmarks=None, group=True):
+    """Summary table grouped by model family and ranked by return within group."""
+    if not results:
+        print("  No results.")
+        return
     has_sl = any(r.stop_loss_pct > 0 for r in results)
+    best_ret = max(r.total_return for r in results)
+
     header = (
-        f"  {'MODEL':<25} | {'ACC.':<8} | {'RETURN':<10} | "
-        f"{'P.FACTOR':<10} | {'MAX DD':<10} | {'SHARPE':<8}"
+        f"  {'MODEL':<25}| {'ACC.':<6}| {'RETURN':<11}| "
+        f"{'PF':<6}| {'MAX DD':<10}| {'SHARPE':<7}| {'W/L':<7}"
     )
     if has_sl:
-        header += f" | {'SL':<4}"
+        header += f"| {'SL':<4}"
     if show_buy_hold:
-        header += f" | {'B&H':<10}"
+        header += f"| {'B&H':<11}"
     if benchmarks:
-        for bench in benchmarks:
-            header += f" | {bench:<10}"
+        for b in benchmarks:
+            header += f"| {b:<10}"
+    width = len(header)
     print(header)
-    divider = 83 + (7 if has_sl else 0) + (13 if show_buy_hold else 0)
-    divider += sum(13 for _ in (benchmarks or {}))
-    print(f"  {'-' * divider}")
+    print(f"  {'─' * (width - 2)}")
 
-    for r in results:
+    def fmt_row(r):
+        star = "★" if r.total_return == best_ret else " "
+        wl = f"{r.win_trades}/{r.loss_trades}"
         line = (
-            f"  {r.model_name:<25} | {r.accuracy:<8.1%} | "
-            f"{r.total_return:<+10.4%} | {pf_str(r.profit_factor):<10} | "
-            f"{r.max_drawdown:<+10.4%} | {r.sharpe_ratio:<8.2f}"
+            f"  {r.model_name:<23}{star} | {r.accuracy:<5.0%}| "
+            f"{r.total_return:<+11.4%}| {pf_str(r.profit_factor):<6}| "
+            f"{r.max_drawdown:<+10.4%}| {r.sharpe_ratio:<7.2f}| {wl:<7}"
         )
         if has_sl:
-            line += f" | {r.stopped_out_count:<4}"
+            line += f"| {r.stopped_out_count:<4}"
         if show_buy_hold:
-            line += f" | {r.buy_hold_return:<+10.4%}"
+            line += f"| {r.buy_hold_return:<+11.4%}"
         if benchmarks:
-            for _bench, ret in benchmarks.items():
-                line += f" | {ret:<+10.4%}"
+            for _b, ret in benchmarks.items():
+                line += f"| {ret:<+10.4%}"
+        return line
+
+    if group:
+        groups: dict[str, list] = {}
+        for r in results:
+            groups.setdefault(_model_family(r.model_name), []).append(r)
+        ordered = [f for f in _FAMILY_ORDER if f in groups] + [
+            f for f in groups if f not in _FAMILY_ORDER
+        ]
+        for fam in ordered:
+            rows = sorted(groups[fam], key=lambda r: r.total_return, reverse=True)
+            label = f"  ── {fam} "
+            print(label + "─" * max(0, width - len(label) - 1))
+            for r in rows:
+                print(fmt_row(r))
+    else:
+        for r in sorted(results, key=lambda r: r.total_return, reverse=True):
+            print(fmt_row(r))
+
+    print(f"  {'─' * (width - 2)}")
+    winner = max(results, key=lambda r: r.total_return)
+    print(
+        f"  ★ Best return: {winner.model_name}  "
+        f"({winner.total_return:+.2%}, acc {winner.accuracy:.0%}, Sharpe {winner.sharpe_ratio:.2f})"
+    )
+    if show_buy_hold:
+        bh = results[0].buy_hold_return
+        beat = sum(1 for r in results if r.total_return > bh)
+        print(f"    Buy & Hold: {bh:+.2%}   |   models beating B&H: {beat}/{len(results)}")
+
+
+def print_timing_table(results, top=None):
+    """Per-model compute time, slowest first. Toggled by backtest.py --timing."""
+    times: dict[str, float] = {}
+    runs: dict[str, int] = {}
+    for r in results:
+        secs = getattr(r, "elapsed_seconds", 0.0)
+        times[r.model_name] = times.get(r.model_name, 0.0) + secs
+        runs[r.model_name] = runs.get(r.model_name, 0) + 1
+    total = sum(times.values())
+    if not times or total == 0:
+        print("\n  TIMING: no data — is engine/backtester.py recording elapsed_seconds?")
+        return
+    multi = any(c > 1 for c in runs.values())
+    rows = sorted(times.items(), key=lambda kv: kv[1], reverse=True)
+    if top:
+        rows = rows[:top]
+
+    header = f"  {'MODEL':<25}| {'TIME':>9}| {'SHARE':>6}"
+    if multi:
+        header += f"| {'RUNS':>5}| {'PER-RUN':>9}"
+    print("\n  TIMING BY MODEL  (compute time, slowest first)")
+    print(header)
+    print(f"  {'─' * (len(header) - 2)}")
+    for name, secs in rows:
+        line = f"  {name:<25}| {secs:>8.2f}s| {secs / total:>5.0%}"
+        if multi:
+            n = runs[name]
+            line += f"| {n:>5}| {secs / n:>8.2f}s"
         print(line)
+    print(f"  {'─' * (len(header) - 2)}")
+    print(f"  {'TOTAL':<25}| {total:>8.2f}s")
 
 
 def print_consensus(all_results, n_days):
@@ -636,6 +736,8 @@ def print_next_day_forecast(all_results):
     print(f"  Price: {last_day.close_before:.2f} → {last_day.close_actual:.2f}\n")
     up_votes = down_votes = 0
     for r in all_results:
+        if not r.days:
+            continue
         d = r.days[-1]
         mark = "✓" if d.correct else "✗"
         print(f"  {r.model_name:<25}  {d.predicted:<6} (conf: {d.confidence:.1%})  {mark}")
