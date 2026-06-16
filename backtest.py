@@ -13,10 +13,10 @@ Usage:
 
 import argparse
 
+from cli_helpers import add_scope_args, resolve_scope
 from config import (
     ALL_PERIODS,
     ALL_TICKERS,
-    CRYPTO,
     CRYPTO_BENCHMARKS,
     DEFAULT_BACKTEST_DAYS,
     DEFAULT_PERIOD,
@@ -24,7 +24,6 @@ from config import (
     DEFAULT_TRADING_FEE_PCT,
     MODEL_FAMILIES,
     STOCK_BENCHMARKS,
-    STOCKS,
 )
 from engine.backtest_helpers import (
     compute_benchmarks,
@@ -447,12 +446,9 @@ def run_compare_periods(
 
 
 def main():
+    # in main(): replace the scope block (keep --days and everything after)
     parser = argparse.ArgumentParser(description="MarketPulse AI – Backtest")
-    parser.add_argument("--tickers", nargs="+", default=None)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stocks", action="store_true", help=f"Only stocks: {STOCKS}")
-    group.add_argument("--crypto", action="store_true", help=f"Only crypto: {CRYPTO}")
-    parser.add_argument("--all", action="store_true", help="All tickers")
+    add_scope_args(parser)
     parser.add_argument("--days", type=int, default=DEFAULT_BACKTEST_DAYS)
     parser.add_argument("--period", default=DEFAULT_PERIOD, choices=ALL_PERIODS)
     parser.add_argument("--full", action="store_true", help="Detailed output")
@@ -501,16 +497,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.tickers:
-        tickers = [t.upper() for t in args.tickers]
-    elif args.stocks:
-        tickers = STOCKS
-    elif args.crypto:
-        tickers = CRYPTO
-    elif args.all:
-        tickers = ALL_TICKERS
-    else:
-        tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
+    tickers = resolve_scope(args, default=ALL_TICKERS[:3])
 
     if args.compare_periods:
         run_compare_periods(

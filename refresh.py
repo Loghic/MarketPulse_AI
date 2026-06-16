@@ -21,12 +21,11 @@ Historical news (one-off bulk fetch for the DB):
 import argparse
 import sys
 
+from cli_helpers import add_scope_args, resolve_scope
 from config import (
     ALL_TICKERS,
-    CRYPTO,
     DEFAULT_NEWS_LOOKBACK_DAYS,
     DEFAULT_SENTIMENT_METHOD,
-    STOCKS,
 )
 from engine.logger import get_logger
 from interface.api import StockAppAPI
@@ -39,12 +38,7 @@ log = get_logger("refresh")
 
 def main():
     parser = argparse.ArgumentParser(description="MarketPulse AI – Refresh prices & news")
-
-    parser.add_argument("--tickers", nargs="+", default=None)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stocks", action="store_true")
-    group.add_argument("--crypto", action="store_true")
-    parser.add_argument("--all", action="store_true")
+    add_scope_args(parser)
 
     parser.add_argument(
         "--news-source",
@@ -83,14 +77,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.tickers:
-        tickers = [t.upper() for t in args.tickers]
-    elif args.stocks:
-        tickers = STOCKS
-    elif args.crypto:
-        tickers = CRYPTO
-    else:
-        tickers = ALL_TICKERS
+    tickers = resolve_scope(args, default=ALL_TICKERS)
 
     # When --news-source is given, pass it to both API construction (so the
     # scraper's default matches) and to refresh_tickers (per-call override).

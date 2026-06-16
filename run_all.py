@@ -32,10 +32,10 @@ import argparse
 import csv
 from pathlib import Path
 
+from cli_helpers import add_scope_args, resolve_scope, scope_label
 from config import (
     ALL_PERIODS,
     ALL_TICKERS,
-    CRYPTO,
     CRYPTO_BENCHMARKS,
     DEFAULT_NEWS_HALF_LIFE_DAYS,
     DEFAULT_NEWS_LOOKBACK_DAYS,
@@ -44,7 +44,6 @@ from config import (
     DEFAULT_TRADING_FEE_PCT,
     MODEL_FAMILIES,
     STOCK_BENCHMARKS,
-    STOCKS,
 )
 from engine.backtest_helpers import (
     compute_benchmarks,
@@ -234,11 +233,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="MarketPulse AI – Batch backtest (one CSV per ticker)"
     )
-    parser.add_argument("--tickers", nargs="+", default=None)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stocks", action="store_true")
-    group.add_argument("--crypto", action="store_true")
-    parser.add_argument("--all", action="store_true")
+    add_scope_args(parser)
     parser.add_argument("--days", type=int, default=20)
     parser.add_argument(
         "--periods",
@@ -336,22 +331,8 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine tickers and scope label
-    if args.tickers:
-        tickers = [t.upper() for t in args.tickers]
-        scope = "custom"
-    elif args.stocks:
-        tickers = STOCKS
-        scope = "stocks"
-    elif args.crypto:
-        tickers = CRYPTO
-        scope = "crypto"
-    elif args.all:
-        tickers = ALL_TICKERS
-        scope = "all"
-    else:
-        tickers = ALL_TICKERS
-        scope = "all"
+    tickers = resolve_scope(args, default=ALL_TICKERS)
+    scope = scope_label(args)
 
     # Build output directory
     dir_name = build_dir_name(

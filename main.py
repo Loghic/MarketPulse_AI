@@ -6,7 +6,9 @@ Tickers and periods are configured in config.py.
 
 import argparse
 
-from config import ALL_PERIODS, ALL_TICKERS, CRYPTO, STOCKS
+# imports — drop STOCKS, CRYPTO; add the helper
+from cli_helpers import add_scope_args, resolve_scope
+from config import ALL_PERIODS, ALL_TICKERS
 from engine.logger import get_logger, progress_bar
 from interface.api import PredictionConfig, StockAppAPI
 
@@ -108,32 +110,14 @@ def print_report(api: StockAppAPI, ticker: str):
 
 def main():
     parser = argparse.ArgumentParser(description="MarketPulse AI – Predictions")
-    parser.add_argument(
-        "--tickers",
-        nargs="+",
-        default=None,
-        help="Specific tickers to analyze (overrides --stocks/--crypto)",
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stocks", action="store_true", help=f"Run only stocks: {STOCKS}")
-    group.add_argument("--crypto", action="store_true", help=f"Run only crypto: {CRYPTO}")
-    parser.add_argument("--all", action="store_true", help="Run all tickers (stocks + crypto)")
+    add_scope_args(parser)
     parser.add_argument(
         "--no-refresh", action="store_true", help="Skip data download, use only cached data from DB"
     )
     args = parser.parse_args()
 
     # Determine tickers
-    if args.tickers:
-        tickers = args.tickers
-    elif args.stocks:
-        tickers = STOCKS
-    elif args.crypto:
-        tickers = CRYPTO
-    elif args.all:
-        tickers = ALL_TICKERS
-    else:
-        tickers = ALL_TICKERS[:3] if len(ALL_TICKERS) >= 3 else ALL_TICKERS
+    tickers = resolve_scope(args, default=ALL_TICKERS[:3])
 
     log.info(f"Tickers: {tickers}")
 
