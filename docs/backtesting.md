@@ -107,18 +107,63 @@ A model great in 2023 (AI rally) but terrible in 2024 may be overfitting to bull
 
 Direction accuracy breaks down by UP vs DOWN. Confidence calibration checks if high-confidence predictions are actually better. Consensus shows model agreement per day — unanimous days are strongest signals.
 
+
+## Forecasting models (Prophet, Chronos-2, Kronos)
+
+Three forecasting models join the backtest when the relevant extras are
+installed. Unlike the classifiers, they predict a *value* and derive direction
+from it — see [forecasting.md](forecasting.md) for the mechanics.
+
+- **Prophet** — fits on every walk-forward day (CPU), so it's the slowest model
+  on large `--days` runs. Direction comes from its prediction interval.
+  Needs the `forecast` extra.
+- **Chronos-2** — a zero-shot foundation model loaded once and reused for every
+  ticker; the first run downloads ~478 MB of weights. Needs the `forecast` extra.
+- **Kronos** — a decoder-only foundation model for OHLCV candlesticks. Cloned as
+  a sibling repo, not pip-installed (`[kronos]` extra + `git clone`); direction
+  is the share of sampled forecast paths that close above the last close. It is
+  the heaviest model per walk-forward day.
+
+They appear as `Prophet` / `Chronos-2` / `Kronos` plus `+ News` variants,
+flowing through the same fee / stop-loss duplication as every other model. A
+very confident model (Prophet often sits near 99%) can show identical base and
+`+ News` rows — the sentiment nudge isn't large enough to flip the call. That's
+expected.
+
+The summary table groups results by model family (k-NN / LinReg / LSTM /
+Prophet / Chronos-2 / Kronos) and ranks by return within each group, with a `★`
+on the best return and a one-line winner in the footer.
+
+### What we found (100-day stock run)
+
+Across a 100-day FinBERT backtest over every stock and period, mean direction
+accuracy sat around 0.49 — essentially a coin flip — and fewer than one run in
+five beat its own buy-and-hold benchmark. Headline returns were dominated by a
+bull market plus selection bias, not edge. Among the classifiers LSTM was the
+strongest family. Among the three forecasting models, Chronos-2 was both the
+cheapest and the best (it won outright on several tickers and posted the highest
+beat-buy-and-hold rate), while Prophet and Kronos were the weakest *and* the
+slowest. The practical takeaway baked into the flags below: drop the slow `max`
+period and the Prophet/Kronos families when you want a fast, representative
+sweep — `--periods 1y 2y 5y --models knn linreg lstm chronos` cuts a forecasting
+run roughly in half with little loss of signal. Full numbers live in
+[forecasting.md](forecasting.md).
+
 ## CLI flags
 
 | Flag | Description |
 |---|---|
 | `--days N` | Holdout days (5=quick, 20=solid, 50=reliable) |
-| `--period` | Training window: 1mo, 1y, 2y, 5y, max |
+| `--period` | Training window for single-period mode: 1mo, 1y, 2y, 5y, max |
+| `--periods P [...]` | Restrict which periods `--compare-periods` runs (subset of `ALL_PERIODS`). Skip the slow `max`. Same flag on `run_all.py` |
+| `--models F [...]` | Only run these model families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos` (default: all). Maps SL / `+ News` / time-weighted variants to the right family. Same flag on `run_all.py` |
 | `--fees FLOAT` | Fee % per side (default from config.py) |
 | `--stop-loss FLOAT` | Stop-loss % (0=disabled). Runs each model twice for comparison |
 | `--buy-hold` | Add buy-and-hold return to output |
 | `--no-refresh` | Skip data download, use cached DB only (offline mode) |
 | `--full` | Detailed: consensus, direction accuracy, profit analysis, streaks |
-| `--compare-periods` | All periods, accuracy matrix, top 5, streak analysis |
+| `--compare-periods` | All periods (or the `--periods` subset), accuracy matrix, top 5, streak analysis |
+| `--timing` | Print a slowest-first per-model compute-time table after the summary |
 | `--output FILE` | Export CSV or JSON |
 
 ### `--output` content by mode
@@ -130,6 +175,17 @@ Direction accuracy breaks down by UP vs DOWN. Confidence calibration checks if h
 | `--compare-periods` | 1 per model × period |
 
 With `--stop-loss`, row count doubles (baseline + SL variant for each model).
+
+### Timing breakdown
+
+`--timing` adds a per-model wall-clock table (slowest first) after the normal
+summary, sourced from each `BacktestResult.elapsed_seconds`. When a run spans
+multiple periods it also shows a per-run average. This is how the forecasting
+overhead was measured: on a representative run the forecasting models accounted
+for roughly two-thirds of total wall time, with Kronos and Prophet by far the
+slowest and Chronos-2 cheap by comparison. `run_all.py` prints a
+**time-by-model-family** rollup (time, share, wins) at the end of the batch
+automatically — no flag needed.
 
 ## Data refresh
 
@@ -152,6 +208,9 @@ Runs `--compare-periods` for each ticker separately, saves to organized subdirec
 
 ```bash
 uv run python run_all.py --stocks --days 50 --fees 0.03 --stop-loss 2 --buy-hold
+
+# Skip slow 'max', drop the heavy forecasting models
+uv run python run_all.py --stocks --days 100 --periods 1y 2y 5y --models knn linreg lstm chronos
 ```
 
 ```
@@ -167,7 +226,7 @@ results/
     └── ...
 ```
 
-Directory name encodes: scope (`stocks`/`crypto`/`all`/`custom`) + days + fees + stop-loss + buy-hold. Different parameter combinations create different directories — no overwriting.
+Directory name encodes: scope (`stocks`/`crypto`/`all`/`custom`) + days + fees + stop-loss + buy-hold. Different parameter combinations create different directories — no overwriting. (The `--periods` / `--models` subset isn't encoded in the directory name, so name your output deliberately if you run several subsets.)
 
 ## Interpreting results
 
@@ -181,7 +240,7 @@ SL helps most when a model has good accuracy but occasional large losses. It cap
 
 ### Models vs buy-and-hold
 
-If no model beats buy-and-hold after fees, active trading doesn't work for that ticker. Common in strong uptrends — buy-and-hold captures the full rally, while models that occasionally short miss parts of it.
+If no model beats buy-and-hold after fees, active trading doesn't work for that ticker. Common in strong uptrends — buy-and-hold captures the full rally, while models that occasionally short miss parts of it. In our own sweeps this was the norm rather than the exception: most (model, ticker, period) combinations failed to beat their own buy-and-hold, so treat any single headline return with suspicion until it survives a multi-period, multi-ticker check.
 
 ### Small sample bias
 

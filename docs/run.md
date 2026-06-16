@@ -8,6 +8,7 @@ focused docs:
 
 * [docs/api.md](api.md) — architecture, DB schema, model contract
 * [docs/backtesting.md](backtesting.md) — walk-forward methodology, all metrics
+* [docs/forecasting.md](forecasting.md) — Prophet, Chronos-2, Kronos + the ForecastModel interface
 * [docs/sentiment.md](sentiment.md) — VADER vs FinBERT vs naive
 * [docs/news_sources.md](news_sources.md) — Yahoo, GDELT, adding new providers
 * [docs/features.md](features.md), [docs/k-NN.md](k-NN.md),
@@ -38,7 +39,7 @@ uv venv
 
 ## 2. Install
 
-The project has one required dependency set and four optional extras. Install
+The project has one required dependency set and several optional extras. Install
 only what you need.
 
 ### Core (always required)
@@ -73,6 +74,33 @@ uv pip install -e ".[ai]"
 The first FinBERT call downloads the ProsusAI/finbert model (~400 MB) and
 caches it under `~/.cache/huggingface/`. Subsequent runs are instant.
 
+### Forecasting models (the `forecast` extra)
+
+```bash
+uv pip install -e ".[forecast]"
+```
+
+Adds `prophet` and `chronos-forecasting`. Required for the Prophet and
+Chronos-2 forecasting models in backtests. Prophet needs no download; Chronos-2
+downloads its weights (~478 MB) from the Hugging Face Hub on first use and
+caches them under `~/.cache/huggingface/`. CPU works out of the box.
+
+### Kronos (sibling clone, not pip)
+
+Kronos isn't on PyPI — clone it next to the repo and install the minimal extra:
+
+```bash
+git clone https://github.com/shiyu-coder/Kronos.git ../Kronos
+uv pip install -e ".[kronos]"        # einops + huggingface_hub (torch already present)
+```
+
+Do **not** run `pip install -r ../Kronos/requirements.txt` — on Python 3.14 its
+pinned matplotlib 3.9.3 has no wheel and the bundled freetype source build
+fails. The adapter doesn't need matplotlib. The clone is expected as a sibling
+of this repo (`../Kronos`); override the location with `KRONOS_PATH` if it lives
+elsewhere. The first backtest downloads the Kronos-small weights from the Hub
+and forces CPU on Macs (the upstream default targets `cuda:0`).
+
 ### Web GUI (the `web` extra)
 
 ```bash
@@ -105,7 +133,9 @@ run the test suite and the pre-commit hooks (ruff + mypy on every commit).
 ### Everything at once
 
 ```bash
-uv pip install -e ".[ai,web,viz,dev]"
+uv pip install -e ".[ai,web,viz,dev,forecast]"
+git clone https://github.com/shiyu-coder/Kronos.git ../Kronos   # Kronos is a separate clone
+uv pip install -e ".[kronos]"
 cd web/frontend && npm install && cd ../..
 uv run pre-commit install
 ```
@@ -131,6 +161,22 @@ uv run python -c "import nltk; nltk.download('vader_lexicon')"
 ```bash
 uv run python -c "from engine.sentiment import FinBERTScorer; FinBERTScorer()"
 ```
+
+### Chronos-2 weights (~478 MB, only if you installed the `forecast` extra)
+
+```bash
+uv run python -c "from engine.chronos_model import Chronos2Model; Chronos2Model()._load()"
+```
+
+### Kronos weights (only if you cloned Kronos + installed the `kronos` extra)
+
+```bash
+uv run python -c "from engine.kronos_model import KronosModel; KronosModel()._load()"
+```
+
+This pulls the Kronos-small tokenizer + model from the Hugging Face Hub. If it
+can't find the repo, check that `../Kronos` exists (or `KRONOS_PATH` points at
+the clone).
 
 ### GDELT reachability check (optional)
 
@@ -196,6 +242,22 @@ share the news/sentiment flags introduced in the 2026 refactor.
 |---|---|---|
 | `--news-lookback N` | 7 | Per-day window: only count news from last N days |
 | `--news-half-life H` | 3 | Exponential decay half-life (0 = uniform weighting) |
+
+`backtest.py` and `run_all.py` also accept these run-shaping flags (handy now
+that the forecasting models make a full sweep slow):
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--periods P [...]` | all | Restrict the period set in `--compare-periods` (subset of `ALL_PERIODS`). Skip the slow `max` window. Same flag on `run_all.py`. |
+| `--models F [...]` | all | Only run these model families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos`. Maps SL / `+ News` / time-weighted variants to the right family. Same flag on `run_all.py`. |
+| `--timing` *(backtest.py)* | off | Print a slowest-first per-model compute-time table after the summary. `run_all.py` prints a time-by-model-family rollup automatically. |
+
+```bash
+# Fast representative sweep — drop slow 'max' and the heavy Prophet/Kronos models,
+# and see where the time goes
+uv run python backtest.py --tickers NVDA --compare-periods \
+    --periods 1y 2y 5y --models knn linreg lstm chronos --timing
+```
 
 ---
 
@@ -343,6 +405,41 @@ This still refreshes data + news, then runs each model variant for 20 walk-
 forward days. The only thing that's changed under the hood: each "+ News"
 variant now uses look-ahead-safe per-day sentiment from the DB.
 
+### Forecasting models (Prophet, Chronos-2, Kronos)
+
+If the `forecast` extra is installed, `Prophet` and `Chronos-2` variants (plus
+`+ News`) appear automatically in every backtest — no flags needed. Add the
+Kronos sibling clone + `[kronos]` extra (see §2) and a `Kronos` variant joins
+them. All three are skipped silently when their dependencies aren't present.
+
+```bash
+uv pip install -e ".[forecast]"
+uv run python backtest.py --tickers NVDA --days 20 --full
+```
+
+The summary table now groups models by family and ranks by return within each
+group (a `★` marks the best return). Notes: Prophet refits on every
+walk-forward day (one of the slowest models on large `--days`); Chronos-2 loads
+once and downloads ~478 MB on first run; Kronos consumes the full OHLCV window,
+draws sampled forecast paths, and is the heaviest per day. See
+[docs/forecasting.md](forecasting.md).
+
+**Run controls.** Because the forecasting models can dominate runtime, use
+`--models` to include only the families you want and `--periods` to skip slow
+windows, and add `--timing` to see exactly where the time goes:
+
+```bash
+# Classifiers + Chronos-2 only, skip 'max', with a timing breakdown
+uv run python backtest.py --tickers NVDA --days 20 --compare-periods \
+    --periods 1y 2y 5y --models knn linreg lstm chronos --timing
+```
+
+In a representative sweep the forecasting models were ~two-thirds of total
+wall-clock time, with Kronos and Prophet the slowest and Chronos-2 cheap — and
+Chronos-2 was also the strongest of the three on accuracy and beat-buy-and-hold
+rate, so `--models … chronos` (dropping prophet/kronos) is the usual fast
+default. Full numbers in [docs/forecasting.md](forecasting.md).
+
 ### Common recipes
 
 All examples below print a summary table to the terminal. Add `--output
@@ -401,6 +498,8 @@ which lookback period that model likes — use `--compare-periods`. It runs
 each model on every period in `ALL_PERIODS` (`1mo`, `1y`, `2y`, `5y`, `max`)
 and prints a model × period accuracy + return matrix, the best period per
 model, a top-5 leaderboard, a streak analysis and a risk-adjusted ranking.
+Narrow the period set with `--periods` (e.g. `--periods 1y 2y 5y`) when you
+want to skip the slow `max` window.
 
 Each row of the CSV is keyed `(ticker, model, period)` — sort by
 `total_return`, `accuracy`, or `sharpe_ratio` in a spreadsheet to surface
@@ -511,6 +610,11 @@ uv run python backtest.py --tickers AAPL --days 20 --fees 0.03 --stop-loss 2 \
 uv run python backtest.py --tickers AAPL --days 20 --compare-periods --buy-hold \
     --output results/aapl_periods.csv
 
+# 4b. Same, but a faster subset of periods and only some model families
+uv run python backtest.py --tickers AAPL --days 20 --compare-periods --buy-hold \
+    --periods 1y 2y 5y --models knn linreg lstm chronos --timing \
+    --output results/aapl_periods_fast.csv
+
 # 5. Tune the lookback window + decay
 uv run python backtest.py --stocks --days 20 \
     --news-lookback 14 --news-half-life 7 \
@@ -576,7 +680,9 @@ the best available preset (`cluster > standard > quick`).
 Runs `--compare-periods` for each ticker and writes organized subdirectories
 under `results/`. Supports the same news / sentiment flags as `backtest.py`
 (`--sentiment-method`, `--news-source`, `--news-lookback`, `--news-half-life`,
-`--news-history-days`, `--force-news`).
+`--news-history-days`, `--force-news`) plus `--periods` (restrict the period
+sweep) and `--models` (restrict model families). It also prints a
+time-by-model-family rollup at the end of the batch automatically.
 
 ```bash
 uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold
@@ -586,6 +692,10 @@ uv run python run_all.py --all --days 20
 # With FinBERT + 1 year of GDELT history
 uv run python run_all.py --stocks --days 20 --fees 0.05 --buy-hold \
     --sentiment-method finbert --news-source gdelt --news-history-days 365
+
+# Fast sweep — skip 'max', drop the heavy forecasting models
+uv run python run_all.py --stocks --days 100 --fees 0.05 --buy-hold \
+    --periods 1y 2y 5y --models knn linreg lstm chronos
 ```
 
 Output layout:
@@ -605,7 +715,9 @@ results/
 ```
 
 Directory name encodes run parameters (`scope_days_fees_sl_bh`), so different
-runs don't overwrite each other.
+runs don't overwrite each other. (The `--periods` / `--models` subset is *not*
+encoded in the directory name, so pick a distinct scope or move the output if
+you keep several subset runs side by side.)
 
 ---
 
@@ -824,6 +936,38 @@ DEFAULT_SENTIMENT_METHOD    = "vader"    # "vader" | "finbert" | "naive"
 DEFAULT_NEWS_SOURCES        = ["yahoo"]  # ["yahoo", "gdelt"] for combined
 DEFAULT_NEWS_LOOKBACK_DAYS  = 7          # 0 = unbounded
 DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0        # 0 = no decay
+
+# Forecasting models (Prophet, Chronos-2, Kronos) — backtests
+FORECAST_MODELS = [
+    ("prophet", "Prophet"),
+    ("chronos", "Chronos-2"),
+    ("kronos",  "Kronos"),
+]
+FORECAST_DEVICE = None        # None = auto (cuda if available else cpu)
+CHRONOS_MODEL_ID = "amazon/chronos-2"
+CHRONOS_CONTEXT = 512         # most-recent closes used as context
+
+# Kronos (sibling clone, OHLCV candlestick model)
+KRONOS_PATH         = "../Kronos"          # clone location (override if not a sibling)
+KRONOS_MODEL_ID     = "NeoQuasar/Kronos-small"
+KRONOS_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"
+KRONOS_MAX_CONTEXT  = 512     # candlesticks of context
+KRONOS_SAMPLE_COUNT = 5       # forecast paths sampled to estimate prob_up
+KRONOS_PROB_SAMPLES = 1
+KRONOS_T            = 1.0     # sampling temperature
+KRONOS_TOP_P        = 0.9     # nucleus sampling cutoff
+
+# Model-family labels — the single source the `--models` filter uses
+# (key → display name). MODEL_FAMILIES is derived from it.
+MODEL_FAMILY_LABELS = {
+    "knn":     "k-NN",
+    "linreg":  "LinReg",
+    "lstm":    "LSTM",
+    "prophet": "Prophet",
+    "chronos": "Chronos-2",
+    "kronos":  "Kronos",
+}
+MODEL_FAMILIES = list(MODEL_FAMILY_LABELS)
 ```
 
 Every CLI flag has a `config.py` default. Changing the default avoids having
@@ -852,6 +996,10 @@ uv run ruff format .
 uv run mypy engine/ interface/ web/backend/
 ```
 
+`ai_model.py`, `chronos_model.py` and `kronos_model.py` are excluded from
+strict mypy (torch / external sibling import). Running `mypy engine interface`
+alone is fine; the `web.backend.*` "unused section" note is benign.
+
 ---
 
 ## 15. Troubleshooting
@@ -872,6 +1020,15 @@ uv run mypy engine/ interface/ web/backend/
 | `--news-history-days 365` is slow | GDELT call + scoring 250 headlines each ticker | One-off; you only need to do it once. Add `--no-refresh` to subsequent backtests. |
 | Changed `--sentiment-method` and scores didn't change | Cached scores in the DB were stored under the old method; new scores append. Pass `--force-news` to re-fetch and re-score | `... --sentiment-method finbert --force-news` |
 | `cannot import name 'UTC' from 'datetime'` | You're on Python 3.10 | Project requires 3.12+. `uv venv --python 3.12 && uv pip install -e .` |
+| `Prophet` / `Chronos-2` rows missing from backtest output | `forecast` extra not installed | `uv pip install -e ".[forecast]"` |
+| `Kronos` rows missing from backtest output | Kronos clone or `[kronos]` extra missing (it's skipped silently) | `git clone https://github.com/shiyu-coder/Kronos.git ../Kronos` then `uv pip install -e ".[kronos]"`. If the clone isn't a sibling, set `KRONOS_PATH` in `config.py`. |
+| `pip install -r ../Kronos/requirements.txt` fails building matplotlib 3.9.3 (`unknown type name 'Byte'` in freetype) | Kronos pins matplotlib 3.9.3, which has no Python 3.14 wheel and the bundled freetype source build errors out | Don't install Kronos's requirements file — the adapter doesn't need matplotlib. Use the `[kronos]` extra instead (`uv pip install -e ".[kronos]"`), which pulls only `einops` + `huggingface_hub`. |
+| Kronos tries to use `cuda:0` / crashes on a Mac | Upstream Kronos defaults to a CUDA device | The adapter forces CPU when CUDA isn't available; if you're on an older copy, pull the current `engine/kronos_model.py`. |
+| Chronos-2 shows `0/0` with no predictions | Old `chronos_model.py` calling `predict_quantiles(context=…)` | Update to the fixed adapter (positional `inputs` list); needs `chronos-forecasting>=2.0` |
+| `cmdstanpy - INFO - Chain [1] start/done processing` floods the output | Prophet's Stan backend logging | Fixed — silenced around each fit. If still seen, your `prophet_model.py` predates the `_quiet_stan()` fix |
+| `torch_dtype is deprecated! Use dtype instead!` | Old `chronos_model.py` passing `torch_dtype=` | Fixed — CPU passes no dtype, GPU uses `dtype=` |
+| `Prophet` and `Prophet + News` rows are identical | Prophet's confidence is too high for the ±(sentiment × 0.20) nudge to flip the call | Expected, not a bug — see docs/forecasting.md |
+| A forecasting run takes forever | Kronos + Prophet dominate per-day compute | Drop them with `--models knn linreg lstm chronos`, trim periods with `--periods 1y 2y 5y`, and add `--timing` to confirm where the time goes |
 
 ---
 

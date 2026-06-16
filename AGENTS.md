@@ -4,7 +4,7 @@ Read this before making changes. Compact reference for AI assistants.
 
 ## What this does
 
-Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, and LSTM. Sentiment adjustment via VADER. Walk-forward backtesting with simulated P/L, fees, stop-loss, and buy-and-hold benchmark.
+Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, LSTM, and time-series forecasting models (Prophet, Chronos-2, Kronos). Sentiment adjustment via VADER or FinBERT. Walk-forward backtesting with simulated P/L, fees, stop-loss, and buy-and-hold benchmark.
 
 ## Project layout
 
@@ -13,11 +13,11 @@ Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, and
 .codecov.yml                    → Coverage thresholds (60% target)
 .pre-commit-config.yaml         → Git hooks: ruff auto-fix + format + mypy before every commit
 
-config.py                   → ★ Tickers, periods, fees, stop-loss defaults. Edit to add assets.
+config.py                   → ★ Tickers, periods, fees, stop-loss, forecasting-model config. Edit to add assets.
 main.py                     → CLI: prediction reports (--stocks/--crypto/--all/--tickers)
-backtest.py                 → CLI: model evaluation (--full/--compare-periods/--output/--stop-loss)
+backtest.py                 → CLI: model evaluation (--full/--compare-periods/--periods/--timing/--output/--stop-loss)
 train.py                    → CLI: LSTM training (--preset quick/standard/cluster)
-run_all.py                  → CLI: batch runner (organized subdirectories in results/)
+run_all.py                  → CLI: batch runner (--periods/--timing; organized subdirectories in results/)
 refresh.py                  → CLI: download latest prices + news (no models, just data)
 test_pipeline.py            → 13 offline smoke tests (no pytest needed)
 
@@ -70,8 +70,12 @@ engine/
   knn_model.py              → k-NN (naive + enhanced)
   lin_reg_model.py          → LinReg (naive + enhanced)
   ai_model.py               → LSTM (train/save/load/predict + early stopping)
-  backtester.py             → Walk-forward engine (P/L, fees, SL, DD, Sharpe, Sortino, B&H, streaks, yearly)
-  backtest_helpers.py       → Shared: period filter, display, export, model variant runner
+  forecast_base.py          → Shared base for forecasting models (ForecastResult + ForecastModel)
+  prophet_model.py          → Prophet (fits per call, CPU)
+  chronos_model.py          → Chronos-2 (zero-shot foundation model, loads once)
+  kronos_model.py           → Kronos (OHLCV candlestick foundation model; sibling clone via KRONOS_PATH)
+  backtester.py             → Walk-forward engine (P/L, fees, SL, DD, Sharpe, Sortino, B&H, streaks, yearly, elapsed_seconds)
+  backtest_helpers.py       → Shared: period filter, display, export, model variant runner, timing table
   utils.py                  → Common helpers (period_to_start_date) shared across layers
   data_downloader.py        → yfinance fetching
   db_manager.py             → SQLite (prices + news)
@@ -80,7 +84,7 @@ engine/
 models/                     → Saved LSTM weights ({ticker}_{period}_{preset}.pt)
 results/                    → Organized: {scope}_{days}d[_fee{N}][_sl{N}][_bh]/{TICKER}.csv
 data/                       → SQLite DB (auto-created)
-docs/                       → In-depth docs for humans
+docs/                       → In-depth docs for humans (see docs/forecasting.md for the forecasting models)
 ```
 
 ## Config
@@ -103,6 +107,21 @@ CRYPTO_BENCHMARKS = ["BTC-USD"]
 # Trading
 DEFAULT_TRADING_FEE_PCT = 0.05   # per side, round-trip = 2x
 DEFAULT_STOP_LOSS_PCT = 0.0      # 0 = disabled
+
+# Forecasting models (backtests). Skipped if the lib/clone isn't present.
+FORECAST_MODELS = [("prophet", "Prophet"), ("chronos", "Chronos-2"), ("kronos", "Kronos")]
+FORECAST_DEVICE = None        # None = auto (cuda if available else cpu)
+CHRONOS_MODEL_ID = "amazon/chronos-2"
+CHRONOS_CONTEXT = 512
+# Kronos — external clone (not pip). See docs/forecasting.md.
+KRONOS_PATH = None            # None -> ../Kronos (sibling of repo root)
+KRONOS_MODEL_ID = "NeoQuasar/Kronos-small"
+KRONOS_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"
+KRONOS_MAX_CONTEXT = 512
+KRONOS_SAMPLE_COUNT = 5        # internal averaging per predict() call
+KRONOS_PROB_SAMPLES = 1        # >1 = empirical P(up) from N stochastic passes (slower)
+KRONOS_T = 1.0
+KRONOS_TOP_P = 0.9
 ```
 
 ## Model variants
@@ -114,6 +133,11 @@ DEFAULT_STOP_LOSS_PCT = 0.0      # 0 = disabled
 | `"linreg"` | LinearRegressionModel | returns only | No |
 | `"linreg_enhanced"` | LinearRegressionModel | all | No |
 | `"lstm"` | AIModel | all (sequential) | Yes → `train.py` |
+| `"prophet"` | ProphetModel | close (univariate) | No (fits per call) |
+| `"chronos"` | Chronos2Model | close (univariate) | No (zero-shot, downloads weights) |
+| `"kronos"` | KronosModel | OHLCV | No (zero-shot, sibling clone + downloads weights) |
+
+> Forecasting models (Prophet, Chronos-2, Kronos) subclass engine/forecast_base.py:ForecastModel and also expose forecast(df) → ForecastResult for the raw predicted value. use_time_weights is ignored (like LSTM).
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
@@ -143,6 +167,7 @@ class BacktestResult:
     max_drawdown, sharpe_ratio, sortino_ratio,
     longest_win_streak, longest_loss_streak, avg_win_streak, avg_loss_streak,
     buy_hold_return, buy_hold_max_drawdown,
+    elapsed_seconds,                             # wall time for this model's walk-forward run
     yearly_performance: List[YearlyPerformance],
     days: List[DayResult]
 ```
@@ -161,11 +186,15 @@ uv run python train.py --list
 # Backtest
 uv run python backtest.py --stocks --days 20 --fees 0.03 --buy-hold
 uv run python backtest.py --tickers AAPL --days 20 --stop-loss 2 --fees 0.03
+uv run python backtest.py --tickers NVDA --days 30 --full --timing            # per-model time breakdown
+uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y    # subset of periods (matrix)
 uv run python backtest.py --compare-periods --output results.csv
 
 # Batch runner
 uv run python run_all.py --stocks --days 50 --fees 0.03 --stop-loss 2 --buy-hold
 # → results/stocks_50d_fee003_sl2_bh/{AAPL,MSFT,...,_summary}.csv
+uv run python run_all.py --stocks --days 100 --periods 1y 2y 5y --sentiment-method finbert
+# --periods skips slow 'max'; a time-by-model-family rollup prints at the end
 
 # Data refresh (no models, just download)
 uv run python refresh.py
@@ -182,6 +211,8 @@ uv run python run_all.py --stocks --days 20 --no-refresh
 **Add a ticker:** Edit `config.py` → `STOCKS` or `CRYPTO`. Done.
 
 **Add a model:** Create `engine/new_model.py` with `.predict()` → register in `api._get_model()` → add to `backtest_helpers.run_single_backtest()` variants → add to `main.py` → test.
+
+**Add a forecasting model (Prophet/Chronos-style):** Create `engine/<name>_model.py` subclassing `ForecastModel` with `_raw_forecast()` → register in `api._get_model()` + `api._load_forecast_model()` (annotate `model: ForecastModel`) → add to `config.FORECAST_MODELS`. `backtest_helpers` picks it up automatically (no `backtester.py` / `backtest.py` changes). For a repo-based model with no PyPI package (like Kronos): clone it as a sibling and *append* its root to `sys.path` (append, never insert, so it can't shadow this project's `config.py`/`utils.py`), expose the location via a `config.*_PATH` override, and force a device (some predictors default to `cuda:0`).
 
 **Add a feature:** Add to `features.py` → update `ALL_FEATURES` + `min_rows_needed()`.
 
@@ -215,7 +246,7 @@ React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →
 
 **Predict endpoint:** `POST /api/predict/run` takes `{ticker, items: [{model, period, news}], refresh_data}`. Returns `{predictions, consensus}`.
 
-**9 model variants:** k-NN, k-NN (TW), k-NN Enhanced, k-NN Enhanced (TW), LinReg, LinReg (TW), LinReg Enhanced, LinReg Enhanced (TW), LSTM. Each can independently have news on/off and its own period.
+**9 model variants:** k-NN, k-NN (TW), k-NN Enhanced, k-NN Enhanced (TW), LinReg, LinReg (TW), LinReg Enhanced, LinReg Enhanced (TW), LSTM. Each can independently have news on/off and its own period. (Forecasting models are backtest-only; not in the GUI builder yet.)
 
 ## CI / CD
 
@@ -247,7 +278,7 @@ Coverage uploaded to Codecov (`.codecov.yml` sets 60% target).
 
 **Ruff rules:** unused imports, import sorting, `list`/`dict` instead of `typing.List`/`Dict`, bugbear, simplify. Tests exempt from annotation rules.
 
-**Mypy:** strict on `engine/backtester.py` and `engine/utils.py` (require full annotations). Lenient on rest. `engine/ai_model.py` excluded (torch Optional patterns).
+**Mypy:** strict on `engine/backtester.py` and `engine/utils.py` (require full annotations). Lenient on rest. `engine/ai_model.py`, `engine/chronos_model.py`, and `engine/kronos_model.py` excluded via `ignore_errors` (torch / external-import patterns); `prophet.*`, `chronos.*`, `model.*` in `ignore_missing_imports`.
 
 ## Logging & progress
 
@@ -279,11 +310,11 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 
 ## Architecture notes
 
-- `backtest.py` is a thin CLI wrapper (~240 lines). Logic lives in `backtester.py` and `backtest_helpers.py`.
+- `backtest.py` is a thin CLI wrapper. Logic lives in `backtester.py` and `backtest_helpers.py`.
 - All scripts call `api.refresh_tickers(tickers)` upfront (prices + news → SQLite). `--no-refresh` skips this for offline use.
 - `api.refresh_tickers()` is the single refresh method — used by refresh.py, main.py, backtest.py, run_all.py, and future GUI.
 - `engine/utils.py` holds shared helpers used by both engine and interface layers.
-- Backtester computes: accuracy, P/L, PF, max drawdown, Sharpe, Sortino, streaks, B&H + B&H DD, yearly breakdown.
+- Backtester computes: accuracy, P/L, PF, max drawdown, Sharpe, Sortino, streaks, B&H + B&H DD, yearly breakdown, and per-run `elapsed_seconds`.
 - Sharpe = (mean daily return / std) × √252. Sortino = same but downside std only.
 - Max drawdown = worst peak-to-trough decline of cumulative equity curve.
 - Yearly performance only shown when data spans 2+ calendar years.
@@ -294,6 +325,7 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - k-NN time-weighting uses exponential decay × distance (not data trimming).
 - Early stopping in LSTM: patience 10/20/50 for quick/standard/cluster.
 - `run_all.py` creates subdirectories: `results/{scope}_{days}d[_fee][_sl][_bh]/`.
+- `--periods` (on `run_all.py` and `backtest.py --compare-periods`) restricts the period set; default is all of `ALL_PERIODS`. Skipping `max` is near-free — Prophet refits per day, and the foundation models truncate to a ~512-bar context, so 2y ≈ 5y ≈ max input.
 
 ## 2026 changes
 
@@ -326,3 +358,17 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 
 - `scripts/news_impact.py` — post-processor for a `run_all.py` result tree. Pairs `+ News` rows with their no-news siblings, emits `_news_vs_no_news_{TICKER}.csv`, `_news_vs_no_news_summary.csv`, `_news_vs_no_news_overall.csv`. Pure-function helpers (`pair_rows`, `summarize_per_ticker_model`, `overall_stats`) are unit-tested in `tests/test_news_impact.py`. The same pairing logic is reimplemented in TypeScript in `web/frontend/src/pages/Analysis.tsx` so the browser doesn't need a round-trip.
 - `scripts/clean_prices.py` — one-off DB cleanup, see *Data sanity guards* above.
+
+### Forecasting models (Prophet, Chronos-2, Kronos)
+
+- `engine/forecast_base.py` — `ForecastModel` adapts a value forecast to the `(direction, confidence)` contract, deriving `prob_up = P(forecast > last_close)` from MC samples → quantiles → point fallback. Exposes `forecast(df) → ForecastResult` so the predicted value is available (wiring it into `DayResult`/CSV is a later step). Sentiment applied post-hoc (weight 0.20), same as the other models. `predict()` never raises.
+- `engine/prophet_model.py` (Meta Prophet — fits per call, CPU, direction from the prediction interval), `engine/chronos_model.py` (Amazon Chronos-2 — 120M zero-shot, loads once, CPU/GPU, direction from quantiles), and `engine/kronos_model.py` (shiyu-coder Kronos — decoder-only OHLCV candlestick foundation model). Prophet + Chronos-2 via the optional `[forecast]` extra; **Kronos is a sibling git clone, not a pip package** — imported by appending `../Kronos` to `sys.path` (override `config.KRONOS_PATH`), installed via the minimal `[kronos]` extra (einops + huggingface_hub; **not** the full `requirements.txt`, whose matplotlib 3.9.3 won't build on Python 3.14). All lazy-imported with `_PROPHET_AVAILABLE` / `_CHRONOS_AVAILABLE` / `_KRONOS_AVAILABLE`, skipped gracefully when absent.
+- Kronos: point-estimate direction by default (`predict()` averages `KRONOS_SAMPLE_COUNT` stochastic paths internally); set `KRONOS_PROB_SAMPLES > 1` for empirical `P(up)` from N independent passes at ~N× cost. Candlestick-native, so it uses full OHLCV, not just close.
+- Wired into **backtests only** via `config.FORECAST_MODELS` → `run_single_backtest()`. `main.py` report + web GUI not yet. TiRex parked (not on PyPI, macOS-experimental, non-standard NX-AI license).
+- `print_summary_table` groups results by model family and ranks by return within group; `print_next_day_forecast` guards against models with zero valid days.
+
+### Per-model timing & period selection
+
+- `BacktestResult.elapsed_seconds` — `Backtester.run()` times each walk-forward run. `backtest.py --timing` prints a slowest-first per-model breakdown (`print_timing_table` in `backtest_helpers`) after the summary; `run_all.py` prints a time-by-model-family rollup (time / share / wins) at the end of a batch. Use these to drop a model that costs a lot and rarely wins.
+- `--periods 1y 2y 5y` — on `run_all.py` (batch) and `backtest.py --compare-periods` (matrix), restricts the period set; default is all of `ALL_PERIODS`. Note `backtest.py` also keeps the singular `--period` for single-period mode. See *Architecture notes* for why skipping `max` is near-free.
+- Empirical finding (100-day FinBERT stocks batch): direction accuracy ≈ coin flip (~0.49), only ~19% of combos beat their own buy & hold, headline returns are largely selection bias + bull market. Chronos-2 was the most useful of the new models; Prophet and Kronos the slowest and weakest on average. Treat results as research, not signal. (Details in `docs/forecasting.md`.)

@@ -3,7 +3,10 @@
 [![Tests](https://github.com/Loghic/MarketPulse_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/loghi-gh/mp_ai/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/Loghic/MarketPulse_AI/graph/badge.svg)](https://codecov.io/gh/loghi-gh/mp_ai)
 
-Stock prediction engine combining k-NN, Linear Regression, and LSTM neural networks with VADER sentiment analysis. Built as a modular system with a clean separation between data layer, model engine, and interface — ready to plug into a web or desktop UI.
+Stock prediction engine combining k-NN, Linear Regression, LSTM neural networks,
+and time-series forecasting models (Prophet, Chronos-2, Kronos) with VADER/FinBERT
+sentiment analysis. Built as a modular system with a clean separation between
+data layer, model engine, and interface — ready to plug into a web or desktop UI.
 
 > **Disclaimer:** This is an educational/research project. Predictions are not financial advice.
 
@@ -23,6 +26,14 @@ uv run python main.py
 For LSTM model support (optional):
 ```bash
 uv pip install torch
+```
+
+For forecasting models:
+```bash
+uv pip install -e '.[forecast]'      # Prophet + Chronos-2
+# Kronos (optional, OHLCV candlestick model — cloned, not pip-installed):
+git clone https://github.com/shiyu-coder/Kronos.git ../Kronos
+uv pip install -e '.[kronos]'
 ```
 
 ## Supported tickers
@@ -50,7 +61,13 @@ uv run python main.py --tickers AAPL NVDA BTC-USD
 
 **LSTM** — recurrent neural network for sequential patterns. Requires pre-training via `train.py`. Three presets: `quick` (~1-5 min), `standard` (~5-15 min), `cluster` (hours on GPU). Early stopping prevents overfitting.
 
-**Sentiment** — all models predict from price first, then VADER sentiment shifts the probability post-hoc.
+**Prophet** (forecasting) — Meta's additive trend/seasonality model. Fits per call (no pre-training, CPU-only). Direction derived from the forecast interval.
+
+**Chronos-2** (forecasting) — Amazon's 120M-parameter zero-shot foundation model. No training; weights download on first use (~478 MB), then reused for every ticker. Direction derived from forecast quantiles.
+
+**Kronos** (forecasting) — shiyu-coder's decoder-only foundation model for OHLCV candlesticks (MIT). Cloned as a sibling repo, not pip-installed; uses full open/high/low/close. Direction from sampled forecast paths. *Forecasting models are available in backtests and via the API; TiRex is parked. See [docs/forecasting.md](docs/forecasting.md).*
+
+**Sentiment** — all models predict from price first, then VADER/FinBERT sentiment shifts the probability post-hoc.
 
 ## LSTM Training
 
@@ -172,7 +189,16 @@ uv run python backtest.py --full --period 1y --buy-hold --stop-loss 2
 
 # Cross-period comparison + export
 uv run python backtest.py --compare-periods --output results.csv --buy-hold
+
+# Restrict periods / model families + per-model timing breakdown
+uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y --models knn linreg lstm chronos --timing
 ```
+
+### Choosing models, periods, and timing
+
+- `--models F [...]` — run only these families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos` (default: all). Same flag on `run_all.py`. Handy for dropping the slow forecasting models.
+- `--periods P [...]` — restrict the period set in `--compare-periods` (and on `run_all.py`); skip the slow `max` window.
+- `--timing` — print a slowest-first per-model compute-time table after the summary. `run_all.py` prints a time-by-model-family rollup automatically.
 
 ### Stop-loss
 
@@ -197,6 +223,9 @@ Runs `--compare-periods` for each ticker, saves organized results:
 uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold
 uv run python run_all.py --crypto --days 50 --fees 0.15 --stop-loss 3
 uv run python run_all.py --all --days 20
+
+# Skip slow 'max', drop the heavy forecasting models, see a time-by-family rollup
+uv run python run_all.py --stocks --days 100 --periods 1y 2y 5y --models knn linreg lstm chronos
 ```
 
 Output is organized into subdirectories:
@@ -278,8 +307,12 @@ marketpulse-ai/
 │   ├── knn_model.py         # k-NN (naive + enhanced)
 │   ├── lin_reg_model.py     # LinReg (naive + enhanced)
 │   ├── ai_model.py          # LSTM (train, save/load, predict, early stopping)
-│   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks)
-│   ├── backtest_helpers.py  # Shared helpers (display, export, benchmarks, model variants)
+│   ├── forecast_base.py     # Shared base for forecasting models (ForecastResult + ForecastModel)
+│   ├── prophet_model.py     # Prophet (fits per call, CPU)
+│   ├── chronos_model.py     # Chronos-2 (zero-shot foundation model, loads once)
+│   ├── kronos_model.py      # Kronos (OHLCV candlestick foundation model, sibling clone)
+│   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks, elapsed_seconds)
+│   ├── backtest_helpers.py  # Shared helpers (display, export, benchmarks, model variants, timing)
 │   ├── utils.py             # Common helpers shared across layers
 │   ├── data_downloader.py   # Yahoo Finance data
 │   ├── db_manager.py        # SQLite storage
@@ -291,9 +324,11 @@ marketpulse-ai/
 │
 └── docs/                    # In-depth documentation
     ├── README.md            # Index
+    ├── run.md               # The runbook (install, every CLI flag, workflows, troubleshooting)
     ├── knn.md, linear-regression.md, lstm.md
     ├── features.md, sentiment.md
-    ├── backtesting.md       # Methodology, fees, stop-loss, B&H, streaks
+    ├── forecasting.md       # Prophet, Chronos-2, Kronos + the ForecastModel interface
+    ├── backtesting.md       # Methodology, fees, stop-loss, B&H, streaks, timing
     └── api.md               # Architecture, DB schema, model contract
 ```
 
@@ -375,6 +410,26 @@ Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 - **Mypy**: add `if X is None` guards before using Optional values. Strict modules (`engine/backtester.py`, `engine/utils.py`) require full type annotations on all functions.
 - **Tests**: add tests in `tests/` for new features. Run `uv run python -m pytest` before pushing.
 
+## Ideas & research backlog
+
+Captured for later — not yet implemented.
+
+### More asset classes
+- Add BNB (crypto), gold, S&P 500, Nasdaq, EUR/USD — broadens beyond stocks/crypto into commodities, indices, and FX. Each needs its own yfinance symbol: `BNB-USD`, gold `GC=F` (futures) or `GLD` (ETF), S&P 500 `^GSPC` or `SPY`, Nasdaq `^IXIC`/`^NDX` or `QQQ`, EUR/USD `EURUSD=X`. Note: `SPY`/`QQQ` already serve as benchmarks, so adding the indices as tradeable tickers overlaps the benchmark set — pick index vs ETF deliberately.
+
+### Richer signals (features.py / ALL_FEATURES)
+- **Volatility momentum** — momentum measured on volatility / vol-adjusted momentum.
+- **Cross-asset features** — feed correlated assets in as inputs (e.g. gold↔USD, BTC↔BNB, index↔constituent), not just the ticker's own history.
+
+### Reddit sentiment (new provider behind `get_provider()`)
+- Add Reddit alongside yahoo/gdelt, scored with the existing VADER/FinBERT pipeline.
+- **Pushshift caveat:** the open Pushshift API is gone — Reddit restricted it to approved moderators (moderation use only) in 2023–24. For live posts use the official Reddit API via PRAW (free app key); for historical backfill use Arctic Shift (the Pushshift successor — monthly Reddit dumps via Academic Torrents).
+
+### Specific-price (regression) prediction + intraday
+- Predict an actual price level, not just UP/DOWN. The forecasting models already compute a point value (`ForecastResult.point`) that we currently collapse to a direction — surface it and score with regression metrics (MAE / RMSE / MAPE) instead of accuracy.
+- Explore minute / intraday bars. **Caveat:** yfinance only serves ~7 days of 1-minute data (~60 days for coarser intraday intervals), so minute-level backtests have a short lookback — a dedicated intraday data source is needed for real history.
+- Investigate whether news improves specific-price prediction. News can stay **daily** even when prices are intraday — daily sentiment as a slow-moving feature is fine; the granularity mismatch is acceptable.
+
 ## Roadmap
 
 - [x] k-NN model — naive + enhanced (+ time-weighted variants)
@@ -406,12 +461,17 @@ Pre-commit hooks catch most issues automatically. For what they can't auto-fix:
 - [x] **Web GUI: Training (LSTM model inventory with timestamps + active-preset marker, one-click training)**
 - [x] **Web GUI: Analysis (results-dir browser, news-vs-no-news leaderboards, cross-run comparison)**
 - [x] Web GUI: Settings (persistent JSON, k-NN k, fees, SL, LSTM preference, developer section)
+- [x] **Time-series forecasting models — Prophet, Chronos-2, Kronos, wired into backtests**
+- [x] **Per-model timing (`--timing`, time-by-family rollup) + configurable `--periods` + `--models` family filter**
+- [ ] DRY model-family names: `run_all.py:_family()` and `backtest_helpers._model_family()` still hardcode the family prefixes (incl. the legacy "Chronos" alias, "TiRex", "Other"). Fold them onto `config.MODEL_FAMILY_LABELS` — the single source the `--models` filter already uses.
+- [ ] TiRex forecasting model (parked — macOS-experimental, non-standard license)
+- [ ] Forecasting models in `main.py` report + web GUI Predict/Backtest tabs
 - [ ] Authentication (API key for public deploy)
 - [ ] Multi-asset portfolio backtests (current is single-ticker × period)
 
 ## Tech Stack
 
-**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · transformers + PyTorch (FinBERT + LSTM, optional `ai` extra) · NumPy · tqdm · SQLite
+**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · transformers + PyTorch (FinBERT + LSTM, optional `ai` extra) · NumPy · tqdm · SQLite · Prophet · Chronos-2 (chronos-forecasting) · Kronos (sibling clone)
 
 **News sources:** Yahoo Finance · GDELT 2.0 Doc API (free, no key, multi-year history)
 
