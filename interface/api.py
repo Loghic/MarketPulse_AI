@@ -29,6 +29,17 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+from config import CHRONOS_CONTEXT, CHRONOS_MODEL_ID, FORECAST_DEVICE  # add to existing import
+
+try:
+    from engine.prophet_model import _PROPHET_AVAILABLE
+except ImportError:
+    _PROPHET_AVAILABLE = False
+try:
+    from engine.chronos_model import _CHRONOS_AVAILABLE
+except ImportError:
+    _CHRONOS_AVAILABLE = False
+
 log = get_logger(__name__)
 
 
@@ -77,6 +88,16 @@ class StockAppAPI:
         )
         self._lstm_cache: dict = {}
         self.lstm_available = TORCH_AVAILABLE
+        self.prophet_available = _PROPHET_AVAILABLE
+        self.chronos_available = _CHRONOS_AVAILABLE
+
+        try:
+            from engine.kronos_model import _KRONOS_AVAILABLE
+        except ImportError:
+            _KRONOS_AVAILABLE = False
+
+        self.kronos_available = _KRONOS_AVAILABLE
+        self._forecast_cache: dict = {}
 
         models = "k-NN + k-NN Enh. + LinReg + LinReg Enh."
         if self.lstm_available:
@@ -88,6 +109,39 @@ class StockAppAPI:
         features_enhanced = self.knn_enhanced.features
         self.knn = KNNModel(k=k, features=features_naive)
         self.knn_enhanced = KNNModel(k=k, features=features_enhanced)
+
+    def forecast_available(self, model_type: str) -> bool:
+        return {
+            "prophet": self.prophet_available,
+            "chronos": self.chronos_available,
+            "kronos": self.kronos_available,
+        }.get(model_type, False)
+
+    def _load_forecast_model(self, model_type: str):
+        """Load + cache a forecasting model once (they're ticker-agnostic)."""
+        from engine.forecast_base import ForecastModel
+
+        if model_type in self._forecast_cache:
+            return self._forecast_cache[model_type]
+        model: ForecastModel
+        if model_type == "prophet":
+            from engine.prophet_model import ProphetModel
+
+            model = ProphetModel()
+        elif model_type == "chronos":
+            from engine.chronos_model import Chronos2Model
+
+            model = Chronos2Model(
+                model_id=CHRONOS_MODEL_ID, device=FORECAST_DEVICE, context_length=CHRONOS_CONTEXT
+            )
+        elif model_type == "kronos":
+            from engine.kronos_model import KronosModel
+
+            model = KronosModel()
+        else:
+            return None
+        self._forecast_cache[model_type] = model
+        return model
 
     def _load_lstm(self, ticker: str, period: str):
         if not self.lstm_available:
@@ -217,6 +271,14 @@ class StockAppAPI:
                     f"Train: uv run python train.py --ticker {ticker} --period {period}"
                 )
             return model
+
+        if model_type in ("prophet", "chronos", "kronos"):
+            if not self.forecast_available(model_type):
+                raise RuntimeError(
+                    f"{model_type} not installed. Install: uv pip install -e '.[forecast]'"
+                )
+            return self._load_forecast_model(model_type)
+
         model = models.get(model_type)
         if model is None:
             available = list(models.keys())

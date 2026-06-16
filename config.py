@@ -120,3 +120,46 @@ DEFAULT_NEWS_LOOKBACK_DAYS = 7
 #   3.0 → a 3-day-old headline carries half the weight of a 0-day-old one
 # Larger values mean a slower decay (older news still matters).
 DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0
+
+# ------------------------------------------------------------------
+# Forecasting models (Prophet, Chronos-2, …)
+# ------------------------------------------------------------------
+# (model_type, display label). backtest_helpers iterates this and silently
+# skips any whose library isn't installed. Add TiRex here later.
+
+# Kronos (financial K-line foundation model). NOT a pip package — clone it as a
+# sibling of this repo (see docs/forecasting.md). Override location via KRONOS_PATH.
+KRONOS_PATH = None  # None -> ../Kronos (sibling of repo root)
+KRONOS_MODEL_ID = "NeoQuasar/Kronos-small"  # small=24.7M/ctx512; base=102M; mini=4.1M/ctx2048
+KRONOS_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"  # use Kronos-Tokenizer-2k for mini
+KRONOS_MAX_CONTEXT = 512  # 512 for small/base, 2048 for mini
+KRONOS_SAMPLE_COUNT = 5  # internal averaging per predict() call
+KRONOS_PROB_SAMPLES = 1  # >1 = empirical P(up) from N stochastic passes (slower)
+KRONOS_T = 1.0  # sampling temperature
+KRONOS_TOP_P = 0.9  # nucleus sampling
+
+FORECAST_MODELS = [
+    ("prophet", "Prophet"),
+    ("chronos", "Chronos-2"),
+    ("kronos", "Kronos"),
+]
+
+FORECAST_DEVICE: str | None = None  # None = auto (cuda if available else cpu)
+CHRONOS_MODEL_ID = "amazon/chronos-2"
+CHRONOS_CONTEXT = 512  # most-recent closes used as context
+
+# ------------------------------------------------------------------
+# Model families (for the --models filter on backtest.py / run_all.py)
+# ------------------------------------------------------------------
+# Single source of truth: CLI key -> display-name prefix used in result rows.
+# MODEL_FAMILIES is the list of valid --models choices; backtest_helpers derives
+# the reverse (label -> key) map from this, so the names live in one place.
+MODEL_FAMILY_LABELS: dict[str, str] = {
+    "knn": "k-NN",
+    "linreg": "LinReg",
+    "lstm": "LSTM",
+    "prophet": "Prophet",
+    "chronos": "Chronos-2",
+    "kronos": "Kronos",
+}
+MODEL_FAMILIES = list(MODEL_FAMILY_LABELS)  # --models choices: ["knn", "linreg", ...]
