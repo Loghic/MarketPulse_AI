@@ -211,6 +211,12 @@ DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)
 # 2.0 = close if price drops 2% from entry (long) or rises 2% (short).
 DEFAULT_STOP_LOSS_PCT = 0.0  # disabled by default
 
+# Stop-loss sweep — the default set of levels the backtest --sl-sweep flag
+# iterates over (each model runs once per level; 0 = the no-SL baseline).
+# Wide/off is usually best for daily holds (a 10%+ intraday trigger is rare
+# for large-caps); most informative on volatile names.
+SL_SWEEP = [0.0, 5.0, 10.0, 15.0]
+
 # Confidence gating. Days whose model confidence is below this
 # threshold are sat out (flat): 0 P&L, no fee, and excluded from the traded-day
 # accuracy. 0.0 = disabled (trade every day). The sweep below is what the

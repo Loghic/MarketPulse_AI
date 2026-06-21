@@ -13,17 +13,20 @@ Usage:
 
 import argparse
 
-from cli_helpers import add_scope_args, resolve_scope
+from cli_helpers import (
+    add_common_run_args,
+    add_model_filter_args,
+    add_scope_args,
+    add_strategy_args,
+    resolve_scope,
+    resolve_sl_levels,
+)
 from config import (
     ALL_PERIODS,
     ALL_TICKERS,
     CRYPTO_BENCHMARKS,
     DEFAULT_BACKTEST_DAYS,
-    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_PERIOD,
-    DEFAULT_STOP_LOSS_PCT,
-    DEFAULT_TRADING_FEE_PCT,
-    MODEL_FAMILIES,
     STOCK_BENCHMARKS,
 )
 from engine.backtest_helpers import (
@@ -72,6 +75,9 @@ def run_backtest(
     min_confidence: float = 0.0,
     confidence_sweep: bool = False,
     significance: bool = False,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
+    sl_levels=None,
 ):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
@@ -80,6 +86,8 @@ def run_backtest(
         fee_pct=fee_pct,
         stop_loss_pct=stop_loss_pct,
         min_confidence=min_confidence,
+        turnover_fees=turnover_fees,
+        hold_days=hold_days,
     )
     all_export_rows = []
 
@@ -134,6 +142,7 @@ def run_backtest(
             full,
             models=models,
             include_baselines=include_baselines,
+            sl_levels=sl_levels,
         )
         if not results:
             continue
@@ -200,6 +209,9 @@ def run_compare_periods(
     models=None,
     include_baselines: bool = True,
     min_confidence: float = 0.0,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
+    sl_levels=None,
 ):
     """Run backtest across all periods, find optimal model+period."""
     periods = periods or list(ALL_PERIODS)
@@ -209,6 +221,8 @@ def run_compare_periods(
         fee_pct=fee_pct,
         stop_loss_pct=stop_loss_pct,
         min_confidence=min_confidence,
+        turnover_fees=turnover_fees,
+        hold_days=hold_days,
     )
     all_export_rows = []
 
@@ -245,6 +259,7 @@ def run_compare_periods(
                 full=False,
                 models=models,
                 include_baselines=include_baselines,
+                sl_levels=sl_levels,
             )
             if results:
                 period_results[period] = results
@@ -488,7 +503,11 @@ def main():
     # in main(): replace the scope block (keep --days and everything after)
     parser = argparse.ArgumentParser(description="MarketPulse AI – Backtest")
     add_scope_args(parser)
-    parser.add_argument("--days", type=int, default=DEFAULT_BACKTEST_DAYS)
+    add_common_run_args(parser, days_default=DEFAULT_BACKTEST_DAYS)
+    add_model_filter_args(parser)
+    add_strategy_args(parser)
+
+    # backtest.py-only flags
     parser.add_argument("--period", default=DEFAULT_PERIOD, choices=ALL_PERIODS)
     parser.add_argument("--full", action="store_true", help="Detailed output")
     parser.add_argument(
@@ -499,55 +518,7 @@ def main():
     parser.add_argument(
         "--compare-periods", action="store_true", help="Run all periods, show comparison matrix"
     )
-    parser.add_argument(
-        "--periods",
-        nargs="+",
-        choices=ALL_PERIODS,
-        default=list(ALL_PERIODS),
-        help="Subset of periods for --compare-periods (default: all). e.g. --periods 1y 2y",
-    )
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        choices=MODEL_FAMILIES,
-        default=None,
-        help="Only run these model families (default: all). e.g. --models knn lstm chronos",
-    )
-    parser.add_argument(
-        "--no-baselines",
-        action="store_true",
-        help=(
-            "Skip the naive baselines (AlwaysLong, PreviousDay, 5/20-Day "
-            "Momentum, Random). Default: baselines included."
-        ),
-    )
     parser.add_argument("--output", type=str, default=None, help="Export to CSV or JSON")
-    parser.add_argument(
-        "--fees",
-        type=float,
-        default=DEFAULT_TRADING_FEE_PCT,
-        help=f"Trading fee %% per side (default: {DEFAULT_TRADING_FEE_PCT})",
-    )
-    parser.add_argument(
-        "--stop-loss",
-        type=float,
-        default=DEFAULT_STOP_LOSS_PCT,
-        help="Stop-loss %% (0=disabled). Exit if position drops by this %%",
-    )
-    parser.add_argument(
-        "--buy-hold", action="store_true", help="Compare with buy-and-hold benchmark"
-    )
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
-        metavar="THETA",
-        help=(
-            "Confidence gate: sit out days whose model confidence "
-            "is below THETA (0..1). Sat-out days are flat (0 P&L, no fee) and "
-            "excluded from accuracy. 0 = trade every day (default)."
-        ),
-    )
     parser.add_argument(
         "--confidence-sweep",
         action="store_true",
@@ -566,14 +537,14 @@ def main():
             "Benjamini-Hochberg FDR across the models shown."
         ),
     )
-    parser.add_argument(
-        "--no-refresh",
-        action="store_true",
-        help="Skip data download, use only cached data from DB (offline mode)",
-    )
     args = parser.parse_args()
 
     tickers = resolve_scope(args, default=ALL_TICKERS[:3])
+
+    # --stop-loss / --sl-sweep → (sl_levels, legacy_sl). A single --stop-loss
+    # value keeps the legacy single-run path (run_single_backtest pairs the
+    # no-SL baseline with the SL run); see cli_helpers.resolve_sl_levels.
+    sl_levels, legacy_sl = resolve_sl_levels(args)
 
     if args.compare_periods:
         run_compare_periods(
@@ -581,7 +552,7 @@ def main():
             args.days,
             args.output,
             args.fees,
-            args.stop_loss,
+            legacy_sl,
             args.buy_hold,
             args.no_refresh,
             args.timing,
@@ -589,6 +560,9 @@ def main():
             models=args.models,
             include_baselines=not args.no_baselines,
             min_confidence=args.min_confidence,
+            turnover_fees=args.turnover_fees,
+            hold_days=args.hold_days,
+            sl_levels=sl_levels,
         )
     else:
         run_backtest(
@@ -598,7 +572,7 @@ def main():
             args.period,
             args.output,
             args.fees,
-            args.stop_loss,
+            legacy_sl,
             args.buy_hold,
             args.no_refresh,
             args.timing,
@@ -607,6 +581,9 @@ def main():
             min_confidence=args.min_confidence,
             confidence_sweep=args.confidence_sweep,
             significance=args.significance,
+            turnover_fees=args.turnover_fees,
+            hold_days=args.hold_days,
+            sl_levels=sl_levels,
         )
 
 

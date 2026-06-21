@@ -57,6 +57,14 @@ class DayResult:
     # 0.0 for price-only variants (no news). For "+ News" variants this is
     # the time-decay-weighted score from news strictly older than ``date``.
     sentiment_score: float = 0.0
+    # Turnover / hold-days bookkeeping.
+    # ``position`` is the direction actually held on this day (drives P&L).
+    # It differs from ``predicted`` when ``hold_days > 1`` forces a position
+    # to persist through days the model would have flipped.
+    # ``position_changed`` is True on days the position was opened or flipped
+    # (the days that incur a turnover fee under ``turnover_fees``).
+    position: str = ""
+    position_changed: bool = True
 
 
 @dataclass
@@ -94,6 +102,17 @@ class BacktestResult:
     min_confidence: float = 0.0
     sat_out_count: int = 0
     coverage: float = 1.0
+    # Turnover / fee realism.
+    # ``turnover_fees`` (bool): if True, the round-trip fee is charged only on
+    # days the position changes (open / flip); same-direction days are free.
+    # ``hold_days``: minimum holding period — once entered, a position is held
+    # this many days before the signal is re-read.
+    # ``turnover_count``: number of position changes (fee-incurring days).
+    # ``fees_paid``: total fee drag actually applied across the run.
+    turnover_fees: bool = False
+    hold_days: int = 1
+    turnover_count: int = 0
+    fees_paid: float = 0.0
     # Profit metrics (net of fees)
     total_return: float = 0.0
     profit_factor: float = 0.0
@@ -136,6 +155,13 @@ class BacktestResult:
             if self.min_confidence > 0
             else ""
         )
+        turn_str = (
+            f"  Turnover: {self.turnover_count}/{self.test_days} "
+            f"(fees {self.fees_paid:+.4%}"
+            f"{f', hold={self.hold_days}d' if self.hold_days > 1 else ''})"
+            if (self.turnover_fees or self.hold_days > 1)
+            else ""
+        )
         lines = [
             f"  Model: {self.model_name}",
             f"  Accuracy: {self.correct}/{self.test_days} ({self.accuracy:.1%}){gate_str}",
@@ -144,7 +170,7 @@ class BacktestResult:
             f"Sharpe: {self.sharpe_ratio:.2f}  |  Sortino: {self.sortino_ratio:.2f}",
             f"  B&H: {self.buy_hold_return:+.4%}  |  "
             f"Streaks: W{self.longest_win_streak}/L{self.longest_loss_streak}"
-            f"{sl_str}",
+            f"{sl_str}{turn_str}",
             "",
         ]
         for d in self.days:
@@ -166,12 +192,21 @@ class Backtester:
         fee_pct: float = DEFAULT_TRADING_FEE_PCT,
         stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+        turnover_fees: bool = False,
+        hold_days: int = 1,
     ):
         self.n_days = n_days
         self.fee_pct = fee_pct
         self.stop_loss_pct = stop_loss_pct
         # Days with confidence below this are sat out (flat). 0 = trade every day.
         self.min_confidence = min_confidence
+        # Turnover / fee realism (Strategy experiments 2.1).
+        # turnover_fees: charge the round-trip fee only when the position
+        #   changes (open / flip), not on every same-direction day.
+        # hold_days: hold an opened position this many days before re-reading
+        #   the signal (>=1; 1 = re-evaluate every day, current behaviour).
+        self.turnover_fees = turnover_fees
+        self.hold_days = max(1, int(hold_days))
 
     # ------------------------------------------------------------------
     # Trade P/L
@@ -449,6 +484,13 @@ class Backtester:
         has_ohlc = "high" in df.columns and "low" in df.columns
         day_results = []
 
+        # Turnover / hold-days state, carried across the walk-forward loop.
+        # ``held_position`` is the direction currently held ("UP"/"DOWN") or
+        # None when flat. ``hold_remaining`` counts down the forced-hold days
+        # after a position is (re)opened.
+        held_position: str | None = None
+        hold_remaining = 0
+
         for i in range(self.n_days, 0, -1):
             train_df = df.iloc[:-i].copy()
             eval_idx = len(df) - i
@@ -506,31 +548,66 @@ class Backtester:
             if predicted not in ("UP", "DOWN"):
                 continue
 
+            # --- Confidence gate: below θ we hold no position (flat). ---
+            traded = confidence >= self.min_confidence
+
+            # --- Resolve the position actually held today. ---
+            # ``predicted`` is always the model's call (drives ``correct`` and
+            # the calibration metrics). ``position`` is what we actually hold,
+            # which can differ when hold_days > 1 forces a position to persist.
+            if not traded:
+                # Sat out: flat. A held position is closed (a change), then we
+                # carry no position into the next day.
+                position = ""
+                position_changed = held_position is not None
+                held_position = None
+                hold_remaining = 0
+            elif hold_remaining > 0 and held_position is not None:
+                # Inside a forced hold window: keep the existing position,
+                # ignore today's signal. Not a position change.
+                position = held_position
+                position_changed = False
+                hold_remaining -= 1
+            else:
+                # Free to (re)read the signal.
+                position = predicted
+                position_changed = position != held_position
+                held_position = position
+                # Opening / flipping starts a new hold window.
+                hold_remaining = self.hold_days - 1
+
             stopped_out = False
             exit_price = close_actual
 
-            if self.stop_loss_pct > 0 and has_ohlc:
+            if traded and self.stop_loss_pct > 0 and has_ohlc:
                 day_high = float(df["high"].iloc[eval_idx])
                 day_low = float(df["low"].iloc[eval_idx])
-                sl_exit = self._check_stop_loss(predicted, entry_price, day_high, day_low)
+                sl_exit = self._check_stop_loss(position, entry_price, day_high, day_low)
                 if sl_exit is not None:
                     exit_price = sl_exit
                     stopped_out = True
+                    # A stop-out flattens the position; the next traded day
+                    # re-opens (and pays a turnover fee).
+                    held_position = None
+                    hold_remaining = 0
 
-            raw_pnl = self._compute_trade_pnl(predicted, entry_price, exit_price)
-            net_pnl = self._apply_fees(raw_pnl, self.fee_pct)
-
-            # Confidence gate: a day below the threshold is sat
-            # out. We still record it (its confidence feeds calibration) but
-            # zero its P&L and fee, mark it not-traded, and unset stop-loss
-            # (no position = nothing to stop). The aggregate metrics below
-            # only consider traded days.
-            traded = confidence >= self.min_confidence
-            if not traded:
+            if traded:
+                raw_pnl = self._compute_trade_pnl(position, entry_price, exit_price)
+                # Fee model: by default every traded day is a full round-trip.
+                # With turnover_fees, the round-trip fee is charged only on days
+                # the position changes (open / flip); same-direction hold days
+                # are free — the realistic "trade only on signal changes" cost.
+                charge_fee = (not self.turnover_fees) or position_changed
+                net_pnl = self._apply_fees(raw_pnl, self.fee_pct) if charge_fee else raw_pnl
+            else:
+                # Flat day: no P&L, no fee. exit==close, no stop. We don't
+                # count flattening as a turnover event (turnover_count tracks
+                # positions opened, which is what incurs the entry fee).
                 raw_pnl = 0.0
                 net_pnl = 0.0
                 exit_price = close_actual
                 stopped_out = False
+                position_changed = False
 
             day_results.append(
                 DayResult(
@@ -547,6 +624,8 @@ class Backtester:
                     stopped_out=stopped_out,
                     sentiment_score=float(sentiment_today),
                     traded=traded,
+                    position=position,
+                    position_changed=position_changed,
                 )
             )
 
@@ -579,6 +658,12 @@ class Backtester:
         # Yearly breakdown (traded days only)
         yearly = self._compute_yearly_performance(traded_days)
 
+        # Turnover / fee realism: count position changes and the fee actually
+        # paid (raw − net per traded day; this is 2·fee on charged days, 0 on
+        # fee-free same-direction holds under turnover_fees).
+        turnover_count = sum(1 for d in traded_days if d.position_changed)
+        fees_paid = round(sum(d.trade_pnl - d.trade_pnl_net for d in traded_days), 8)
+
         elapsed = time.perf_counter() - _t0
         return BacktestResult(
             model_name=model_name,
@@ -591,6 +676,10 @@ class Backtester:
             min_confidence=self.min_confidence,
             sat_out_count=sat_out,
             coverage=round(total / total_seen, 6) if total_seen else 1.0,
+            turnover_fees=self.turnover_fees,
+            hold_days=self.hold_days,
+            turnover_count=turnover_count,
+            fees_paid=fees_paid,
             elapsed_seconds=round(elapsed, 4),
             buy_hold_return=buy_hold,
             buy_hold_max_drawdown=buy_hold_dd,

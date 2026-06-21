@@ -167,13 +167,17 @@ uv run python scripts/oos_harness.py \
     --periods 1y 2y 5y max
 ```
 
-The harness shares all of `backtest.py`'s news/sentiment flags
-(`--sentiment-method`, `--news-source`, `--news-history-days`,
-`--news-lookback-days`, `--news-half-life-days`, `--force-news`) plus
-the same scope / period / model selectors documented in the [README
-common flags table](README.md#common-flags-across-scripts). It needs
-at least `2 × --days + 20` rows of price history per ticker; shorter
-tickers are skipped with a log line.
+The harness shares the common per-day sentiment flags
+(`--sentiment-method`, `--news-lookback-days`, `--news-half-life-days`)
+and the same scope / period / model / strategy selectors as the other
+CLIs — all defined once in `cli_helpers.py` (see the [README common
+flags table](README.md#common-flags-across-scripts)). Scope now
+includes the full combinable set (`--stocks` / `--crypto` /
+`--commodities` / `--indices` / `--fx` / `--all` / `--tickers`), not
+just stocks/crypto. It needs at least `2 × --days + 20` rows of price
+history per ticker; shorter tickers are skipped with a log line. (The
+stop-loss is single-valued here — the harness deliberately does not
+sweep SL, which would re-inflate selection.)
 
 ### Confidence gating, out-of-sample (`--min-confidence`)
 

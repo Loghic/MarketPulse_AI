@@ -258,3 +258,206 @@ class TestProfitMetrics:
         pnls = [d.trade_pnl_net for d in result.days]
         assert abs(result.best_day - max(pnls)) < 1e-8
         assert abs(result.worst_day - min(pnls)) < 1e-8
+
+
+# ----------------------------------------------------------------------
+# Turnover fees + hold-days (strategy experiments 2.1)
+# ----------------------------------------------------------------------
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+
+def _ramp_df(n: int = 60, seed: int = 3) -> pd.DataFrame:
+    """Deterministic OHLCV with mild noise for self-contained engine tests."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d")
+    closes = 100 + np.cumsum(rng.normal(0.05, 1.0, n))
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "open": closes,
+            "high": closes * 1.01,
+            "low": closes * 0.99,
+            "close": closes,
+            "volume": np.full(n, 1_000_000.0),
+        }
+    )
+
+
+class _AlwaysUp:
+    """Predicts UP every day at fixed confidence — position never changes."""
+
+    def predict(self, df, use_time_weights=False, sentiment_score=0.0):
+        return "UP", 0.8
+
+
+class _Alternating:
+    """Flips UP/DOWN by window length — position changes every day."""
+
+    def predict(self, df, use_time_weights=False, sentiment_score=0.0):
+        return ("UP" if len(df) % 2 == 0 else "DOWN"), 0.8
+
+
+class TestTurnoverFees:
+    def test_charge_every_day_is_default(self):
+        df = _ramp_df()
+        r = Backtester(n_days=20, fee_pct=0.05).run(_AlwaysUp(), "AU", df, ticker="X")
+        # Default: a full round-trip fee on every traded day.
+        assert r.fees_paid == pytest.approx(20 * 2 * 0.05 / 100, abs=1e-9)
+        # AlwaysUp opens once and holds → a single position change.
+        assert r.turnover_count == 1
+
+    def test_turnover_fees_charge_only_on_change(self):
+        df = _ramp_df()
+        base = Backtester(n_days=20, fee_pct=0.05).run(_AlwaysUp(), "AU", df, ticker="X")
+        turn = Backtester(n_days=20, fee_pct=0.05, turnover_fees=True).run(
+            _AlwaysUp(), "AU", df, ticker="X"
+        )
+        # AlwaysUp: one open → one round-trip fee total under turnover_fees.
+        assert turn.fees_paid == pytest.approx(1 * 2 * 0.05 / 100, abs=1e-9)
+        # Fewer fees ⇒ higher net return; raw P&L (pre-fee) identical.
+        assert turn.total_return > base.total_return
+        assert sum(d.trade_pnl for d in turn.days) == pytest.approx(
+            sum(d.trade_pnl for d in base.days), abs=1e-9
+        )
+
+    def test_daily_flip_pays_same_as_charge_every_day(self):
+        df = _ramp_df()
+        base = Backtester(n_days=20, fee_pct=0.05).run(_Alternating(), "ALT", df, ticker="X")
+        turn = Backtester(n_days=20, fee_pct=0.05, turnover_fees=True).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        # A position that flips every day changes every day → identical fees.
+        assert turn.fees_paid == pytest.approx(base.fees_paid, abs=1e-9)
+        assert turn.turnover_count == turn.test_days
+
+
+class TestHoldDays:
+    def test_hold_days_reduces_turnover(self):
+        df = _ramp_df()
+        hold5 = Backtester(n_days=20, fee_pct=0.05, turnover_fees=True, hold_days=5).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        # Over 20 days with a 5-day hold, at most ~4 position opens.
+        assert hold5.turnover_count <= 5
+        assert hold5.hold_days == 5
+
+    def test_position_held_through_signal_flips(self):
+        df = _ramp_df()
+        r = Backtester(n_days=12, fee_pct=0.0, hold_days=4).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        # The held position should persist across consecutive days within a
+        # hold window even though _Alternating flips its prediction daily.
+        positions = [d.position for d in r.days]
+        # At least one run of >=2 identical consecutive positions exists.
+        run_len = 1
+        max_run = 1
+        for a, b in zip(positions, positions[1:], strict=False):
+            run_len = run_len + 1 if a == b else 1
+            max_run = max(max_run, run_len)
+        assert max_run >= 2
+
+    def test_accuracy_tracks_predictions_not_position(self):
+        df = _ramp_df()
+        # Accuracy must reflect the model's predictions (skill), independent of
+        # how long positions are held.
+        daily = Backtester(n_days=20, fee_pct=0.0).run(_Alternating(), "ALT", df, ticker="X")
+        held = Backtester(n_days=20, fee_pct=0.0, hold_days=5).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        assert daily.accuracy == held.accuracy
+
+
+class TestTurnoverDefaultsUnchanged:
+    def test_default_matches_legacy_behaviour(self):
+        df = _ramp_df()
+        r = Backtester(n_days=15, fee_pct=0.05).run(_AlwaysUp(), "AU", df, ticker="X")
+        # With defaults (no turnover_fees, hold_days=1) every traded day is a
+        # full round-trip, exactly as before this feature.
+        assert not r.turnover_fees
+        assert r.hold_days == 1
+        rt = 2 * 0.05 / 100
+        for d in r.days:
+            assert d.trade_pnl_net == pytest.approx(d.trade_pnl - rt, abs=1e-12)
+
+
+# ----------------------------------------------------------------------
+# Stop-loss sweep via run_single_backtest (strategy experiments 2.2)
+# ----------------------------------------------------------------------
+
+
+class _StubAPIBaselines:
+    """Minimal StockAppAPI for run_single_backtest's baseline-only path."""
+
+    lstm_available = False
+    knn = knn_enhanced = linreg = linreg_enhanced = None
+
+    def __init__(self, df):
+        self._df = df
+
+    def get_data(self, ticker, period="max"):  # noqa: ARG002
+        return self._df.copy()
+
+    @property
+    def db(self):
+        class _DB:
+            def get_news(self, ticker):  # noqa: ARG002
+                return pd.DataFrame()
+
+        return _DB()
+
+    def _process_news_with_db(self, ticker, method=None):  # noqa: ARG002
+        return 0.0, []
+
+    def forecast_available(self, mt):  # noqa: ARG002
+        return False
+
+
+class TestStopLossSweep:
+    def _run(self, sl_levels):
+        from engine.backtest_helpers import run_single_backtest
+
+        df = _ramp_df(n=120)
+        api = _StubAPIBaselines(df)
+        bt = Backtester(n_days=20, fee_pct=0.05)
+        return run_single_backtest(
+            api,
+            bt,
+            "X",
+            df,
+            "max",
+            20,
+            full=False,
+            models=["baseline"],
+            include_baselines=True,
+            sl_levels=sl_levels,
+        )
+
+    def test_sweep_runs_each_level_per_model(self):
+        results = self._run([0, 5, 10])
+        # Each baseline model appears once per level. The 0 level keeps the
+        # bare name; non-zero levels get an SL suffix.
+        names = [r.model_name for r in results]
+        base_names = {n for n in names if "SL" not in n}
+        assert base_names, "expected baseline (no-SL) rows"
+        for bn in base_names:
+            assert f"{bn} SL5%" in names
+            assert f"{bn} SL10%" in names
+        # Each level carries the right stop_loss_pct.
+        by_level = {}
+        for r in results:
+            by_level.setdefault(r.stop_loss_pct, 0)
+            by_level[r.stop_loss_pct] += 1
+        assert set(by_level) == {0.0, 5.0, 10.0}
+
+    def test_sweep_dedupes_and_sorts(self):
+        results = self._run([10, 5, 5, 0])
+        levels = sorted({r.stop_loss_pct for r in results})
+        assert levels == [0.0, 5.0, 10.0]
+
+    def test_levels_without_zero_have_no_baseline_row(self):
+        results = self._run([5, 10])
+        assert all(r.stop_loss_pct in (5.0, 10.0) for r in results)
+        assert all("SL" in r.model_name for r in results)

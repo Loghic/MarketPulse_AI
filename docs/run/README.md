@@ -72,6 +72,10 @@ They share the news/sentiment flags introduced in the 2026 refactor.
 | `--min-confidence θ` | 0 | **Confidence gate.** Sit out days below θ confidence (flat, no fee, excluded from accuracy). Same flag on `run_all.py` (adds an `mcNNN` segment to the output dir) and on `oos_harness.py`. |
 | `--confidence-sweep` *(backtest.py)* | off | Print a θ-sweep table (coverage / traded-day accuracy / return / fees saved) + Brier/ECE, from a single ungated run. Implies `--full`. |
 | `--significance` *(backtest.py)* | off | Print binomial p + Wilson CI on accuracy, bootstrap CI on return, permutation p, with Benjamini-Hochberg FDR. Implies `--full`. |
+| `--stop-loss PCT [...]` | 0 | Stop-loss %% (0=disabled). Pass several to sweep, e.g. `--stop-loss 0 5 10 15`; each model runs once per level. Same flag on `run_all.py`. |
+| `--sl-sweep` | off | Sweep the default stop-loss set (`config.SL_SWEEP` = `0 5 10 15`); overrides `--stop-loss`. Same flag on `run_all.py`. |
+| `--turnover-fees` | off | Charge the round-trip fee only on days the position changes (open / flip), not every day — realistic "trade on signal changes" cost. Same flag on `run_all.py` and `oos_harness.py`. |
+| `--hold-days N` | 1 | Hold an opened position N days before re-reading the signal. Accuracy still tracks predictions; only the held position changes. Same flag on `run_all.py` and `oos_harness.py`. |
 | `--timing` *(backtest.py)* | off | Print a slowest-first per-model compute-time table after the summary. `run_all.py` prints a time-by-model-family rollup automatically. |
 
 ```bash

@@ -128,6 +128,10 @@ def result_to_summary_row(
         "fee_pct": r.fee_pct,
         "stop_loss_pct": r.stop_loss_pct,
         "stopped_out": r.stopped_out_count,
+        "turnover_fees": r.turnover_fees,
+        "hold_days": r.hold_days,
+        "turnover_count": r.turnover_count,
+        "fees_paid": round(r.fees_paid, 8),
         "win_trades": r.win_trades,
         "loss_trades": r.loss_trades,
         "avg_win": round(r.avg_win, 8),
@@ -216,6 +220,7 @@ def run_single_backtest(
     sentiment_method: str | None = None,
     models: list[str] | None = None,
     include_baselines: bool = True,
+    sl_levels: list[float] | None = None,
 ):
     """
     Run backtest for one ticker × one period. Returns list of BacktestResult.
@@ -236,8 +241,14 @@ def run_single_backtest(
         sentiment_method: Restrict to news scored with this method
             ("vader" | "finbert" | "naive"). None = whatever's in the DB.
 
-    If backtester has stop-loss enabled, each model runs twice:
-    once without SL (baseline) and once with SL — so you can compare.
+    Stop-loss:
+        ``sl_levels`` (e.g. ``[0, 5, 10, 15]``) runs each model once per
+        level — a stop-loss sweep. ``0`` is the no-SL baseline; non-zero
+        levels get an ``SL{n}%`` name suffix. When ``sl_levels`` is None we
+        fall back to the legacy behaviour driven by the passed backtester's
+        ``stop_loss_pct``: if it's > 0, each model runs twice (no-SL baseline
+        + SL); if 0, once. Turnover/hold settings are inherited from the
+        passed backtester across every level.
     """
     filtered = filter_by_period(df, period)
     if len(filtered) < n_days + 20:
@@ -367,42 +378,51 @@ def run_single_backtest(
     if models:
         allowed = set(models)
         variants = [v for v in variants if _family_key(v[1]) in allowed]
-    # If stop-loss is enabled, also create a no-SL backtester for comparison
-    has_sl = backtester.stop_loss_pct > 0
-    if has_sl:
-        from engine.backtester import Backtester as BT
 
-        backtester_no_sl = BT(
+    from engine.backtester import Backtester as BT
+
+    # Resolve the stop-loss levels to run each model at.
+    #   sl_levels given  → run once per level (the sweep). 0 = no-SL baseline.
+    #   sl_levels None   → legacy: if the passed backtester has SL on, run the
+    #                      no-SL baseline + the SL level; otherwise a single run.
+    if sl_levels is not None:
+        # De-dupe + sort, keep 0 first so the baseline reads naturally.
+        levels = sorted(set(round(float(s), 6) for s in sl_levels))
+    elif backtester.stop_loss_pct > 0:
+        levels = [0.0, float(backtester.stop_loss_pct)]
+    else:
+        levels = [0.0]
+
+    # One reusable backtester per level, inheriting fee / gate / turnover /
+    # hold settings from the passed instance so only the SL knob varies.
+    def _bt_for(sl: float) -> BT:
+        if sl == backtester.stop_loss_pct:
+            return backtester  # reuse the caller's instance
+        return BT(
             n_days=backtester.n_days,
             fee_pct=backtester.fee_pct,
-            stop_loss_pct=0.0,
+            stop_loss_pct=sl,
             min_confidence=backtester.min_confidence,
+            turnover_fees=backtester.turnover_fees,
+            hold_days=backtester.hold_days,
         )
+
+    backtesters = [(sl, _bt_for(sl)) for sl in levels]
 
     results = []
     for model, name, tw, sent_provider in variants:
-        # Run without SL first (baseline)
-        if has_sl:
-            result_no_sl = backtester_no_sl.run(
-                model=model,
-                model_name=name,
-                df=filtered,
-                ticker=ticker,
-                use_time_weights=tw,
-                sentiment_provider=sent_provider,
+        for sl, bt in backtesters:
+            label = name if sl == 0 else f"{name} SL{sl:g}%"
+            results.append(
+                bt.run(
+                    model=model,
+                    model_name=label,
+                    df=filtered,
+                    ticker=ticker,
+                    use_time_weights=tw,
+                    sentiment_provider=sent_provider,
+                )
             )
-            results.append(result_no_sl)
-
-        # Run with SL (or the only run if SL is disabled)
-        result = backtester.run(
-            model=model,
-            model_name=f"{name} SL{backtester.stop_loss_pct:g}%" if has_sl else name,
-            df=filtered,
-            ticker=ticker,
-            use_time_weights=tw,
-            sentiment_provider=sent_provider,
-        )
-        results.append(result)
 
     return results
 

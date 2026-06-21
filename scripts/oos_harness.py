@@ -56,20 +56,19 @@ from pathlib import Path
 # Make the repo root importable when running this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from cli_helpers import (  # noqa: E402
+    add_common_run_args,
+    add_model_filter_args,
+    add_news_args,
+    add_scope_args,
+    add_strategy_args,
+    resolve_scope,
+    scope_label,
+)
 from config import (  # noqa: E402
-    ALL_PERIODS,
     ALL_TICKERS,
-    CRYPTO,
     CRYPTO_BENCHMARKS,
-    DEFAULT_MIN_CONFIDENCE,
-    DEFAULT_NEWS_HALF_LIFE_DAYS,
-    DEFAULT_NEWS_LOOKBACK_DAYS,
-    DEFAULT_SENTIMENT_METHOD,
-    DEFAULT_STOP_LOSS_PCT,
-    DEFAULT_TRADING_FEE_PCT,
-    MODEL_FAMILIES,
     STOCK_BENCHMARKS,
-    STOCKS,
 )
 from engine.backtest_helpers import _family_key, run_single_backtest  # noqa: E402
 from engine.backtester import Backtester, BacktestResult  # noqa: E402
@@ -108,6 +107,8 @@ def oos_one_ticker(
     models: list[str] | None,
     include_baselines: bool,
     min_confidence: float = 0.0,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
 ) -> dict | None:
     """Run the OOS pipeline for one ticker.
 
@@ -144,6 +145,8 @@ def oos_one_ticker(
         fee_pct=fee_pct,
         stop_loss_pct=stop_loss_pct,
         min_confidence=min_confidence,
+        turnover_fees=turnover_fees,
+        hold_days=hold_days,
     )
 
     # ------------------------------------------------------------------
@@ -472,59 +475,16 @@ def main() -> int:
             "window. Reports the honest beat-B&H rate."
         )
     )
-    parser.add_argument("--tickers", nargs="+", default=None)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--stocks", action="store_true")
-    group.add_argument("--crypto", action="store_true")
-    parser.add_argument("--all", action="store_true")
-    parser.add_argument("--days", type=int, default=50)
-    parser.add_argument(
-        "--fees",
-        type=float,
-        default=DEFAULT_TRADING_FEE_PCT,
-        help=f"Trading fee %% per side (default: {DEFAULT_TRADING_FEE_PCT}).",
-    )
-    parser.add_argument(
-        "--stop-loss",
-        type=float,
-        default=DEFAULT_STOP_LOSS_PCT,
-        help="Stop-loss %% (0 = disabled).",
-    )
-    parser.add_argument(
-        "--buy-hold",
-        action="store_true",
-        help="Compute buy-and-hold benchmarks for the report header.",
-    )
-    parser.add_argument(
-        "--no-refresh",
-        action="store_true",
-        help="Skip data download; use only cached DB data.",
-    )
-    parser.add_argument(
-        "--periods",
-        nargs="+",
-        choices=ALL_PERIODS,
-        default=list(ALL_PERIODS),
-        help="Lookback periods to consider for selection (default: all).",
-    )
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        choices=MODEL_FAMILIES,
-        default=None,
-        help="Restrict candidate families (default: all).",
-    )
-    parser.add_argument(
-        "--no-baselines",
-        action="store_true",
-        help="Skip the naive baselines. Default: baselines included.",
-    )
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
-        metavar="THETA",
-        help=(
+    add_scope_args(parser)
+    add_common_run_args(parser, days_default=50)
+    add_model_filter_args(parser)
+    # OOS does NOT sweep stop-loss (that would re-inflate selection), so the
+    # shared strategy group is requested in single-SL mode. --min-confidence
+    # gets the OOS-specific both-windows / not-swept wording.
+    add_strategy_args(
+        parser,
+        sl_sweep=False,
+        min_confidence_help=(
             "Confidence gate: sit out days below THETA confidence "
             "(0..1) on BOTH the selection and evaluation windows. Answers "
             "'does the OOS edge survive if I commit to gating at θ?'. "
@@ -532,21 +492,7 @@ def main() -> int:
             "per θ to compare. 0 = trade every day (default)."
         ),
     )
-    parser.add_argument(
-        "--sentiment-method",
-        choices=["vader", "finbert", "naive"],
-        default=DEFAULT_SENTIMENT_METHOD,
-    )
-    parser.add_argument(
-        "--news-lookback-days",
-        type=int,
-        default=DEFAULT_NEWS_LOOKBACK_DAYS,
-    )
-    parser.add_argument(
-        "--news-half-life-days",
-        type=float,
-        default=DEFAULT_NEWS_HALF_LIFE_DAYS,
-    )
+    add_news_args(parser)
     parser.add_argument(
         "--dir",
         type=str,
@@ -555,18 +501,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Resolve the ticker scope.
-    if args.tickers:
-        tickers = [t.upper() for t in args.tickers]
-        scope = "custom"
-    elif args.stocks:
-        tickers, scope = STOCKS, "stocks"
-    elif args.crypto:
-        tickers, scope = CRYPTO, "crypto"
-    elif args.all:
-        tickers, scope = ALL_TICKERS, "all"
-    else:
-        tickers, scope = ALL_TICKERS, "all"
+    # Resolve the ticker scope via the shared selectors (so commodities /
+    # indices / fx combine just like the other CLIs). Default: every ticker.
+    tickers = resolve_scope(args, default=ALL_TICKERS)
+    scope = scope_label(args)
 
     run_dir = build_run_dir(
         Path(args.dir),
@@ -615,6 +553,8 @@ def main() -> int:
             models=args.models,
             include_baselines=not args.no_baselines,
             min_confidence=args.min_confidence,
+            turnover_fees=args.turnover_fees,
+            hold_days=args.hold_days,
         )
         if row is not None:
             rows.append(row)

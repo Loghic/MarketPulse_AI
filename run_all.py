@@ -32,18 +32,23 @@ import argparse
 import csv
 from pathlib import Path
 
-from cli_helpers import add_scope_args, resolve_scope, scope_label
+from cli_helpers import (
+    add_common_run_args,
+    add_model_filter_args,
+    add_news_args,
+    add_scope_args,
+    add_strategy_args,
+    resolve_scope,
+    resolve_sl_levels,
+    scope_label,
+)
 from config import (
     ALL_PERIODS,
     ALL_TICKERS,
     CRYPTO_BENCHMARKS,
-    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_NEWS_HALF_LIFE_DAYS,
     DEFAULT_NEWS_LOOKBACK_DAYS,
     DEFAULT_SENTIMENT_METHOD,
-    DEFAULT_STOP_LOSS_PCT,
-    DEFAULT_TRADING_FEE_PCT,
-    MODEL_FAMILIES,
     STOCK_BENCHMARKS,
 )
 from engine.backtest_helpers import (
@@ -79,6 +84,8 @@ def build_dir_name(
     buy_hold: bool,
     sentiment_method: str | None = None,
     min_confidence: float = 0.0,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
 ) -> str:
     """
     Build subdirectory name from run parameters.
@@ -90,6 +97,7 @@ def build_dir_name(
         custom_20d
         stocks_100d_fee003_bh_finbert
         stocks_100d_fee003_mc060
+        stocks_100d_fee003_to_hold5
     """
     parts = [scope, f"{n_days}d"]
     if fee_pct > 0:
@@ -98,6 +106,10 @@ def build_dir_name(
         parts.append(f"sl{stop_loss_pct:g}")
     if min_confidence > 0:
         parts.append(f"mc{min_confidence * 100:03.0f}")
+    if turnover_fees:
+        parts.append("to")
+    if hold_days > 1:
+        parts.append(f"hold{hold_days}")
     if buy_hold:
         parts.append("bh")
     # Only tag the dir when the user explicitly overrode the default scorer,
@@ -124,6 +136,9 @@ def run_ticker_comparison(
     models=None,
     include_baselines: bool = True,
     min_confidence: float = 0.0,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
+    sl_levels=None,
 ):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
@@ -138,6 +153,8 @@ def run_ticker_comparison(
         fee_pct=fee_pct,
         stop_loss_pct=stop_loss_pct,
         min_confidence=min_confidence,
+        turnover_fees=turnover_fees,
+        hold_days=hold_days,
     )
     all_rows = []
     all_combos = []
@@ -157,6 +174,7 @@ def run_ticker_comparison(
             sentiment_method=sentiment_method,
             models=models,
             include_baselines=include_baselines,
+            sl_levels=sl_levels,
         )
         if not results:
             filtered = filter_by_period(df, period)
@@ -247,38 +265,14 @@ def main():
         description="MarketPulse AI – Batch backtest (one CSV per ticker)"
     )
     add_scope_args(parser)
-    parser.add_argument("--days", type=int, default=20)
-    parser.add_argument(
-        "--periods",
-        nargs="+",
-        choices=ALL_PERIODS,
-        default=list(ALL_PERIODS),
-        help=f"Periods to test (default: all {ALL_PERIODS}). e.g. --periods 1y 2y 5y to skip max.",
-    )
-    parser.add_argument(
-        "--fees",
-        type=float,
-        default=DEFAULT_TRADING_FEE_PCT,
-        help=f"Fee %% per side (default: {DEFAULT_TRADING_FEE_PCT})",
-    )
-    parser.add_argument(
-        "--stop-loss", type=float, default=DEFAULT_STOP_LOSS_PCT, help="Stop-loss %% (0=disabled)"
-    )
-    parser.add_argument("--buy-hold", action="store_true", help="Include buy-and-hold comparison")
-    parser.add_argument(
-        "--no-refresh", action="store_true", help="Skip data download, use only cached data from DB"
-    )
+    add_common_run_args(parser, days_default=20)
+    add_model_filter_args(parser)
+    add_strategy_args(parser)
+    add_news_args(parser)
+
+    # run_all.py-only flags: output dir + the bulk news-refresh knobs.
     parser.add_argument(
         "--dir", type=str, default="results", help="Root output directory (default: results/)"
-    )
-    parser.add_argument(
-        "--sentiment-method",
-        choices=["vader", "finbert", "naive"],
-        default=DEFAULT_SENTIMENT_METHOD,
-        help=(
-            "Sentiment scorer for the '+ News' variants. Only news rows scored "
-            f"with this method (or NULL legacy rows) are used. Default: {DEFAULT_SENTIMENT_METHOD}."
-        ),
     )
     parser.add_argument(
         "--news-source",
@@ -290,7 +284,6 @@ def main():
             "is NOT set). Defaults to config.DEFAULT_NEWS_SOURCES."
         ),
     )
-
     parser.add_argument(
         "--news-history-days",
         type=int,
@@ -303,7 +296,6 @@ def main():
             "Ignored with --no-refresh. Default: %(default)s."
         ),
     )
-
     parser.add_argument(
         "--force-news",
         action="store_true",
@@ -315,72 +307,39 @@ def main():
             "bypasses the cache). Ignored with --no-refresh."
         ),
     )
-
-    parser.add_argument(
-        "--news-lookback-days",
-        type=int,
-        default=DEFAULT_NEWS_LOOKBACK_DAYS,
-        help=(
-            "Per-day backtest window: only news published in the N days before "
-            "each prediction date contributes to sentiment "
-            "(default: %(default)s, 0 = unbounded)."
-        ),
-    )
-    parser.add_argument(
-        "--news-half-life-days",
-        type=float,
-        default=DEFAULT_NEWS_HALF_LIFE_DAYS,
-        help=(
-            "Exponential decay half-life for per-day sentiment weighting "
-            "(default: %(default)s, 0 = no decay)."
-        ),
-    )
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        choices=MODEL_FAMILIES,
-        default=None,
-        help="Only run these model families (default: all). e.g. --models knn lstm chronos",
-    )
-    parser.add_argument(
-        "--no-baselines",
-        action="store_true",
-        help=(
-            "Skip the naive baselines (AlwaysLong, PreviousDay, 5/20-Day "
-            "Momentum, Random). Default: baselines included."
-        ),
-    )
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
-        metavar="THETA",
-        help=(
-            "Confidence gate: sit out days below THETA confidence "
-            "(0..1). Sat-out days are flat and excluded from accuracy. "
-            "0 = trade every day (default)."
-        ),
-    )
     args = parser.parse_args()
 
     tickers = resolve_scope(args, default=ALL_TICKERS)
     scope = scope_label(args)
+
+    # --stop-loss / --sl-sweep → (sl_levels, legacy_sl). See cli_helpers.
+    sl_levels, legacy_sl = resolve_sl_levels(args)
+    # Representative SL for the dir name / banner: max swept level, or the
+    # single legacy level.
+    dir_sl = max(sl_levels) if sl_levels else legacy_sl
 
     # Build output directory
     dir_name = build_dir_name(
         scope,
         args.days,
         args.fees,
-        args.stop_loss,
+        dir_sl,
         args.buy_hold,
         sentiment_method=args.sentiment_method,
         min_confidence=args.min_confidence,
+        turnover_fees=args.turnover_fees,
+        hold_days=args.hold_days,
     )
     run_dir = Path(args.dir) / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     fee_info = f", fees={args.fees}% per side" if args.fees > 0 else ""
-    sl_info = f", SL={args.stop_loss}%" if args.stop_loss > 0 else ""
+    if sl_levels:
+        sl_info = f", SL sweep {[f'{s:g}' for s in sorted(set(sl_levels))]}"
+    elif legacy_sl > 0:
+        sl_info = f", SL={legacy_sl:g}%"
+    else:
+        sl_info = ""
     bh_info = ", vs buy-and-hold" if args.buy_hold else ""
 
     print(f"{'=' * 80}")
@@ -415,7 +374,7 @@ def main():
             ticker,
             args.days,
             args.fees,
-            args.stop_loss,
+            legacy_sl,
             args.buy_hold,
             run_dir,
             periods=args.periods,
@@ -426,6 +385,9 @@ def main():
             models=args.models,
             include_baselines=not args.no_baselines,
             min_confidence=args.min_confidence,
+            turnover_fees=args.turnover_fees,
+            hold_days=args.hold_days,
+            sl_levels=sl_levels,
         )
         if best:
             best_per_ticker.append(best)
@@ -453,12 +415,13 @@ def main():
             f"\n  {'TICKER':<10} {'MODEL':<25} {'PERIOD':<8} "
             f"{'RETURN':<12} {'PF':<8} {'MAX DD':<10} {'SHARPE':<8}"
         )
-        if args.stop_loss > 0:
+        show_sl = bool(sl_levels) or legacy_sl > 0
+        if show_sl:
             header += f" {'SL':<5}"
         if args.buy_hold:
             header += f" {'B&H':<12} {'BEAT?'}"
         print(header)
-        divider_len = 84 + (7 if args.stop_loss > 0 else 0) + (18 if args.buy_hold else 0)
+        divider_len = 84 + (7 if show_sl else 0) + (18 if args.buy_hold else 0)
         print(f"  {'-' * divider_len}")
 
         for b in best_per_ticker:
@@ -469,7 +432,7 @@ def main():
                 f"{b['max_drawdown']:<+10.4%} "
                 f"{b['sharpe_ratio']:<8.2f}"
             )
-            if args.stop_loss > 0:
+            if show_sl:
                 line += f" {b.get('stopped_out', 0):<5}"
             if args.buy_hold:
                 bh = b["buy_hold_return"]

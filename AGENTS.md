@@ -14,7 +14,7 @@ Predicts next-day stock/crypto price direction (UP/DOWN) using k-NN, LinReg, LST
 .pre-commit-config.yaml         → Git hooks: ruff auto-fix + format + mypy before every commit
 
 config.py                   → ★ Asset registry (ASSET_CLASSES) + periods, fees, stop-loss, forecasting config. Edit ASSET_CLASSES to add assets.
-cli_helpers.py              → Shared CLI scope flags + resolver (--stocks/--crypto/--commodities/--indices/--fx/--all/--tickers), driven by ASSET_CLASSES
+cli_helpers.py              → Shared CLI arg groups: scope (add_scope_args/resolve_scope/scope_label, driven by ASSET_CLASSES) + add_strategy_args (fees/stop-loss/sl-sweep/turnover/hold/min-confidence/buy-hold) + resolve_sl_levels + add_model_filter_args + add_news_args + add_common_run_args. backtest.py/run_all.py/oos_harness.py all compose these.
 main.py                     → CLI: prediction reports (scope flags via cli_helpers)
 backtest.py                 → CLI: model evaluation (--full/--compare-periods/--periods/--timing/--output/--stop-loss)
 train.py                    → CLI: LSTM training (--preset quick/standard/cluster)
@@ -163,13 +163,15 @@ KRONOS_TOP_P = 0.9
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
-## Stop-loss behavior
+## Stop-loss behavior + sweep
 
-When `--stop-loss X` is passed, **each model runs twice**: once without SL (baseline) and once with SL. The SL variant gets a name suffix like `k-NN SL2%`. This is implemented in `backtest_helpers.run_single_backtest()` — it creates a second Backtester with `stop_loss_pct=0` for the baseline runs.
+`run_single_backtest()` resolves a set of stop-loss **levels** via its `sl_levels` arg. A single `--stop-loss X` (X>0) keeps the legacy behaviour: each model runs **twice** (no-SL baseline + SL), the SL variant suffixed `k-NN SL2%`. `--stop-loss 0 5 10 15` or `--sl-sweep` (uses `config.SL_SWEEP`) runs each model once per level; `0` is the no-SL baseline. Levels are de-duped + sorted; each per-level `Backtester` inherits fee / gate / turnover / hold settings from the caller's instance so only the SL knob varies.
 
-Stop-loss uses intraday High/Low: Long exits if Low ≤ entry × (1 - SL%), Short exits if High ≥ entry × (1 + SL%).
+Stop-loss uses intraday High/Low: Long exits if Low ≤ entry × (1 - SL%), Short exits if High ≥ entry × (1 + SL%). A stop-out flattens the position (the next traded day re-opens and pays a turnover fee). Without `--stop-loss`/`--sl-sweep`, a single run (no duplication).
 
-Without `--stop-loss`, no duplication occurs.
+## Turnover / fee realism + hold-days
+
+`Backtester(turnover_fees=True)` charges the round-trip fee only on days `position_changed` (open / flip), not every day — the realistic "trade only on signal changes" cost. `hold_days=N` holds an opened position N days before re-reading the signal: the model still `predict()`s every day (so **accuracy = model skill, unchanged**), but P&L uses the held `position`, which can differ from `predicted` inside a hold window. Both default off (`turnover_fees=False`, `hold_days=1`) → byte-for-byte the old charge-every-day behaviour. `BacktestResult` gains `turnover_count` (number of position changes) and `fees_paid` (actual fee drag = Σ raw−net over traded days). CLI: `--turnover-fees` / `--hold-days N` on `backtest.py`, `run_all.py`, `oos_harness.py`; `run_all` tags the dir `to` / `holdN`.
 
 ## Key types
 
@@ -179,13 +181,15 @@ class DayResult:
     date, predicted, actual, confidence, correct,
     close_before, close_actual, exit_price,     # exit_price = SL price or close
     trade_pnl, trade_pnl_net, stopped_out,      # stopped_out: bool
-    traded                                       # False when sat out by the confidence gate (Plan §1.3)
+    traded,                                      # False when sat out by the confidence gate
+    position, position_changed                   # held direction + whether it changed (turnover/hold-days)
 
 @dataclass
 class BacktestResult:
     model_name, ticker, test_days, correct, accuracy,
     fee_pct, stop_loss_pct, stopped_out_count,
-    min_confidence, sat_out_count, coverage,     # confidence gate (Plan §1.3); accuracy/return describe TRADED days only
+    min_confidence, sat_out_count, coverage,     # confidence gate; accuracy/return describe TRADED days only
+    turnover_fees, hold_days, turnover_count, fees_paid,  # turnover / fee realism (2.1)
     total_return, profit_factor, gross_profit, gross_loss,
     avg_win, avg_loss, best_day, worst_day, win_trades, loss_trades,
     max_drawdown, sharpe_ratio, sortino_ratio,
@@ -212,9 +216,11 @@ uv run python train.py --list
 uv run python backtest.py --stocks --days 20 --fees 0.03 --buy-hold
 uv run python backtest.py --tickers AAPL --days 20 --stop-loss 2 --fees 0.03
 uv run python backtest.py --tickers NVDA --days 30 --full --timing            # per-model time breakdown
-uv run python backtest.py --tickers NVDA --days 100 --confidence-sweep         # θ-sweep: coverage/traded-acc/return/fees-saved (Plan §1.3)
-uv run python backtest.py --tickers NVDA --days 100 --significance             # binomial p + Wilson CI + bootstrap CI + FDR (Plan §1.4)
+uv run python backtest.py --tickers NVDA --days 100 --confidence-sweep         # θ-sweep: coverage/traded-acc/return/fees-saved
+uv run python backtest.py --tickers NVDA --days 100 --significance             # binomial p + Wilson CI + bootstrap CI + FDR
 uv run python backtest.py --stocks --days 100 --min-confidence 0.65            # gate: sit out days below 65% confidence
+uv run python backtest.py --tickers NVDA --days 100 --sl-sweep --buy-hold      # stop-loss sweep {0,5,10,15}
+uv run python backtest.py --tickers NVDA --days 100 --turnover-fees --hold-days 5  # fee only on signal changes, hold 5d
 uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y    # subset of periods (matrix)
 uv run python backtest.py --compare-periods --output results.csv
 
@@ -379,6 +385,15 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
   `scope_label(args)` for the output-dir name (combined classes join with `-`, e.g. `commodities-fx`).
   Defaults preserved: `main.py`/`backtest.py` fall back to the first 3 tickers, `run_all.py`/`refresh.py`
   to all.
+- **Shared non-scope arg groups** (same file): `add_strategy_args(parser, *, sl_sweep=True, min_confidence_help=None)`
+  (fees / stop-loss / sl-sweep / turnover-fees / hold-days / min-confidence / buy-hold) +
+  `resolve_sl_levels(args) → (sl_levels, legacy_sl)`; `add_model_filter_args` (--models / --no-baselines);
+  `add_news_args` (--sentiment-method / --news-lookback-days / --news-half-life-days); `add_common_run_args(parser, *, days_default, with_periods=True)`
+  (--days / --periods / --no-refresh). `backtest.py`, `run_all.py`, `oos_harness.py` all compose these, so a flag's
+  spelling/default/help lives in one place. `oos_harness.py` calls `add_strategy_args(sl_sweep=False)` (single-valued
+  `--stop-loss`, no `--sl-sweep` — the harness must not sweep SL) with a custom `min_confidence_help`; run_all keeps
+  its bulk-news-only flags (`--news-source`/`--news-history-days`/`--force-news`) locally. The OOS harness now uses the
+  full combinable scope set (gained commodities/indices/fx by adopting `add_scope_args`). Covered by `tests/test_cli_helpers.py`.
 
 ### News pipeline (no look-ahead)
 

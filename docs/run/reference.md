@@ -28,6 +28,7 @@ DEFAULT_BACKTEST_DAYS = 5
 # Trading
 DEFAULT_TRADING_FEE_PCT = 0.05  # per side
 DEFAULT_STOP_LOSS_PCT   = 0.0   # 0 = disabled
+SL_SWEEP = [0.0, 5.0, 10.0, 15.0]   # the levels --sl-sweep iterates over
 
 # Confidence gating — --min-confidence default + the --confidence-sweep
 # thresholds.
@@ -93,6 +94,7 @@ uv run python -m pytest tests/test_baselines.py -v       # naive baselines
 uv run python -m pytest tests/test_oos_harness.py -v     # out-of-sample harness
 uv run python -m pytest tests/test_calibration.py -v     # confidence calibration + gating
 uv run python -m pytest tests/test_significance.py -v    # statistical significance
+uv run python -m pytest tests/test_backtester.py -v -k "Turnover or HoldDays or StopLossSweep"  # turnover / hold / SL sweep
 ```
 
 ### Static checks (also run by pre-commit)

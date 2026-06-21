@@ -81,12 +81,19 @@ flag in `backtest.py` / `run_all.py`.
 
 ## Phase 2 — Strategy experiments (once Phase 1 can trust the numbers)
 
-### 2.1 Turnover / fee realism
+### 2.1 Turnover / fee realism  ✅ DONE
+> Implemented: `Backtester(turnover_fees=True)` charges the round-trip fee only
+> on position changes; `hold_days=N` holds a position N days before re-reading
+> the signal. `--turnover-fees` / `--hold-days` on `backtest.py` / `run_all.py` /
+> `oos_harness.py`. `BacktestResult.turnover_count` / `fees_paid` report the drag.
 - Daily round-trips dominate cost (~30% over 300d). Test trading only on signal
   *changes* (hold through same-direction days) or longer holding periods. Report
   turnover-adjusted returns.
 
-### 2.2 Stop-loss sweep
+### 2.2 Stop-loss sweep  ✅ DONE
+> Implemented: `--stop-loss` accepts a list (e.g. `0 5 10 15`) and `--sl-sweep`
+> uses `config.SL_SWEEP`; each model runs once per level (0 = no-SL baseline),
+> on `backtest.py` / `run_all.py`. Levels share fee/gate/turnover settings.
 - `--stop-loss ∈ {0, 5, 10, 15}` on 100d + 300d. Expect wide/off best for daily holds
   (a 10%+ intraday trigger is rare for large-caps); most informative on volatile names
   (TSLA, NVDA, crypto). Won't fix a missing edge — it's a risk knob.
@@ -192,7 +199,8 @@ Captured for later — not yet implemented.
 | Priority | Items |
 |---|---|
 | **Done** | 1.1 OOS harness · 1.2 naive benchmarks · 1.3 confidence calibration + gating · 1.4 significance testing |
-| **Next** | 2.1 turnover/fees · 2.2 SL sweep · 2.3 LSTM focus · 2.5 reframe metric |
+| **Done (Phase 2)** | 2.1 turnover/fees · 2.2 SL sweep |
+| **Next** | 2.3 LSTM focus · 2.5 reframe metric |
 | **Later** | 2.4 k-NN sweep · 3.1 experiment tracking · 3.2 model registry |
 | **After an edge** | 4.1 multi-asset portfolio · backlog (signals, Reddit, regression/intraday) |
 

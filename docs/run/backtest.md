@@ -318,19 +318,64 @@ The `results/` directory is auto-created. CSV vs JSON is decided by
 the file extension on `--output` — both formats expose the same
 columns.
 
-### Stop-loss
+### Stop-loss (single level or sweep)
 
 `--stop-loss 2` means: if the position drops 2% intraday, exit
 immediately at the stop-loss price instead of holding until close.
-Uses real High/Low data.
+Uses real High/Low data. With a single value, every model runs twice —
+once without SL (baseline) and once with SL — for a side-by-side
+comparison.
 
-When enabled, every model runs twice — once without SL (baseline) and
-once with SL — so you see a direct side-by-side comparison.
+`--stop-loss` also accepts **several values** to sweep, and `--sl-sweep`
+runs a predefined set (`config.SL_SWEEP`, default `0 5 10 15`). Each
+model runs once per level; `0` is the no-SL baseline. The `SL{n}%`
+suffix on the model name tells the levels apart.
 
-### Trading fees
+```bash
+# Explicit sweep
+uv run python backtest.py --tickers NVDA --days 100 --stop-loss 0 5 10 15 --buy-hold
+# Same, via the config default set
+uv run python backtest.py --tickers NVDA --days 100 --sl-sweep --buy-hold
+```
+
+Stop-loss is a risk knob, not an edge: wide/off is usually best for
+daily holds (a 10%+ intraday trigger is rare for large-caps), and it's
+most informative on volatile names (TSLA, NVDA, crypto). It won't
+create an edge that isn't there.
+
+### Trading fees & turnover (`--turnover-fees`, `--hold-days`)
 
 `--fees 0.03` means 0.03% per side (buy + sell = 0.06% round-trip).
 Default comes from `config.DEFAULT_TRADING_FEE_PCT`.
+
+By default the backtester charges a full round-trip fee **every traded
+day** — i.e. it assumes you close and re-open daily. Over long horizons
+that fee churn dominates the result (it's the bulk of the ~30% drag
+over 300 days). Two knobs make the cost realistic:
+
+* **`--turnover-fees`** — charge the round-trip fee only on days the
+  position *changes* (opens or flips). Same-direction days carry the
+  position fee-free, modelling "trade only on signal changes". Raw P&L
+  is unchanged; only the fee attribution differs.
+* **`--hold-days N`** — once a position is opened, hold it `N` days
+  before re-reading the signal (default 1 = re-evaluate daily). The
+  model still predicts each day (so **accuracy reflects model skill,
+  unchanged**), but the *position* that drives P&L persists through the
+  hold window. Most meaningful together with `--turnover-fees`, which
+  then skips fees on the held days.
+
+```bash
+# Realistic fees: only pay when the signal actually changes
+uv run python backtest.py --tickers NVDA --days 100 --turnover-fees --buy-hold
+
+# Hold 5 trading days per signal, fee only on entries
+uv run python backtest.py --tickers NVDA --days 100 --turnover-fees --hold-days 5 --buy-hold
+```
+
+The summary line then reports turnover: `Turnover: 7/100 (fees
++0.7000%, hold=5d)` — the number of position changes, the fee actually
+paid, and the hold window. CSV exports gain `turnover_fees`,
+`hold_days`, `turnover_count`, and `fees_paid` columns.
 
 ## `train.py` — LSTM training
 
@@ -361,10 +406,11 @@ subdirectories under `results/`. Supports the same news / sentiment
 flags as `backtest.py` (`--sentiment-method`, `--news-source`,
 `--news-lookback`, `--news-half-life`, `--news-history-days`,
 `--force-news`) plus `--periods` (restrict the period sweep),
-`--models` (restrict model families), and `--min-confidence θ`
-(confidence gate — see [above](#confidence-gating---min-confidence---confidence-sweep)).
-It also prints a time-by-model-family rollup at the end of the batch
-automatically.
+`--models` (restrict model families), `--min-confidence θ` (confidence
+gate — see [above](#confidence-gating---min-confidence---confidence-sweep)),
+and the turnover / stop-loss knobs (`--turnover-fees`, `--hold-days N`,
+multi-value `--stop-loss`, `--sl-sweep`). It also prints a
+time-by-model-family rollup at the end of the batch automatically.
 
 ```bash
 uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold
@@ -378,6 +424,10 @@ uv run python run_all.py --stocks --days 20 --fees 0.05 --buy-hold \
 # Fast sweep — skip 'max', drop the heavy forecasting models
 uv run python run_all.py --stocks --days 100 --fees 0.05 --buy-hold \
     --periods 1y 2y 5y --models knn linreg lstm chronos
+
+# Stop-loss sweep + realistic turnover fees
+uv run python run_all.py --stocks --days 100 --fees 0.05 --buy-hold \
+    --sl-sweep --turnover-fees --hold-days 5
 ```
 
 Output layout:
@@ -397,9 +447,11 @@ results/
 ```
 
 Directory name encodes run parameters
-(`scope_days_fees_sl_mc_bh`, e.g. `stocks_100d_fee003_mc065_bh` when
-`--min-confidence 0.65` is set), so different runs don't overwrite
-each other. (The `--periods` /
+(`scope_days_fees_sl_mc_to_hold_bh` — e.g. `stocks_100d_fee003_mc065_bh`
+with `--min-confidence 0.65`, or `stocks_100d_fee003_to_hold5` with
+`--turnover-fees --hold-days 5`; `to` flags turnover fees, `holdN` the
+hold window, and a swept stop-loss tags the max level `slN`), so
+different runs don't overwrite each other. (The `--periods` /
 `--models` subset is *not* encoded in the directory name, so pick a
 distinct scope or move the output if you keep several subset runs side
 by side.)
