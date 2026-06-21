@@ -43,7 +43,7 @@ web/                        → Web GUI (FastAPI + React)
       data.py               → GET tickers (asset_type via config.asset_type_of), GET OHLCV, POST refresh / refresh-news
       predict.py            → POST /run (unified per-model config), /cached, /historical, /info (availability-gated variants incl. Prophet/Chronos/Kronos)
       backtest.py           → POST backtest (+ models/include_baselines/min_confidence/turnover_fees/hold_days/sl_levels/sl_sweep), /progress, /runs
-      oos.py                → POST /api/oos (harness run + persist), /progress, /runs, /runs/{id}
+      oos.py                → POST /api/oos (harness run + persist), /progress, /runs (web cache + CLI CSV discovery), /runs/{id}
       train.py              → GET models inventory, POST start training
       settings.py           → GET/PUT/PATCH persistent user settings
       analysis.py           → POST news-comparison (for academic paper)
@@ -292,7 +292,7 @@ React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →
 - `routes/data.py` — ticker list (asset_type from `config.asset_type_of`), OHLCV, refresh, refresh-news
 - `routes/predict.py` — `POST /run`, `/cached`, `/historical`, `/info` (gated variants). Cache: `predictions/{ticker}/{date}.json`
 - `routes/backtest.py` — delegates to `engine/backtester.py`; plumbs models/include_baselines/min_confidence/turnover_fees/hold_days/sl_levels/sl_sweep; `/progress` + `/runs`
-- `routes/oos.py` — wraps `scripts.oos_harness`; `POST /api/oos` (run + persist CSV tree + JSON cache under `oos_runs/`), `/progress`, `/runs`, `/runs/{id}`
+- `routes/oos.py` — wraps `scripts.oos_harness`; `POST /api/oos` (run + persist CSV tree + JSON cache under `oos_runs/`), `/progress`, `/runs`, `/runs/{id}`. **`/runs` lists both sources:** the web JSON cache *and* CLI-produced `results/oos_*/` dirs (auto-discovered via `_csv_run_dirs()`/`_read_csv_run()`, reconstructed through `OOSTickerRow`/`OOSSummary.model_validate`, with `source: "web"|"csv"`). A CSV dir whose name matches an existing `oos_runs/{id}.json` is skipped (JSON wins — no duplicate); `run_id` = the run-dir name in both. `/runs/{id}` falls back to the CSV tree when no JSON cache exists. Empty cells fall back to schema defaults (old runs lacking the benchmark columns parse fine). OOS + OOS-Compare tabs both read this list, so every past run (CLI or web) is browsable/comparable. Covered by `tests/test_web_api.py::TestOOSRunDiscovery`.
 - `routes/train.py` — background LSTM training, model inventory from `models/`
 - `routes/settings.py` — GET/PUT/PATCH `data/settings.json`
 - `routes/analysis.py` — News vs No-News paired comparison + results-dir browser

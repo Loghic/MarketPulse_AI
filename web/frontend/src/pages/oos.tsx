@@ -173,9 +173,14 @@ export default function OOS() {
             >
               <option value="">— don't load —</option>
               {runs.map((r) => (
-                <option key={r.run_id} value={r.run_id}>{r.run_id} · {r.row_count} tickers</option>
+                <option key={r.run_id} value={r.run_id}>
+                  {r.source === "csv" ? "[CLI] " : ""}{r.run_id} · {r.row_count} tickers
+                </option>
               ))}
             </select>
+            <span style={{ fontSize: 10, color: s.muted }}>
+              [CLI] = run produced by the command-line harness (discovered from results/).
+            </span>
           </div>
         </Panel>
       )}

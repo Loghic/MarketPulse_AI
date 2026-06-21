@@ -598,6 +598,151 @@ class TestAnalysis:
 
 
 # ------------------------------------------------------------------
+# OOS run browsing (CLI CSV discovery + JSON-cache dedupe)
+# ------------------------------------------------------------------
+
+
+class TestOOSRunDiscovery:
+    """`/api/oos/runs` must surface CLI-produced CSV runs, not just the web
+    JSON cache, and never list the same run twice."""
+
+    # The exact columns the harness writes (see scripts/oos_harness.py).
+    _PT_COLS = [
+        "ticker",
+        "winner_model",
+        "winner_period",
+        "winner_family",
+        "in_sample_return",
+        "in_sample_accuracy",
+        "in_sample_buy_hold",
+        "oos_return",
+        "oos_accuracy",
+        "oos_buy_hold",
+        "oos_sharpe",
+        "beats_bh_oos",
+        "stable",
+    ]
+    _SUM_COLS = [
+        "tickers",
+        "oos_beat_bh_rate",
+        "median_oos_return",
+        "mean_oos_return",
+        "median_in_sample_return",
+        "in_sample_minus_oos_median",
+        "median_oos_accuracy",
+    ]
+
+    @pytest.fixture
+    def oos_dirs(self, tmp_path, monkeypatch):
+        """Redirect the OOS route's RESULTS_DIR / CACHE_DIR into tmp_path."""
+        from pathlib import Path
+
+        from web.backend.routes import oos as _oos
+
+        results = tmp_path / "results"
+        cache = tmp_path / "oos_runs"
+        results.mkdir(parents=True)
+        cache.mkdir(parents=True)
+        monkeypatch.setattr(_oos, "RESULTS_DIR", Path(str(results)))
+        monkeypatch.setattr(_oos, "CACHE_DIR", Path(str(cache)))
+        return results, cache
+
+    def _write_csv_run(self, results, name, tickers):
+        import csv as _csv
+
+        d = results / name
+        d.mkdir(parents=True)
+        with open(d / "_oos_per_ticker.csv", "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=self._PT_COLS)
+            w.writeheader()
+            for t in tickers:
+                row = dict.fromkeys(self._PT_COLS, "0")
+                row.update(
+                    ticker=t,
+                    winner_model="k-NN",
+                    winner_period="1y",
+                    winner_family="knn",
+                    oos_return="0.05",
+                    beats_bh_oos="1",
+                )
+                w.writerow(row)
+        with open(d / "_oos_summary.csv", "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=self._SUM_COLS)
+            w.writeheader()
+            w.writerow({**dict.fromkeys(self._SUM_COLS, "0"), "tickers": str(len(tickers))})
+        return d
+
+    def test_empty_when_nothing(self, client, oos_dirs):
+        r = client.get("/api/oos/runs")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_discovers_cli_csv_run(self, client, oos_dirs):
+        results, _ = oos_dirs
+        self._write_csv_run(results, "oos_stocks_50d_20260101-000000", ["AAPL", "MSFT"])
+        r = client.get("/api/oos/runs")
+        assert r.status_code == 200
+        runs = r.json()
+        assert len(runs) == 1
+        assert runs[0]["run_id"] == "oos_stocks_50d_20260101-000000"
+        assert runs[0]["row_count"] == 2
+        assert runs[0]["source"] == "csv"
+        assert set(runs[0]["tickers"]) == {"AAPL", "MSFT"}
+
+    def test_load_cli_run_reconstructs_response(self, client, oos_dirs):
+        results, _ = oos_dirs
+        self._write_csv_run(results, "oos_stocks_50d_20260101-000000", ["AAPL"])
+        r = client.get("/api/oos/runs/oos_stocks_50d_20260101-000000")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["source"] == "csv"
+        assert data["response"]["summary"]["tickers"] == 1
+        row = data["response"]["rows"][0]
+        assert row["ticker"] == "AAPL"
+        assert row["oos_return"] == 0.05  # coerced str -> float
+        assert row["beats_bh_oos"] == 1
+        # Benchmark columns absent from the CSV fall back to schema defaults.
+        assert row["oos_benchmark"] == 0.0
+
+    def test_json_cache_dedupes_csv(self, client, oos_dirs):
+        """A run present in BOTH the CSV tree and the JSON cache lists once
+        (the cache wins)."""
+        import json as _json
+
+        results, cache = oos_dirs
+        name = "oos_stocks_50d_20260101-000000"
+        self._write_csv_run(results, name, ["AAPL"])
+        (cache / f"{name}.json").write_text(
+            _json.dumps(
+                {
+                    "run_id": name,
+                    "saved_at": "2026-01-01T00:00:00",
+                    "results_dir": name,
+                    "tickers": ["AAPL"],
+                    "request": {},
+                    "response": {"rows": [{}], "summary": {}},
+                }
+            )
+        )
+        runs = client.get("/api/oos/runs").json()
+        ids = [r["run_id"] for r in runs]
+        assert ids.count(name) == 1
+        assert next(r for r in runs if r["run_id"] == name)["source"] == "web"
+
+    def test_skips_empty_run_dir(self, client, oos_dirs):
+        """A results/oos_*/ dir with no per-ticker CSV is ignored, not 500."""
+        results, _ = oos_dirs
+        (results / "oos_stocks_50d_99999999-000000").mkdir(parents=True)
+        r = client.get("/api/oos/runs")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_load_missing_run_404(self, client, oos_dirs):
+        r = client.get("/api/oos/runs/oos_does_not_exist")
+        assert r.status_code == 404
+
+
+# ------------------------------------------------------------------
 # Per-ticker cached prediction endpoint
 # ------------------------------------------------------------------
 

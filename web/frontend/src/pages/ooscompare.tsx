@@ -65,7 +65,7 @@ export default function OOSCompare() {
 
 function RunPicker({ label, value, onChange, runs, accent }: {
   label: string; value: string | null; onChange: (v: string | null) => void;
-  runs: { run_id: string; row_count: number }[]; accent: string;
+  runs: { run_id: string; row_count: number; source?: "web" | "csv" }[]; accent: string;
 }) {
   return (
     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -73,7 +73,7 @@ function RunPicker({ label, value, onChange, runs, accent }: {
       <select value={value ?? ""} onChange={(e) => onChange(e.target.value || null)}
         style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, background: s.surface, color: s.text, border: `1px solid ${s.border}`, maxWidth: 380 }}>
         <option value="">— pick —</option>
-        {runs.map((r) => <option key={r.run_id} value={r.run_id}>{r.run_id} · {r.row_count} tickers</option>)}
+        {runs.map((r) => <option key={r.run_id} value={r.run_id}>{r.source === "csv" ? "[CLI] " : ""}{r.run_id} · {r.row_count} tickers</option>)}
       </select>
     </div>
   );

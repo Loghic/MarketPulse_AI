@@ -412,6 +412,9 @@ export const api = {
       tickers: string[];
       request: Record<string, unknown>;
       row_count: number;
+      // "web" = launched + cached from the UI; "csv" = discovered from a
+      // CLI-produced results/oos_*/ directory.
+      source?: "web" | "csv";
     }[]>("/oos/runs"),
 
   loadOosRun: (runId: string) =>
@@ -421,6 +424,7 @@ export const api = {
       results_dir: string;
       request: Record<string, unknown>;
       tickers: string[];
+      source?: "web" | "csv";
       response: OOSResponse;
     }>(`/oos/runs/${encodeURIComponent(runId)}`),
 

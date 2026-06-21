@@ -75,6 +75,21 @@ side by side. It shows which setting won on each headline metric and on each
 ticker's out-of-sample return, so you can see whether a change actually helped
 *honestly*, not just in-sample.
 
+## Browsing saved runs
+
+Every OOS run is saved and can be reopened later. The **Out-of-Sample** tab has
+a "Saved OOS runs" picker that loads any past run's full table and summary
+without re-running it; the **OOS Comparison** tab pulls from the same list. Two
+kinds of run show up there:
+
+- runs you launched from the web UI (cached automatically), and
+- runs produced by the command-line harness, tagged **[CLI]** — these are
+  discovered straight from the `results/oos_*/` folders the CLI writes.
+
+If a run exists in both places it's listed once. CLI runs don't remember the
+exact options they were launched with, so their config echo is blank — but the
+results, winners, and metrics are all there to browse and compare.
+
 ## Bottom line
 
 If a setup shows no out-of-sample edge, "tuning" it further just fits noise.

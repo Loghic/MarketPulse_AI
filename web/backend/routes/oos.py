@@ -11,6 +11,7 @@ tab redisplay and for the OOS-comparison tab to diff against.
 
 from __future__ import annotations
 
+import csv
 import json
 import threading
 from datetime import datetime
@@ -52,6 +53,87 @@ def _set_progress(**fields: Any) -> None:
 def _scope_label(tickers: list[str]) -> str:
     """Best-effort scope label for the run-dir / id (custom when mixed)."""
     return scope_label_from_tickers(tickers)
+
+
+# ----------------------------------------------------------------------
+# CSV-run discovery
+# ----------------------------------------------------------------------
+#
+# Runs launched from the CLI (`scripts/oos_harness.py`) only write the
+# `results/oos_<scope>_…/` CSV tree — they never produce an `oos_runs/*.json`
+# cache. To make *every* past run browsable + comparable in the web UI, we also
+# discover those CSV directories and reconstruct an OOSResponse from them. The
+# directory name is used as the run_id (same convention as the JSON cache), so a
+# CSV dir is skipped whenever a JSON cache of the same id already exists — no
+# duplicates.
+
+
+def _csv_run_dirs() -> list[Path]:
+    """All `results/oos_*/` dirs that carry a per-ticker CSV, newest first."""
+    if not RESULTS_DIR.exists():
+        return []
+    dirs = [
+        d for d in RESULTS_DIR.glob("oos_*") if d.is_dir() and (d / "_oos_per_ticker.csv").exists()
+    ]
+    return sorted(dirs, key=lambda d: d.name, reverse=True)
+
+
+def _cached_run_ids() -> set[str]:
+    """run_ids that already have a JSON cache entry (these win over CSVs)."""
+    if not CACHE_DIR.exists():
+        return set()
+    return {f.stem for f in CACHE_DIR.glob("*.json")}
+
+
+def _clean_row(raw: dict[str, str]) -> dict[str, str]:
+    """Drop empty cells so schema defaults apply (CSV writes "" not null)."""
+    return {k: v for k, v in raw.items() if v != ""}
+
+
+def _read_csv_run(run_dir: Path) -> dict[str, Any]:
+    """Reconstruct the cached-run JSON shape from a CSV run directory.
+
+    Mirrors what `run_oos` persists, minus the request echo (CLI runs don't
+    record their request). Rows / summary are validated through the same
+    pydantic models, so the response shape is identical to a cached run.
+    """
+    per_ticker = run_dir / "_oos_per_ticker.csv"
+    summary_csv = run_dir / "_oos_summary.csv"
+
+    with per_ticker.open(newline="") as f:
+        raw_rows = list(csv.DictReader(f))
+    rows = [OOSTickerRow.model_validate(_clean_row(r)) for r in raw_rows]
+
+    if summary_csv.exists():
+        with summary_csv.open(newline="") as f:
+            summary_rows = list(csv.DictReader(f))
+        summary_dict = _clean_row(summary_rows[0]) if summary_rows else {}
+    else:
+        summary_dict = {}
+    # An empty/absent summary still validates: only `tickers` etc. are required,
+    # so fall back to a recomputed aggregate when the CSV had no summary row.
+    if summary_dict:
+        summary = OOSSummary.model_validate(summary_dict)
+    else:
+        summary = OOSSummary.model_validate(aggregate([r.model_dump() for r in rows]))
+
+    response = OOSResponse(
+        rows=rows, summary=summary, results_dir=run_dir.name, run_id=run_dir.name
+    )
+    tickers = [r.ticker for r in rows]
+    try:
+        saved_at = datetime.fromtimestamp(per_ticker.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        saved_at = None
+    return {
+        "run_id": run_dir.name,
+        "saved_at": saved_at,
+        "results_dir": run_dir.name,
+        "request": {},  # CLI runs don't echo their request
+        "tickers": tickers,
+        "source": "csv",
+        "response": response.model_dump(),
+    }
 
 
 @router.post("", response_model=OOSResponse)
@@ -181,32 +263,77 @@ def get_progress() -> dict:
 
 @router.get("/runs")
 def list_runs() -> list[dict]:
-    """List cached OOS runs, newest first."""
-    if not CACHE_DIR.exists():
-        return []
-    out = []
-    for f in sorted(CACHE_DIR.glob("*.json"), reverse=True):
+    """List OOS runs (JSON cache + discovered CSV runs), newest first.
+
+    Web-launched runs come from the `oos_runs/*.json` cache; CLI runs are
+    discovered from the `results/oos_*/` CSV tree. A CSV run is skipped when a
+    JSON cache of the same run_id already exists, so the two never duplicate.
+    """
+    out: list[dict] = []
+    cached_ids: set[str] = set()
+
+    if CACHE_DIR.exists():
+        for f in sorted(CACHE_DIR.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(f.read_text())
+            except Exception:  # noqa: BLE001
+                continue
+            cached_ids.add(f.stem)
+            out.append(
+                {
+                    "run_id": f.stem,
+                    "saved_at": data.get("saved_at"),
+                    "results_dir": data.get("results_dir"),
+                    "tickers": data.get("tickers", []),
+                    "request": data.get("request", {}),
+                    "row_count": len(data.get("response", {}).get("rows", [])),
+                    "source": data.get("source", "web"),
+                }
+            )
+
+    for d in _csv_run_dirs():
+        if d.name in cached_ids:
+            continue  # JSON cache wins — no duplicate
+        pt_csv = d / "_oos_per_ticker.csv"
         try:
-            data = json.loads(f.read_text())
-        except Exception:  # noqa: BLE001
+            with pt_csv.open(newline="") as fh:
+                tickers = [r.get("ticker", "") for r in csv.DictReader(fh)]
+            row_count = len(tickers)
+            saved_at = datetime.fromtimestamp(pt_csv.stat().st_mtime).isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001 — a malformed dir shouldn't kill the list
             continue
         out.append(
             {
-                "run_id": f.stem,
-                "saved_at": data.get("saved_at"),
-                "results_dir": data.get("results_dir"),
-                "tickers": data.get("tickers", []),
-                "request": data.get("request", {}),
-                "row_count": len(data.get("response", {}).get("rows", [])),
+                "run_id": d.name,
+                "saved_at": saved_at,
+                "results_dir": d.name,
+                "tickers": tickers,
+                "request": {},
+                "row_count": row_count,
+                "source": "csv",
             }
         )
+
+    # Newest first across both sources (run-dir names are timestamp-suffixed).
+    out.sort(key=lambda r: r.get("saved_at") or "", reverse=True)
     return out
 
 
 @router.get("/runs/{run_id}")
 def load_run(run_id: str) -> dict:
-    """Load one cached OOS run by id."""
+    """Load one OOS run by id — JSON cache first, then a CSV run directory."""
     p = CACHE_DIR / f"{run_id}.json"
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"OOS run '{run_id}' not found")
-    return json.loads(p.read_text())
+    if p.exists():
+        return json.loads(p.read_text())
+
+    run_dir = RESULTS_DIR / run_id
+    if run_dir.is_dir() and (run_dir / "_oos_per_ticker.csv").exists():
+        try:
+            return _read_csv_run(run_dir)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"OOS run '{run_id}' CSV could not be parsed: {e}",
+            ) from e
+
+    raise HTTPException(status_code=404, detail=f"OOS run '{run_id}' not found")

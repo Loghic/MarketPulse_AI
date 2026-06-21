@@ -12,6 +12,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import patch
 
 import numpy as np
@@ -57,6 +58,15 @@ class _StubAPI:
     df: pd.DataFrame
     lstm_available: bool = False
 
+    # Real models the non-baseline branches of run_single_backtest look up on
+    # `api`. We never exercise them (tests restrict to baselines), but the
+    # attributes must exist for the lookups not to raise. ClassVar keeps them
+    # off the dataclass constructor. Typed Any so assigning a stub is fine.
+    knn: ClassVar[Any] = None
+    knn_enhanced: ClassVar[Any] = None
+    linreg: ClassVar[Any] = None
+    linreg_enhanced: ClassVar[Any] = None
+
     def get_data(self, ticker, period="max"):  # noqa: ARG002
         return self.df.copy()
 
@@ -78,12 +88,18 @@ class _StubAPI:
         return False
 
 
-# Lazily satisfy the attribute lookups run_single_backtest does on `api`
-# for the non-baseline branches even when we restrict to baselines.
-_StubAPI.knn = None
-_StubAPI.knn_enhanced = None
-_StubAPI.linreg = None
-_StubAPI.linreg_enhanced = None
+if TYPE_CHECKING:
+    from interface.api import StockAppAPI
+
+
+def _stub_api(df: pd.DataFrame) -> StockAppAPI:
+    """Build a _StubAPI but type it as StockAppAPI for the harness call.
+
+    oos_one_ticker is annotated to take a real StockAppAPI; the stub is
+    structurally sufficient for the baseline-only paths the tests exercise.
+    Casting here keeps every (typed) call site clean without per-call casts.
+    """
+    return cast("StockAppAPI", _StubAPI(df=df))
 
 
 # ----------------------------------------------------------------------
@@ -189,7 +205,7 @@ class TestIO:
 
 class TestOOSOneTicker:
     def test_returns_none_when_data_too_short(self):
-        api = _StubAPI(df=_prices_df(days=50))  # need ≥ 2*100 + 20 = 220
+        api = _stub_api(_prices_df(days=50))  # need ≥ 2*100 + 20 = 220
         result = oos_one_ticker(
             api,
             ticker="ZZZ",
@@ -216,7 +232,7 @@ class TestOOSOneTicker:
         """
         from engine import backtester as backtester_module
 
-        api = _StubAPI(df=_prices_df(days=400))
+        api = _stub_api(_prices_df(days=400))
 
         original_run = backtester_module.Backtester.run
         seen: list[dict] = []
@@ -275,7 +291,7 @@ class TestOOSOneTicker:
         """The harness must pick the variant with the highest in-sample
         total_return as its winner — even when that variant loses OOS.
         """
-        api = _StubAPI(df=_prices_df(days=400))
+        api = _stub_api(_prices_df(days=400))
         row = oos_one_ticker(
             api,
             ticker="AAA",
@@ -313,7 +329,7 @@ class TestOOSOneTicker:
         assert row["in_sample_return"] == pytest.approx(best.total_return, abs=1e-9)
 
     def test_beats_bh_flag_matches_definition(self):
-        api = _StubAPI(df=_prices_df(days=400))
+        api = _stub_api(_prices_df(days=400))
         row = oos_one_ticker(
             api,
             ticker="AAA",
@@ -339,7 +355,7 @@ class TestOOSOneTicker:
 
 class TestOOSGating:
     def _row(self, theta: float, models=None):
-        api = _StubAPI(df=_prices_df(days=400))
+        api = _stub_api(_prices_df(days=400))
         return oos_one_ticker(
             api,
             ticker="AAA",
@@ -400,7 +416,7 @@ class TestOOSGating:
         """The gate must not change the selection/evaluation split."""
         from engine import backtester as backtester_module
 
-        api = _StubAPI(df=_prices_df(days=400))
+        api = _stub_api(_prices_df(days=400))
         original_run = backtester_module.Backtester.run
         seen: list[dict] = []
 
