@@ -23,14 +23,14 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
 
 ## Phase 1 — Measurement rigor (do first)
 
-### 1.1 Out-of-sample model-selection harness  [foundational]
+### 1.1 Out-of-sample model-selection harness  [foundational] ✅ DONE
 - Pick the best model+period on window N; evaluate it *only* on the next disjoint
   window N+1. Report OOS beat-B&H rate + median return.
 - Motivation: best-per-ticker is selection-inflated, and winners are unstable
   (1 of 7 stable across the 40d/100d runs). Every result below is judged OOS,
   never on in-sample best-per-ticker.
 
-### 1.2 Naive-strategy benchmark suite
+### 1.2 Naive-strategy benchmark suite ✅ DONE
 - Add trivial "models" so the ML must clear a real bar, not just B&H:
   - **Always Long** — predict UP every day (define as hold-long, no daily churn, so
     it isn't just paying fees; this is the "is the model better than blind optimism?" test).
@@ -44,7 +44,12 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
 - Pass bar for any real model: **beat Previous-Day-Direction and Always-Long**, not
   just B&H.
 
-### 1.3 Confidence calibration + gating  [highest-value lever]
+### 1.3 Confidence calibration + gating  [highest-value lever]  ✅ DONE
+> Implemented: `engine/calibration.py` (reliability bins, Brier, ECE, gating
+> metrics), `Backtester(min_confidence=θ)` in-engine gate, `--min-confidence`
+> on `backtest.py`/`run_all.py`, `--confidence-sweep` printer, and
+> `--min-confidence` on `scripts/oos_harness.py` (same θ on both windows — the
+> out-of-sample "does gating survive?" test). See *Phase-1.3/1.4* in AGENTS.md.
 - First read the existing confidence-calibration output: are high-confidence days
 actually more accurate? If calibration is flat, gating only shrinks exposure.
 - Add `--min-confidence θ`: days below θ are flat (0 P&L, no fee, excluded from
@@ -57,7 +62,11 @@ flag in `backtest.py` / `run_all.py`.
 - Brier score
 - Expected Calibration Error (ECE)
 
-### 1.4 Statistical significance testing
+### 1.4 Statistical significance testing  ✅ DONE
+> Implemented: `engine/significance.py` (exact binomial test, Wilson CI,
+> bootstrap CI on returns, permutation test, Benjamini-Hochberg FDR),
+> `--significance` printer on `backtest.py`. Tests only *traded* days and
+> applies FDR across the models in one report (no grid p-hacking).
 - Currently reported: accuracy, returns, Sharpe, Sortino. Add:
   - **Binomial test** on directional accuracy (H0: p = 0.5) → p-value.
   - **Wilson score CI** on accuracy (honest interval, not ±point estimate).
@@ -182,7 +191,7 @@ Captured for later — not yet implemented.
 
 | Priority | Items |
 |---|---|
-| **Now** | 1.1 OOS harness · 1.2 naive benchmarks · 1.3 significance · 1.4 confidence gating |
+| **Done** | 1.1 OOS harness · 1.2 naive benchmarks · 1.3 confidence calibration + gating · 1.4 significance testing |
 | **Next** | 2.1 turnover/fees · 2.2 SL sweep · 2.3 LSTM focus · 2.5 reframe metric |
 | **Later** | 2.4 k-NN sweep · 3.1 experiment tracking · 3.2 model registry |
 | **After an edge** | 4.1 multi-asset portfolio · backlog (signals, Reddit, regression/intraday) |

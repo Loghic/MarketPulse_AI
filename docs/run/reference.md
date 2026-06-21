@@ -29,6 +29,11 @@ DEFAULT_BACKTEST_DAYS = 5
 DEFAULT_TRADING_FEE_PCT = 0.05  # per side
 DEFAULT_STOP_LOSS_PCT   = 0.0   # 0 = disabled
 
+# Confidence gating — --min-confidence default + the --confidence-sweep
+# thresholds.
+DEFAULT_MIN_CONFIDENCE = 0.0                       # 0 = trade every day
+CONFIDENCE_SWEEP = [0.0, 0.55, 0.60, 0.65, 0.70]   # θ values --confidence-sweep iterates
+
 # News + sentiment
 DEFAULT_SENTIMENT_METHOD    = "vader"    # "vader" | "finbert" | "naive"
 DEFAULT_NEWS_SOURCES        = ["yahoo"]  # ["yahoo", "gdelt"] for combined
@@ -56,8 +61,8 @@ KRONOS_T            = 1.0     # sampling temperature
 KRONOS_TOP_P        = 0.9     # nucleus sampling cutoff
 
 # Model-family labels — the single source the `--models` filter uses
-# (key → display name). MODEL_FAMILIES is derived from it. Phase-1.2
-# adds "baseline" for the naive baselines so --models baseline works.
+# (key → display name). MODEL_FAMILIES is derived from it. The
+# "baseline" family lets --models baseline select the naive baselines.
 MODEL_FAMILY_LABELS = {
     "knn":      "k-NN",
     "linreg":   "LinReg",
@@ -84,8 +89,10 @@ uv run python -m pytest
 
 # A specific module
 uv run python -m pytest tests/test_news_pipeline.py -v
-uv run python -m pytest tests/test_baselines.py -v       # Phase-1.2
-uv run python -m pytest tests/test_oos_harness.py -v     # Phase-1.1
+uv run python -m pytest tests/test_baselines.py -v       # naive baselines
+uv run python -m pytest tests/test_oos_harness.py -v     # out-of-sample harness
+uv run python -m pytest tests/test_calibration.py -v     # confidence calibration + gating
+uv run python -m pytest tests/test_significance.py -v    # statistical significance
 ```
 
 ### Static checks (also run by pre-commit)
@@ -159,7 +166,7 @@ data/market_data.db                       ← SQLite (prices + news, auto-create
 models/{ticker}_{period}_{preset}.pt      ← saved LSTM weights (gitignored)
 predictions/{ticker}/{date}.json          ← cached predict outputs
 backtests/{ticker}/{date}_{days}d.json    ← cached backtest outputs
-results/{scope}_{days}d_…/                ← run_all.py output trees
+results/{scope}_{days}d_…[_mcNNN]…/        ← run_all.py output trees (mcNNN = --min-confidence gate)
 results/oos_{scope}_{days}d_…_{ts}/       ← oos_harness.py output trees
 ```
 

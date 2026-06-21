@@ -64,9 +64,88 @@ Five trivial "predictors" run alongside the real models by default
 exist so the real models have to clear a real bar, not just B&H — if
 an LSTM doesn't beat Always-Long in a bull market, that's the
 finding. Pass `--no-baselines` to skip them, or `--models baseline
-lstm` to run only LSTM and the baselines side by side. The Phase-1.1
+lstm` to run only LSTM and the baselines side by side. The
 out-of-sample harness ([research.md](research.md#oos-harness)) uses
 this family explicitly.
+
+### Confidence gating (`--min-confidence`, `--confidence-sweep`)
+
+Every model emits a per-day **confidence** (the probability of the
+direction it chose, always ≥ 0.5). Confidence gating sits out the
+low-confidence days instead of trading them — the idea being that a
+model might only be predictive when it's sure.
+
+`--min-confidence θ` runs the backtest with a live gate: any day whose
+confidence is below `θ` is **flat** (0 P&L, no fee) and is **excluded
+from accuracy**. The reported accuracy/return then describe *traded*
+days only, and the summary adds a coverage line (`Coverage: 12/30
+(40%, θ=0.65)`).
+
+```bash
+# Trade only days the model is ≥65% sure about
+uv run python backtest.py --stocks --days 100 --min-confidence 0.65 --buy-hold
+```
+
+You don't have to pick `θ` blind. `--confidence-sweep` runs **one**
+ungated backtest and reports the gate's effect at every threshold in
+`config.CONFIDENCE_SWEEP` (`0.0, 0.55, 0.60, 0.65, 0.70`) — coverage,
+**traded-day accuracy**, gated return, and fees saved — plus a Brier
+score and Expected Calibration Error (ECE) per model so you can see
+whether confidence means anything at all:
+
+```bash
+uv run python backtest.py --tickers NVDA --days 100 --confidence-sweep
+```
+
+```
+=================== CONFIDENCE GATING SWEEP ====================
+  MODEL                  | θ      | COVERAGE       | TRADED ACC  | RETURN      | FEES SAVED
+  --------------------------------------------------------------------------------------
+  LSTM                   | 0.00   | 100/100 (100%) | 51.0%       |    -2.1500% |    +0.0000%
+                         | 0.55   | 71/100 (71%)   | 52.1%       |    -1.3100% |    +0.0580%
+                         | 0.60   | 44/100 (44%)   | 54.5%       |    -0.4200% |    +0.1120%
+                         | 0.65   | 18/100 (18%)   | 50.0%       |    -0.3900% |    +0.1640%
+                         | 0.70   |  4/100 (4%)    | 50.0%       |    -0.0900% |    +0.1920%
+  --------------------------------------------------------------------------------------
+```
+
+**How to read it.** The gate adds edge only if **traded-day accuracy
+is materially > 0.5 *and* the return improves vs θ=0**. A flat
+accuracy column (and a Brier/ECE that doesn't improve with confidence)
+means confidence is uncalibrated — gating just shrinks exposure
+without finding a predictive subset. The baseline finding (no edge at
+any horizon) predicts gating mostly fails; the point is to *measure*
+that, not assume it.
+
+`--min-confidence` also works on `run_all.py` (the batch wrapper). The
+run-dir name then carries an `mcNNN` segment (e.g.
+`stocks_100d_fee003_mc065`) so gated and ungated batches don't
+overwrite each other.
+
+### Statistical significance (`--significance`)
+
+A 54% accuracy over 50 days is consistent with a coin flip.
+`--significance` puts error bars on every model so you don't read
+meaning into noise:
+
+```bash
+uv run python backtest.py --tickers NVDA --days 100 --significance
+```
+
+It prints, per model: a two-sided **binomial p-value** (H0: accuracy =
+0.5), a **Wilson confidence interval** on accuracy, a **bootstrap CI**
+on total return (resampled from the daily P&L, so fat tails are
+respected), and a **permutation p-value** vs shuffled directions. The
+final `FDR✓` column applies a **Benjamini-Hochberg** false-discovery
+correction *across the models in the report* — the plan's antidote to
+p-hacking a big grid. Read it as: a model is only interesting if its
+accuracy CI excludes 0.5, its binomial p survives FDR, **and** its
+return CI excludes 0.
+
+Tests run on **traded** days only, so `--significance` composes with
+`--min-confidence` (the CI describes the gated subset). Both
+`--confidence-sweep` and `--significance` imply the `--full` detail
+block.
 
 ### Common recipes
 
@@ -281,9 +360,11 @@ Runs `--compare-periods` for each ticker and writes organized
 subdirectories under `results/`. Supports the same news / sentiment
 flags as `backtest.py` (`--sentiment-method`, `--news-source`,
 `--news-lookback`, `--news-half-life`, `--news-history-days`,
-`--force-news`) plus `--periods` (restrict the period sweep) and
-`--models` (restrict model families). It also prints a
-time-by-model-family rollup at the end of the batch automatically.
+`--force-news`) plus `--periods` (restrict the period sweep),
+`--models` (restrict model families), and `--min-confidence θ`
+(confidence gate — see [above](#confidence-gating---min-confidence---confidence-sweep)).
+It also prints a time-by-model-family rollup at the end of the batch
+automatically.
 
 ```bash
 uv run python run_all.py --stocks --days 50 --fees 0.03 --buy-hold
@@ -315,8 +396,10 @@ results/
     └── ...
 ```
 
-Directory name encodes run parameters (`scope_days_fees_sl_bh`), so
-different runs don't overwrite each other. (The `--periods` /
+Directory name encodes run parameters
+(`scope_days_fees_sl_mc_bh`, e.g. `stocks_100d_fee003_mc065_bh` when
+`--min-confidence 0.65` is set), so different runs don't overwrite
+each other. (The `--periods` /
 `--models` subset is *not* encoded in the directory name, so pick a
 distinct scope or move the output if you keep several subset runs side
 by side.)

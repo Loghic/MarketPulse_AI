@@ -28,6 +28,8 @@ tests/                      → Comprehensive pytest suite (103 tests)
   test_models.py            → k-NN, LinReg, LSTM predict + errors
   test_backtester.py        → P/L math, fees, SL, DD, Sharpe, Sortino, streaks, yearly
   test_api.py               → API facade, benchmarks, CSV export, sentiment
+  test_calibration.py       → §1.3 reliability bins, Brier, ECE, gating + in-engine gate
+  test_significance.py      → §1.4 binomial, Wilson CI, bootstrap CI, permutation, BH-FDR
   test_logger.py            → Logger modes, progress bar, config sanity
   test_web_api.py           → FastAPI endpoints: data, predict, backtest, train, settings, analysis
 
@@ -67,6 +69,8 @@ interface/
 
 engine/
   features.py               → Shared indicators (RSI, MACD, volatility, volume)
+  calibration.py            → Confidence calibration + gating metrics (reliability bins, Brier, ECE, gating_metrics/sweep) — Plan §1.3
+  significance.py           → Statistical significance (binomial, Wilson CI, bootstrap CI, permutation, Benjamini-Hochberg FDR) — Plan §1.4
   logger.py                 → Centralized logging + progress bars (tqdm/fallback)
   knn_model.py              → k-NN (naive + enhanced)
   lin_reg_model.py          → LinReg (naive + enhanced)
@@ -174,12 +178,14 @@ Without `--stop-loss`, no duplication occurs.
 class DayResult:
     date, predicted, actual, confidence, correct,
     close_before, close_actual, exit_price,     # exit_price = SL price or close
-    trade_pnl, trade_pnl_net, stopped_out       # stopped_out: bool
+    trade_pnl, trade_pnl_net, stopped_out,      # stopped_out: bool
+    traded                                       # False when sat out by the confidence gate (Plan §1.3)
 
 @dataclass
 class BacktestResult:
     model_name, ticker, test_days, correct, accuracy,
     fee_pct, stop_loss_pct, stopped_out_count,
+    min_confidence, sat_out_count, coverage,     # confidence gate (Plan §1.3); accuracy/return describe TRADED days only
     total_return, profit_factor, gross_profit, gross_loss,
     avg_win, avg_loss, best_day, worst_day, win_trades, loss_trades,
     max_drawdown, sharpe_ratio, sortino_ratio,
@@ -206,6 +212,9 @@ uv run python train.py --list
 uv run python backtest.py --stocks --days 20 --fees 0.03 --buy-hold
 uv run python backtest.py --tickers AAPL --days 20 --stop-loss 2 --fees 0.03
 uv run python backtest.py --tickers NVDA --days 30 --full --timing            # per-model time breakdown
+uv run python backtest.py --tickers NVDA --days 100 --confidence-sweep         # θ-sweep: coverage/traded-acc/return/fees-saved (Plan §1.3)
+uv run python backtest.py --tickers NVDA --days 100 --significance             # binomial p + Wilson CI + bootstrap CI + FDR (Plan §1.4)
+uv run python backtest.py --stocks --days 100 --min-confidence 0.65            # gate: sit out days below 65% confidence
 uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y    # subset of periods (matrix)
 uv run python backtest.py --compare-periods --output results.csv
 
@@ -439,3 +448,25 @@ Implements `plan.md` §1.1 (out-of-sample model-selection harness) and §1.2 (na
 - **Tests:** `tests/test_baselines.py` (18 cases pinning each baseline's behaviour plus interface contract on the factory) and `tests/test_oos_harness.py` (11 cases — aggregate math against a hand-computed two-ticker example, CSV roundtrips, **disjoint-window guarantee** via a `Backtester.run` spy that captures every call's `df` date range, winner-is-highest-in-sample invariant, beats-B&H flag definition). End-to-end OOS tests drive the harness with the baseline-only model set so they run in milliseconds without a trained LSTM.
 
 - **macOS FD pressure** — full pytest on macOS used to fail mid-run with `OSError: [Errno 24] Too many open files` (default `ulimit -n = 256` is exhausted by HuggingFace caches, SQLite, FastAPI TestClient sockets, tmp_path dirs). `tests/conftest.py` now bumps `RLIMIT_NOFILE` to `min(4096, hard)` at import time, wrapped in try/except so Linux / CI / sandboxed shells silently no-op. The OOS module-imports smoke test originally used `importlib.reload()` which re-executed the entire `engine.backtest_helpers` chain and was the FD-cascade trigger; it's a plain attribute check now.
+
+### Phase-1.3/1.4 measurement rigor (calibration + gating + significance)
+
+Implements `plan.md` §1.3 (confidence calibration + gating) and §1.4 (statistical significance). Calibration says *whether* confidence means anything; gating *acts* on it; significance says *whether any reported edge is real*. All metric code is pure (numpy + stdlib only — **no scipy**, which is only a transitive dep here).
+
+- **`engine/calibration.py`** (§1.3) — pure metrics from a `DayResult` list:
+  - `reliability_bins()` — the data behind a reliability diagram (mean confidence vs observed accuracy per bucket; confidence lives in [0.5, 1.0] since it's the prob of the *chosen* direction).
+  - `brier_score()` — MSE of confidence vs the 0/1 correctness target (0.25 = "always 0.5").
+  - `expected_calibration_error()` — bin-weighted mean |confidence − accuracy| (0 = perfectly calibrated).
+  - `gating_metrics()` / `gating_sweep()` — for a threshold θ: traded count, **coverage**, **traded-day accuracy**, gated return, and **fees saved**. Computed post-hoc from one ungated run so a single backtest sweeps many θ; matches the in-engine gate exactly.
+
+- **In-engine gate** — `Backtester(min_confidence=θ)`. In the per-day loop, a day with `confidence < θ` is sat out: `traded=False`, P&L and fee zeroed, stop-loss unset. Aggregation (accuracy / return / streaks / Sharpe / yearly) is computed over **traded days only**; sat-out days stay in `.days` so their confidence still feeds calibration. New `BacktestResult` fields: `min_confidence`, `sat_out_count`, `coverage`. With θ=0 (default) every day trades and behaviour is byte-for-byte unchanged. Wired through `run_single_backtest` (the no-SL clone inherits θ) and exposed as `--min-confidence` on `backtest.py` + `run_all.py` (the run-dir name gets a `mc060` segment so gated batches don't overwrite ungated ones).
+
+- **`engine/significance.py`** (§1.4) — `binomial_test_two_sided()` (exact, H0 p=0.5), `wilson_interval()` (closed-form, never escapes [0,1]), `bootstrap_ci()` (seeded percentile bootstrap on the daily P&L series; `sum`/`mean`/`sharpe`), `permutation_test_accuracy()` (shuffle predicted directions for the null), `benjamini_hochberg()` (FDR across a family of p-values). `significance_for_days()` bundles them for one model. The plan's anti-p-hacking rule is enforced two ways: tests run only on **traded** days, and `print_significance` applies BH-FDR **across the models in one report** rather than reading a single raw p-value.
+
+- **Console** — `print_confidence_calibration` now also prints a Brier/ECE table. `--confidence-sweep` prints `print_confidence_sweep` (the θ-sweep over `config.CONFIDENCE_SWEEP`); `--significance` prints `print_significance`. Both imply the `--full` detail block. Config: `DEFAULT_MIN_CONFIDENCE = 0.0`, `CONFIDENCE_SWEEP = [0.0, 0.55, 0.60, 0.65, 0.70]`.
+
+- **Tests:** `tests/test_calibration.py` (19 cases — bin edges/folding, Brier & ECE hand-computed values, gating math, plus an in-engine gate test proving sat-out days have zero P&L and that engine `total_return` equals the post-hoc `gating_metrics`) and `tests/test_significance.py` (26 cases — binomial symmetry/known values, Wilson 27/40≈[0.519,0.802], bootstrap brackets the point & is seed-reproducible, permutation extremes, the classic BH worked example). All pure-function/toy-model driven, run in <0.3s, no trained model or network needed.
+
+- **Pass bars to read off the output:** §1.3 — traded-day accuracy materially > 0.5 *and* gated return improves vs θ=0. §1.4 — accuracy CI excludes 0.5 *and* the binomial p survives BH-FDR *and* the return bootstrap CI excludes 0. The baseline finding (no edge at any horizon) predicts these mostly fail; that's the point — the harness now makes "no edge" a measured conclusion, not an impression.
+
+- **OOS gating** — `scripts/oos_harness.py` accepts `--min-confidence θ`, threaded into the `Backtester` so the **same** gate applies to both the selection and evaluation windows (the honest "does committing to θ survive OOS?" question). **θ is fixed, never swept inside the harness** — sweeping it on the eval window would reintroduce the selection inflation the harness exists to kill; run once per θ and compare `_oos_summary.csv` files instead. `oos_one_ticker` now also returns OOS calibration (`oos_coverage`, `oos_traded_days`, `oos_sat_out`, `oos_brier`, `oos_ece`) and significance (`oos_binomial_p`, `oos_acc_ci_lo/hi`) on the evaluation window; `aggregate()` adds `median_oos_coverage`, `median_oos_brier`, `median_oos_ece`, `tickers_significant_p05`; `build_run_dir` tags the dir `mcNNN`; the console prints a gating block + per-ticker coverage column only when θ>0. Tests in `tests/test_oos_harness.py` (`TestOOSGating`, `TestAggregateGating`) cover coverage bookkeeping, the disjoint-window guarantee *under* the gate, the gating aggregate block, and legacy-row back-compat. See [docs/run/research.md](docs/run/research.md) "Confidence gating, out-of-sample".

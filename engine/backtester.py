@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from config import DEFAULT_STOP_LOSS_PCT, DEFAULT_TRADING_FEE_PCT
+from config import DEFAULT_MIN_CONFIDENCE, DEFAULT_STOP_LOSS_PCT, DEFAULT_TRADING_FEE_PCT
 from engine.logger import get_logger
 
 # Type alias for a per-day sentiment lookup function.
@@ -47,6 +47,12 @@ class DayResult:
     trade_pnl: float
     trade_pnl_net: float
     stopped_out: bool
+    # Confidence gating: False when the day's confidence was
+    # below the backtester's ``min_confidence`` threshold and the position
+    # was sat out (flat — 0 P&L, no fee). The day is still recorded (its
+    # confidence feeds calibration metrics) but excluded from accuracy /
+    # returns / streaks. Always True when gating is disabled.
+    traded: bool = True
     # Sentiment that was actually fed into model.predict() for this day.
     # 0.0 for price-only variants (no news). For "+ News" variants this is
     # the time-decay-weighted score from news strictly older than ``date``.
@@ -80,6 +86,14 @@ class BacktestResult:
     fee_pct: float = 0.0
     stop_loss_pct: float = 0.0
     elapsed_seconds: float = 0.0  # wall time for this model's walk-forward run
+    # Confidence gating. When min_confidence > 0, low-confidence
+    # days are sat out: they don't count toward accuracy/return/streaks.
+    # ``test_days``/``correct``/``accuracy`` then describe *traded* days only;
+    # ``sat_out_count`` is how many were skipped, and ``coverage`` =
+    # traded / (traded + sat_out).
+    min_confidence: float = 0.0
+    sat_out_count: int = 0
+    coverage: float = 1.0
     # Profit metrics (net of fees)
     total_return: float = 0.0
     profit_factor: float = 0.0
@@ -116,9 +130,15 @@ class BacktestResult:
         sl_str = (
             f"  SL: {self.stopped_out_count}/{self.test_days}" if self.stop_loss_pct > 0 else ""
         )
+        gate_str = (
+            f"  Coverage: {self.test_days}/{self.test_days + self.sat_out_count} "
+            f"({self.coverage:.0%}, θ={self.min_confidence:.2f})"
+            if self.min_confidence > 0
+            else ""
+        )
         lines = [
             f"  Model: {self.model_name}",
-            f"  Accuracy: {self.correct}/{self.test_days} ({self.accuracy:.1%})",
+            f"  Accuracy: {self.correct}/{self.test_days} ({self.accuracy:.1%}){gate_str}",
             f"  Return: {self.total_return:+.4%}  |  PF: {pf_str}  |  "
             f"DD: {self.max_drawdown:+.4%}  |  "
             f"Sharpe: {self.sharpe_ratio:.2f}  |  Sortino: {self.sortino_ratio:.2f}",
@@ -145,10 +165,13 @@ class Backtester:
         n_days: int = 5,
         fee_pct: float = DEFAULT_TRADING_FEE_PCT,
         stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     ):
         self.n_days = n_days
         self.fee_pct = fee_pct
         self.stop_loss_pct = stop_loss_pct
+        # Days with confidence below this are sat out (flat). 0 = trade every day.
+        self.min_confidence = min_confidence
 
     # ------------------------------------------------------------------
     # Trade P/L
@@ -497,6 +520,18 @@ class Backtester:
             raw_pnl = self._compute_trade_pnl(predicted, entry_price, exit_price)
             net_pnl = self._apply_fees(raw_pnl, self.fee_pct)
 
+            # Confidence gate: a day below the threshold is sat
+            # out. We still record it (its confidence feeds calibration) but
+            # zero its P&L and fee, mark it not-traded, and unset stop-loss
+            # (no position = nothing to stop). The aggregate metrics below
+            # only consider traded days.
+            traded = confidence >= self.min_confidence
+            if not traded:
+                raw_pnl = 0.0
+                net_pnl = 0.0
+                exit_price = close_actual
+                stopped_out = False
+
             day_results.append(
                 DayResult(
                     date=str(df["date"].iloc[eval_idx]),
@@ -511,26 +546,38 @@ class Backtester:
                     trade_pnl_net=net_pnl,
                     stopped_out=stopped_out,
                     sentiment_score=float(sentiment_today),
+                    traded=traded,
                 )
             )
 
-        correct_count = sum(1 for d in day_results if d.correct)
-        stopped_count = sum(1 for d in day_results if d.stopped_out)
-        total = len(day_results)
+        # Confidence gating splits the days: only *traded* days (confidence
+        # ≥ min_confidence) count toward accuracy / returns / streaks / risk.
+        # Sat-out days remain in ``day_results`` (their confidence feeds the
+        # calibration metrics) but contribute nothing here. With gating off
+        # (min_confidence = 0) every day is traded and behaviour is unchanged.
+        traded_days = [d for d in day_results if d.traded]
+        total_seen = len(day_results)
+        sat_out = total_seen - len(traded_days)
 
-        metrics = self._compute_profit_metrics(day_results)
-        streaks = self._compute_streaks(day_results)
+        correct_count = sum(1 for d in traded_days if d.correct)
+        stopped_count = sum(1 for d in traded_days if d.stopped_out)
+        total = len(traded_days)
+
+        metrics = self._compute_profit_metrics(traded_days)
+        streaks = self._compute_streaks(traded_days)
+        # Buy-and-hold spans the whole evaluation window regardless of gating —
+        # it's the do-nothing benchmark, not a function of which days we traded.
         buy_hold = round(self._compute_buy_hold(day_results), 8)
         buy_hold_dd = self._compute_buy_hold_drawdown(day_results)
 
-        # Risk metrics from net P/L series
-        pnls = [d.trade_pnl_net for d in day_results]
+        # Risk metrics from net P/L series (traded days only)
+        pnls = [d.trade_pnl_net for d in traded_days]
         max_dd = self._compute_max_drawdown(pnls)
         sharpe = self._compute_sharpe(pnls)
         sortino = self._compute_sortino(pnls)
 
-        # Yearly breakdown
-        yearly = self._compute_yearly_performance(day_results)
+        # Yearly breakdown (traded days only)
+        yearly = self._compute_yearly_performance(traded_days)
 
         elapsed = time.perf_counter() - _t0
         return BacktestResult(
@@ -541,6 +588,9 @@ class Backtester:
             accuracy=round(correct_count / total, 4) if total > 0 else 0.0,
             fee_pct=self.fee_pct,
             stop_loss_pct=self.stop_loss_pct,
+            min_confidence=self.min_confidence,
+            sat_out_count=sat_out,
+            coverage=round(total / total_seen, 6) if total_seen else 1.0,
             elapsed_seconds=round(elapsed, 4),
             buy_hold_return=buy_hold,
             buy_hold_max_drawdown=buy_hold_dd,

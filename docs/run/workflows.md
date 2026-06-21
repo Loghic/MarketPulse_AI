@@ -76,6 +76,18 @@ uv run python scripts/oos_harness.py --stocks --days 50 --fees 0.03 \
     --buy-hold --no-refresh --sentiment-method finbert
 uv run python scripts/oos_harness.py --crypto --days 50 --fees 0.15 \
     --buy-hold --no-refresh --sentiment-method finbert
+
+# ----------------------------------------------------------------------
+# 6. Measurement rigor — is confidence calibrated, and is any reported
+#    edge distinguishable from chance? (see research.md)
+# ----------------------------------------------------------------------
+# Sweep the confidence gate + print Brier/ECE per model.
+uv run python backtest.py --stocks --days 100 --no-refresh \
+    --sentiment-method finbert --confidence-sweep
+
+# Significance: binomial p + Wilson CI + bootstrap CI + BH-FDR.
+uv run python backtest.py --stocks --days 100 --no-refresh \
+    --sentiment-method finbert --significance --buy-hold
 ```
 
 Each CSV is self-describing — the `ticker`, `period`, `model`,

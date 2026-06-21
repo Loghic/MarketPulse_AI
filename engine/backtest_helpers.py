@@ -376,6 +376,7 @@ def run_single_backtest(
             n_days=backtester.n_days,
             fee_pct=backtester.fee_pct,
             stop_loss_pct=0.0,
+            min_confidence=backtester.min_confidence,
         )
 
     results = []
@@ -592,7 +593,15 @@ def print_direction_accuracy(all_results):
 
 
 def print_confidence_calibration(all_results):
-    """Are high-confidence predictions actually more accurate?"""
+    """Are high-confidence predictions actually more accurate?
+
+    First the original high/low split, then per-model Brier score + ECE — the
+    summary numbers that say whether confidence is calibrated at all. If ECE
+    is small and high-confidence accuracy clearly beats low, gating can add
+    edge; if the curve is flat, gating only shrinks exposure.
+    """
+    from engine.calibration import brier_score, expected_calibration_error, pairs_from_days
+
     print(f"\n  {'CONFIDENCE CALIBRATION':=^66}")
     print(f"  {'MODEL':<25} | {'High (>65%)':<16} | {'Low (≤65%)':<16}")
     print(f"  {'-' * 62}")
@@ -604,6 +613,92 @@ def print_confidence_calibration(all_results):
         hs = f"{ha:.0%} ({len(high)} pred)" if high else "n/a"
         ls = f"{la:.0%} ({len(low)} pred)" if low else "n/a"
         print(f"  {r.model_name:<25} | {hs:<16} | {ls:<16}")
+
+    # Brier + ECE (lower = better calibrated). 0.25 Brier = "always 0.5".
+    print(f"\n  {'CALIBRATION SCORES (lower = better)':=^66}")
+    print(f"  {'MODEL':<25} | {'BRIER':<10} | {'ECE':<10} | {'N':<6}")
+    print(f"  {'-' * 58}")
+    for r in all_results:
+        pairs = pairs_from_days(r.days)
+        bs = brier_score(pairs)
+        ece = expected_calibration_error(pairs)
+        print(f"  {r.model_name:<25} | {bs:<10.4f} | {ece:<10.4f} | {len(pairs):<6}")
+
+
+def print_confidence_sweep(all_results, fee_pct: float, thresholds: list[float] | None = None):
+    """θ-sweep table: coverage / traded-day accuracy / return /
+    fees saved at each confidence gate, computed post-hoc from one ungated run.
+
+    Pass bar: traded-day accuracy materially > 0.5 AND return improves vs θ=0.
+    """
+    from config import CONFIDENCE_SWEEP
+    from engine.calibration import gating_sweep
+
+    thresholds = thresholds or list(CONFIDENCE_SWEEP)
+    print(f"\n  {'CONFIDENCE GATING SWEEP':=^66}")
+    print(
+        f"  {'MODEL':<22} | {'θ':<6} | {'COVERAGE':<14} | "
+        f"{'TRADED ACC':<11} | {'RETURN':<11} | {'FEES SAVED':<10}"
+    )
+    print(f"  {'-' * 86}")
+    for r in all_results:
+        rows = gating_sweep(r.days, thresholds, fee_pct)
+        for i, g in enumerate(rows):
+            name = r.model_name if i == 0 else ""
+            cov = f"{g.traded}/{g.total} ({g.coverage:.0%})"
+            acc = f"{g.traded_accuracy:.1%}" if g.traded else "n/a"
+            print(
+                f"  {name:<22} | {g.threshold:<6.2f} | {cov:<14} | "
+                f"{acc:<11} | {g.gated_return:<+11.4%} | {g.fees_saved:<+10.4%}"
+            )
+        print(f"  {'-' * 86}")
+
+
+def print_significance(all_results, confidence: float = 0.95):
+    """Statistical-significance tests: binomial p + Wilson CI on
+    accuracy, bootstrap CI on return, permutation p vs shuffled directions,
+    with Benjamini-Hochberg FDR across the models shown.
+
+    Only *traded* days (confidence ≥ gate) feed the tests, matching what the
+    reported accuracy/return describe.
+    """
+    from engine.significance import benjamini_hochberg, significance_for_days
+
+    print(f"\n  {'STATISTICAL SIGNIFICANCE':=^66}")
+    reports = []
+    for r in all_results:
+        traded = [d for d in r.days if d.traded]
+        rep = significance_for_days(
+            [d.predicted for d in traded],
+            [d.actual for d in traded],
+            [d.trade_pnl_net for d in traded],
+            confidence=confidence,
+        )
+        reports.append(rep)
+
+    # FDR across the binomial p-values of every model in this report.
+    rejected = benjamini_hochberg([rep.binomial_p for rep in reports], alpha=1 - confidence)
+
+    print(
+        f"  {'MODEL':<22} | {'ACC':<7} | {'ACC ' + str(int(confidence * 100)) + '% CI':<16} | "
+        f"{'BINOM p':<9} | {'PERM p':<8} | {'RET CI':<22} | FDR✓"
+    )
+    print(f"  {'-' * 104}")
+    for r, rep, rej in zip(all_results, reports, rejected, strict=False):
+        ci = f"[{rep.wilson.lo:.2f}, {rep.wilson.hi:.2f}]"
+        ret_ci = f"[{rep.return_ci.lo:+.2%}, {rep.return_ci.hi:+.2%}]"
+        mark = "✓" if rej else ""
+        print(
+            f"  {r.model_name:<22} | {rep.accuracy:<7.1%} | {ci:<16} | "
+            f"{rep.binomial_p:<9.4f} | {rep.permutation_p:<8.4f} | {ret_ci:<22} | {mark}"
+        )
+    print(
+        f"  {'-' * 104}\n"
+        f"  FDR✓ = accuracy ≠ 0.5 survives Benjamini-Hochberg at "
+        f"α={1 - confidence:.2f} across the {len(reports)} models above.\n"
+        f"  Binomial H0: accuracy = 0.5. Return CI = {int(confidence * 100)}% "
+        f"bootstrap on daily net P&L (a CI spanning 0 = return indistinguishable from flat)."
+    )
 
 
 def print_profit_analysis(

@@ -1,4 +1,4 @@
-"""test_baselines.py — Naive-strategy baselines (Plan §1.2).
+"""test_baselines.py — Naive-strategy baselines.
 
 Each baseline implements the same ``predict(df, use_time_weights,
 sentiment_score) -> (direction, confidence)`` contract as the real

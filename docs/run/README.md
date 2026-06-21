@@ -69,6 +69,9 @@ They share the news/sentiment flags introduced in the 2026 refactor.
 | `--periods P [...]` | all | Restrict the period set in `--compare-periods` (subset of `ALL_PERIODS`). Skip the slow `max` window. Same flag on `run_all.py`. |
 | `--models F [...]` | all | Only run these model families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos`, `baseline`. Maps SL / `+ News` / time-weighted variants to the right family. Same flag on `run_all.py`. |
 | `--no-baselines` | off | Skip the naive baselines (AlwaysLong, PreviousDay, 5/20-Day Momentum, Random). Baselines included by default. |
+| `--min-confidence θ` | 0 | **Confidence gate.** Sit out days below θ confidence (flat, no fee, excluded from accuracy). Same flag on `run_all.py` (adds an `mcNNN` segment to the output dir) and on `oos_harness.py`. |
+| `--confidence-sweep` *(backtest.py)* | off | Print a θ-sweep table (coverage / traded-day accuracy / return / fees saved) + Brier/ECE, from a single ungated run. Implies `--full`. |
+| `--significance` *(backtest.py)* | off | Print binomial p + Wilson CI on accuracy, bootstrap CI on return, permutation p, with Benjamini-Hochberg FDR. Implies `--full`. |
 | `--timing` *(backtest.py)* | off | Print a slowest-first per-model compute-time table after the summary. `run_all.py` prints a time-by-model-family rollup automatically. |
 
 ```bash

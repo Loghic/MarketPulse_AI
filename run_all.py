@@ -37,6 +37,7 @@ from config import (
     ALL_PERIODS,
     ALL_TICKERS,
     CRYPTO_BENCHMARKS,
+    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_NEWS_HALF_LIFE_DAYS,
     DEFAULT_NEWS_LOOKBACK_DAYS,
     DEFAULT_SENTIMENT_METHOD,
@@ -77,6 +78,7 @@ def build_dir_name(
     stop_loss_pct: float,
     buy_hold: bool,
     sentiment_method: str | None = None,
+    min_confidence: float = 0.0,
 ) -> str:
     """
     Build subdirectory name from run parameters.
@@ -87,12 +89,15 @@ def build_dir_name(
         all_50d_fee010_sl2_bh
         custom_20d
         stocks_100d_fee003_bh_finbert
+        stocks_100d_fee003_mc060
     """
     parts = [scope, f"{n_days}d"]
     if fee_pct > 0:
         parts.append(f"fee{fee_pct * 100:03.0f}")
     if stop_loss_pct > 0:
         parts.append(f"sl{stop_loss_pct:g}")
+    if min_confidence > 0:
+        parts.append(f"mc{min_confidence * 100:03.0f}")
     if buy_hold:
         parts.append("bh")
     # Only tag the dir when the user explicitly overrode the default scorer,
@@ -118,6 +123,7 @@ def run_ticker_comparison(
     sentiment_method: str | None = None,
     models=None,
     include_baselines: bool = True,
+    min_confidence: float = 0.0,
 ):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
@@ -127,7 +133,12 @@ def run_ticker_comparison(
         print(f"  Skipping {ticker}: no data")
         return None
 
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
+    backtester = Backtester(
+        n_days=n_days,
+        fee_pct=fee_pct,
+        stop_loss_pct=stop_loss_pct,
+        min_confidence=min_confidence,
+    )
     all_rows = []
     all_combos = []
     bench = None
@@ -339,6 +350,17 @@ def main():
             "Momentum, Random). Default: baselines included."
         ),
     )
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MIN_CONFIDENCE,
+        metavar="THETA",
+        help=(
+            "Confidence gate: sit out days below THETA confidence "
+            "(0..1). Sat-out days are flat and excluded from accuracy. "
+            "0 = trade every day (default)."
+        ),
+    )
     args = parser.parse_args()
 
     tickers = resolve_scope(args, default=ALL_TICKERS)
@@ -352,6 +374,7 @@ def main():
         args.stop_loss,
         args.buy_hold,
         sentiment_method=args.sentiment_method,
+        min_confidence=args.min_confidence,
     )
     run_dir = Path(args.dir) / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +425,7 @@ def main():
             sentiment_method=args.sentiment_method,
             models=args.models,
             include_baselines=not args.no_baselines,
+            min_confidence=args.min_confidence,
         )
         if best:
             best_per_ticker.append(best)

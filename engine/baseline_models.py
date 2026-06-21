@@ -1,13 +1,13 @@
 """
 baseline_models.py – Trivial "predictors" the real models must clear.
 
-Plan §1.2: before claiming any ML edge, beat the dumbest sensible
-baselines, not just buy-and-hold. Each baseline implements the same
+Before claiming any ML edge, beat the dumbest sensible baselines, not
+just buy-and-hold. Each baseline implements the same
 ``predict(df, use_time_weights, sentiment_score) -> (direction, confidence)``
 contract the trained models use, so they slot straight into the variants
 list in ``backtest_helpers.run_single_backtest`` and share every metric.
 
-The five baselines (per ``plan.md`` §1.2):
+The five baselines:
 
 * ``AlwaysLongBaseline``         — predict UP every day
 * ``PreviousDayBaseline``        — copy yesterday's realised direction
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-# Confidence values per baseline — used by Phase-1.3 confidence gating.
+# Confidence values per baseline — used by confidence gating.
 # AlwaysLong returns max confidence (it never "doubts"); the directional
 # baselines sit at a token 0.55 (clearly above 0.5 so gating with θ=0.5
 # admits them, but below 0.6 so a θ=0.6 gate excludes them); Random

@@ -211,6 +211,13 @@ DEFAULT_TRADING_FEE_PCT = 0.05  # 0.05% per trade (buy or sell)
 # 2.0 = close if price drops 2% from entry (long) or rises 2% (short).
 DEFAULT_STOP_LOSS_PCT = 0.0  # disabled by default
 
+# Confidence gating. Days whose model confidence is below this
+# threshold are sat out (flat): 0 P&L, no fee, and excluded from the traded-day
+# accuracy. 0.0 = disabled (trade every day). The sweep below is what the
+# backtest --confidence-sweep flag iterates over.
+DEFAULT_MIN_CONFIDENCE = 0.0
+CONFIDENCE_SWEEP = [0.0, 0.55, 0.60, 0.65, 0.70]
+
 # ==================================================================
 # News & sentiment defaults
 # ==================================================================
@@ -279,7 +286,7 @@ MODEL_FAMILY_LABELS: dict[str, str] = {
     "prophet": "Prophet",
     "chronos": "Chronos-2",
     "kronos": "Kronos",
-    # Phase-1.2 naive baselines — every row has the "Baseline" prefix.
+    # Naive baselines — every row has the "Baseline" prefix.
     "baseline": "Baseline",
 }
 MODEL_FAMILIES = list(MODEL_FAMILY_LABELS)  # --models choices: ["knn", "linreg", ...]

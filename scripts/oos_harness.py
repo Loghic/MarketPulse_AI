@@ -1,5 +1,5 @@
 """
-oos_harness.py – Out-of-sample model-selection harness (Plan §1.1).
+oos_harness.py – Out-of-sample model-selection harness.
 
 The problem we're guarding against
 ----------------------------------
@@ -61,6 +61,7 @@ from config import (  # noqa: E402
     ALL_TICKERS,
     CRYPTO,
     CRYPTO_BENCHMARKS,
+    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_NEWS_HALF_LIFE_DAYS,
     DEFAULT_NEWS_LOOKBACK_DAYS,
     DEFAULT_SENTIMENT_METHOD,
@@ -72,7 +73,13 @@ from config import (  # noqa: E402
 )
 from engine.backtest_helpers import _family_key, run_single_backtest  # noqa: E402
 from engine.backtester import Backtester, BacktestResult  # noqa: E402
+from engine.calibration import (  # noqa: E402
+    brier_score,
+    expected_calibration_error,
+    pairs_from_days,
+)
 from engine.logger import get_logger, progress_bar  # noqa: E402
+from engine.significance import significance_for_days  # noqa: E402
 from interface.api import StockAppAPI  # noqa: E402
 
 log = get_logger("oos_harness")
@@ -100,11 +107,20 @@ def oos_one_ticker(
     sentiment_method: str | None,
     models: list[str] | None,
     include_baselines: bool,
+    min_confidence: float = 0.0,
 ) -> dict | None:
     """Run the OOS pipeline for one ticker.
 
     Returns ``None`` if the ticker does not have enough history to fit
     two disjoint ``n_days``-long holdout windows.
+
+    ``min_confidence`` applies the **same** confidence gate
+    to both the selection and the evaluation window — so the question it
+    answers is the honest one: "if I commit to gating at θ, does the OOS
+    edge survive?" We deliberately do *not* sweep θ here; letting the
+    harness pick the best-looking θ on the evaluation window would
+    reintroduce exactly the selection inflation the harness exists to
+    eliminate. To compare thresholds, run the harness once per θ.
     """
     df = api.get_data(ticker, period="max")
     if df.empty:
@@ -123,7 +139,12 @@ def oos_one_ticker(
     df_selection = df.iloc[:-n_days].copy()
     df_evaluation = df
 
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
+    backtester = Backtester(
+        n_days=n_days,
+        fee_pct=fee_pct,
+        stop_loss_pct=stop_loss_pct,
+        min_confidence=min_confidence,
+    )
 
     # ------------------------------------------------------------------
     # 1) Selection — run every candidate, pick the highest in-sample
@@ -195,6 +216,25 @@ def oos_one_ticker(
         )
         return None
 
+    # ------------------------------------------------------------------
+    # 3) Calibration + significance on the OOS evaluation window only.
+    #    These are descriptive: they don't change which config we picked,
+    #    they tell us whether the OOS result is calibrated / real.
+    # ------------------------------------------------------------------
+    eval_days = eval_match.days
+    pairs = pairs_from_days(eval_days)
+    brier = brier_score(pairs)
+    ece = expected_calibration_error(pairs)
+
+    # Traded-day count / accuracy already reflect the gate (eval_match was
+    # produced by the gated Backtester); coverage is traded / seen.
+    traded_days = [d for d in eval_days if d.traded]
+    sig = significance_for_days(
+        [d.predicted for d in traded_days],
+        [d.actual for d in traded_days],
+        [d.trade_pnl_net for d in traded_days],
+    )
+
     return {
         "ticker": ticker,
         "winner_model": winner_name,
@@ -209,6 +249,19 @@ def oos_one_ticker(
         "oos_sharpe": eval_match.sharpe_ratio,
         "beats_bh_oos": int(eval_match.total_return > eval_match.buy_hold_return),
         "stable": int(eval_match.total_return > 0),
+        # Confidence gating + calibration — only meaningful
+        # columns when --min-confidence > 0, but always emitted so the CSV
+        # schema is stable.
+        "min_confidence": min_confidence,
+        "oos_coverage": eval_match.coverage,
+        "oos_traded_days": eval_match.test_days,
+        "oos_sat_out": eval_match.sat_out_count,
+        "oos_brier": brier,
+        "oos_ece": ece,
+        # Significance on the OOS traded days.
+        "oos_binomial_p": sig.binomial_p,
+        "oos_acc_ci_lo": sig.wilson.lo,
+        "oos_acc_ci_hi": sig.wilson.hi,
     }
 
 
@@ -222,7 +275,14 @@ def _safe_median(xs: list[float]) -> float:
 
 
 def aggregate(rows: list[dict]) -> dict:
-    """Reduce per-ticker rows into the headline OOS summary."""
+    """Reduce per-ticker rows into the headline OOS summary.
+
+    When a confidence gate is active (``min_confidence > 0`` on any row),
+    a second block of gating-aware aggregates is appended: median OOS
+    coverage, the median OOS *traded-day* accuracy (the headline "does
+    gating isolate a predictive subset?" number), median Brier/ECE, and
+    the count of tickers whose OOS accuracy is significant at p < 0.05.
+    """
     if not rows:
         return {
             "tickers": 0,
@@ -232,9 +292,16 @@ def aggregate(rows: list[dict]) -> dict:
             "median_in_sample_return": 0.0,
             "in_sample_minus_oos_median": 0.0,
             "median_oos_accuracy": 0.0,
+            "min_confidence": 0.0,
+            "median_oos_coverage": 1.0,
+            "median_oos_brier": 0.0,
+            "median_oos_ece": 0.0,
+            "tickers_significant_p05": 0,
         }
     oos_returns = [r["oos_return"] for r in rows]
     in_sample_returns = [r["in_sample_return"] for r in rows]
+    # Backward-compatible: older rows (pre-gating) lack the new keys.
+    theta = max((r.get("min_confidence", 0.0) for r in rows), default=0.0)
     return {
         "tickers": len(rows),
         "oos_beat_bh_rate": sum(r["beats_bh_oos"] for r in rows) / len(rows),
@@ -247,6 +314,12 @@ def aggregate(rows: list[dict]) -> dict:
             [r["in_sample_return"] - r["oos_return"] for r in rows]
         ),
         "median_oos_accuracy": _safe_median([r["oos_accuracy"] for r in rows]),
+        # --- Gating / calibration block ---
+        "min_confidence": theta,
+        "median_oos_coverage": _safe_median([r.get("oos_coverage", 1.0) for r in rows]),
+        "median_oos_brier": _safe_median([r.get("oos_brier", 0.0) for r in rows]),
+        "median_oos_ece": _safe_median([r.get("oos_ece", 0.0) for r in rows]),
+        "tickers_significant_p05": sum(1 for r in rows if r.get("oos_binomial_p", 1.0) < 0.05),
     }
 
 
@@ -256,13 +329,21 @@ def aggregate(rows: list[dict]) -> dict:
 
 
 def build_run_dir(
-    root: Path, scope: str, days: int, fees: float, stop_loss: float, buy_hold: bool
+    root: Path,
+    scope: str,
+    days: int,
+    fees: float,
+    stop_loss: float,
+    buy_hold: bool,
+    min_confidence: float = 0.0,
 ) -> Path:
     parts = ["oos", scope, f"{days}d"]
     if fees > 0:
         parts.append(f"fee{fees * 100:03.0f}")
     if stop_loss > 0:
         parts.append(f"sl{stop_loss:g}")
+    if min_confidence > 0:
+        parts.append(f"mc{min_confidence * 100:03.0f}")
     if buy_hold:
         parts.append("bh")
     parts.append(datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -313,22 +394,31 @@ def print_results(rows: list[dict], summary: dict) -> str:
         print(text)
         return text
 
-    add(
+    gated = summary.get("min_confidence", 0.0) > 0
+
+    header = (
         f"  {'TICKER':<10} {'WINNER':<32} {'PERIOD':<5} "
         f"{'IN-SAMPLE':<12} {'OOS RET':<11} {'OOS B&H':<11} {'BEAT B&H?'}"
     )
-    add("  " + "-" * 86)
+    if gated:
+        header += f"  {'COVERAGE':<13} {'OOS ACC':<8}"
+    add(header)
+    add("  " + "-" * (86 + (24 if gated else 0)))
     for r in rows:
         marker = "✓" if r["beats_bh_oos"] else "✗"
-        add(
+        line = (
             f"  {r['ticker']:<10} {r['winner_model'][:32]:<32} "
             f"{r['winner_period']:<5} "
             f"{r['in_sample_return']:<+12.4%} "
             f"{r['oos_return']:<+11.4%} "
             f"{r['oos_buy_hold']:<+11.4%} {marker}"
         )
+        if gated:
+            cov = f"{r.get('oos_traded_days', 0)}/{r.get('oos_traded_days', 0) + r.get('oos_sat_out', 0)} ({r.get('oos_coverage', 1.0):.0%})"
+            line += f"  {cov:<13} {r.get('oos_accuracy', 0.0):<8.1%}"
+        add(line)
 
-    add("  " + "-" * 86)
+    add("  " + "-" * (86 + (24 if gated else 0)))
     add(" AGGREGATE")
     add("  " + "-" * 86)
     add(f"  Tickers evaluated         : {summary['tickers']}")
@@ -341,6 +431,27 @@ def print_results(rows: list[dict], summary: dict) -> str:
         f"{summary['in_sample_minus_oos_median']:+.4%}  (in-sample − OOS, median)"
     )
     add(f"  Median OOS accuracy       : {summary['median_oos_accuracy']:.4f}")
+    if gated:
+        add("  " + "-" * 86)
+        add(f"  Confidence gate θ         : {summary['min_confidence']:.2f}")
+        add(
+            f"  Median OOS coverage       : {summary['median_oos_coverage']:.1%}"
+            "  (share of days actually traded)"
+        )
+        add(
+            f"  Median OOS Brier / ECE    : "
+            f"{summary['median_oos_brier']:.4f} / {summary['median_oos_ece']:.4f}"
+            "  (lower = better calibrated)"
+        )
+        add(
+            f"  Tickers signif. (p<0.05)  : "
+            f"{summary['tickers_significant_p05']}/{summary['tickers']}"
+            "  (OOS accuracy ≠ 0.5, binomial)"
+        )
+        add(
+            "  → Gating helps only if traded-day OOS accuracy clears 0.5 "
+            "AND OOS return improves vs an ungated run."
+        )
     add(sep)
 
     text = "\n".join(lines)
@@ -356,7 +467,7 @@ def print_results(rows: list[dict], summary: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Phase-1.1 OOS harness: pick the best model+period on a "
+            "OOS harness: pick the best model+period on a "
             "selection window and re-evaluate it on the next disjoint "
             "window. Reports the honest beat-B&H rate."
         )
@@ -409,6 +520,19 @@ def main() -> int:
         help="Skip the naive baselines. Default: baselines included.",
     )
     parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MIN_CONFIDENCE,
+        metavar="THETA",
+        help=(
+            "Confidence gate: sit out days below THETA confidence "
+            "(0..1) on BOTH the selection and evaluation windows. Answers "
+            "'does the OOS edge survive if I commit to gating at θ?'. "
+            "θ is NOT swept here (that would re-inflate selection) — run once "
+            "per θ to compare. 0 = trade every day (default)."
+        ),
+    )
+    parser.add_argument(
         "--sentiment-method",
         choices=["vader", "finbert", "naive"],
         default=DEFAULT_SENTIMENT_METHOD,
@@ -445,7 +569,13 @@ def main() -> int:
         tickers, scope = ALL_TICKERS, "all"
 
     run_dir = build_run_dir(
-        Path(args.dir), scope, args.days, args.fees, args.stop_loss, args.buy_hold
+        Path(args.dir),
+        scope,
+        args.days,
+        args.fees,
+        args.stop_loss,
+        args.buy_hold,
+        min_confidence=args.min_confidence,
     )
 
     print(f"{'=' * 90}")
@@ -453,6 +583,11 @@ def main() -> int:
         f" OOS HARNESS — {len(tickers)} tickers × {len(args.periods)} periods "
         f"× {args.days}d selection + {args.days}d evaluation"
     )
+    if args.min_confidence > 0:
+        print(
+            f" Confidence gate θ={args.min_confidence:.2f} applied to BOTH windows "
+            f"(fixed, not swept)"
+        )
     print(f" Output: {run_dir.resolve()}/")
     print(f"{'=' * 90}\n")
 
@@ -479,6 +614,7 @@ def main() -> int:
             sentiment_method=args.sentiment_method,
             models=args.models,
             include_baselines=not args.no_baselines,
+            min_confidence=args.min_confidence,
         )
         if row is not None:
             rows.append(row)

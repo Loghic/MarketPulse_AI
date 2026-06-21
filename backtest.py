@@ -19,6 +19,7 @@ from config import (
     ALL_TICKERS,
     CRYPTO_BENCHMARKS,
     DEFAULT_BACKTEST_DAYS,
+    DEFAULT_MIN_CONFIDENCE,
     DEFAULT_PERIOD,
     DEFAULT_STOP_LOSS_PCT,
     DEFAULT_TRADING_FEE_PCT,
@@ -31,10 +32,12 @@ from engine.backtest_helpers import (
     filter_by_period,
     pf_str,
     print_confidence_calibration,
+    print_confidence_sweep,
     print_consensus,
     print_direction_accuracy,
     print_next_day_forecast,
     print_profit_analysis,
+    print_significance,
     print_summary_table,
     print_timing_table,
     result_to_daily_rows,
@@ -66,10 +69,18 @@ def run_backtest(
     timing=False,
     models=None,
     include_baselines: bool = True,
+    min_confidence: float = 0.0,
+    confidence_sweep: bool = False,
+    significance: bool = False,
 ):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
+    backtester = Backtester(
+        n_days=n_days,
+        fee_pct=fee_pct,
+        stop_loss_pct=stop_loss_pct,
+        min_confidence=min_confidence,
+    )
     all_export_rows = []
 
     if not no_refresh:
@@ -140,10 +151,14 @@ def run_backtest(
             for h in headlines[:3]:
                 print(f"    > {h}")
 
-        if full:
+        if full or confidence_sweep or significance:
             print_consensus(results, n_days)
             print_direction_accuracy(results)
             print_confidence_calibration(results)
+            if confidence_sweep:
+                print_confidence_sweep(results, fee_pct)
+            if significance:
+                print_significance(results)
             print_profit_analysis(results, show_buy_hold=buy_hold, benchmarks=bench)
             print_next_day_forecast(results)
         else:
@@ -184,11 +199,17 @@ def run_compare_periods(
     periods=None,
     models=None,
     include_baselines: bool = True,
+    min_confidence: float = 0.0,
 ):
     """Run backtest across all periods, find optimal model+period."""
     periods = periods or list(ALL_PERIODS)
     api = StockAppAPI()
-    backtester = Backtester(n_days=n_days, fee_pct=fee_pct, stop_loss_pct=stop_loss_pct)
+    backtester = Backtester(
+        n_days=n_days,
+        fee_pct=fee_pct,
+        stop_loss_pct=stop_loss_pct,
+        min_confidence=min_confidence,
+    )
     all_export_rows = []
 
     if not no_refresh:
@@ -517,6 +538,35 @@ def main():
         "--buy-hold", action="store_true", help="Compare with buy-and-hold benchmark"
     )
     parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MIN_CONFIDENCE,
+        metavar="THETA",
+        help=(
+            "Confidence gate: sit out days whose model confidence "
+            "is below THETA (0..1). Sat-out days are flat (0 P&L, no fee) and "
+            "excluded from accuracy. 0 = trade every day (default)."
+        ),
+    )
+    parser.add_argument(
+        "--confidence-sweep",
+        action="store_true",
+        help=(
+            "Print a θ-sweep table (coverage / traded-day accuracy / return / "
+            "fees saved) over CONFIDENCE_SWEEP, computed post-hoc from a single "
+            "ungated run. Implies --full detail for the calibration section."
+        ),
+    )
+    parser.add_argument(
+        "--significance",
+        action="store_true",
+        help=(
+            "Print statistical-significance tests: binomial p-value "
+            "+ Wilson CI on accuracy, bootstrap CI on return, with "
+            "Benjamini-Hochberg FDR across the models shown."
+        ),
+    )
+    parser.add_argument(
         "--no-refresh",
         action="store_true",
         help="Skip data download, use only cached data from DB (offline mode)",
@@ -538,6 +588,7 @@ def main():
             periods=args.periods,
             models=args.models,
             include_baselines=not args.no_baselines,
+            min_confidence=args.min_confidence,
         )
     else:
         run_backtest(
@@ -553,6 +604,9 @@ def main():
             args.timing,
             models=args.models,
             include_baselines=not args.no_baselines,
+            min_confidence=args.min_confidence,
+            confidence_sweep=args.confidence_sweep,
+            significance=args.significance,
         )
 
 

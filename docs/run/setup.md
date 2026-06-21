@@ -37,7 +37,7 @@ uv pip install -e .
 This installs `pandas`, `yfinance`, `scikit-learn`, `numpy`, `nltk`,
 `tqdm`. After this, k-NN and Linear Regression models plus VADER +
 naive sentiment all work, along with Yahoo + GDELT news sources, and
-the Phase-1.2 baseline classes.
+the naive baseline classes.
 
 ### LSTM + FinBERT (the `ai` extra)
 
