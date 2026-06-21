@@ -496,7 +496,7 @@ class TestFlatPrediction:
         assert r.fees_paid == pytest.approx(r.test_days * 2 * 0.05 / 100, abs=1e-9)
 
     def test_garbage_prediction_still_skipped(self):
-        # A non-UP/DOWN/FLAT prediction is dropped entirely (not recorded).
+        # A non-UP/DOWN/FLAT/HOLD prediction is dropped entirely (not recorded).
         class _Garbage:
             def predict(self, df, use_time_weights=False, sentiment_score=0.0):
                 return "SIDEWAYS", 0.8
@@ -505,6 +505,47 @@ class TestFlatPrediction:
         r = Backtester(n_days=10).run(_Garbage(), "G", df, ticker="X")
         assert len(r.days) == 0
         assert r.test_days == 0
+
+
+# ----------------------------------------------------------------------
+# HOLD (buy-and-hold) prediction path — always a single trade, one fee
+# ----------------------------------------------------------------------
+
+
+class _HoldEveryDay:
+    def predict(self, df, use_time_weights=False, sentiment_score=0.0):
+        return "HOLD", 1.0
+
+
+class TestHoldMode:
+    def test_hold_is_single_buyhold_one_fee_flag_independent(self):
+        df = _ramp_df(n=60)
+        # No position-mode flag: HOLD must STILL collapse to one buy-hold trade.
+        r = Backtester(n_days=20, fee_pct=0.05).run(_HoldEveryDay(), "H", df, ticker="X")
+        rt = 2 * 0.05 / 100
+        entry = r.days[0].close_before
+        exit_ = r.days[-1].close_actual
+        expected = (exit_ - entry) / entry  # long buy-hold
+        # Exactly one round-trip fee (not 20), booked once.
+        assert r.fees_paid == pytest.approx(rt, abs=1e-9)
+        assert r.total_return == pytest.approx(expected - rt, abs=1e-6)
+        # Matches the B&H benchmark column minus the single entry fee.
+        assert r.total_return == pytest.approx(r.buy_hold_return - rt, abs=1e-6)
+
+    def test_hold_excluded_from_accuracy(self):
+        df = _ramp_df(n=60)
+        r = Backtester(n_days=20, fee_pct=0.05).run(_HoldEveryDay(), "H", df, ticker="X")
+        # HOLD makes no UP/DOWN call → accuracy is 0/0 → reported 0.0, correct 0.
+        assert r.accuracy == 0.0
+        assert r.correct == 0
+
+    def test_hold_ignores_stop_loss(self):
+        # A tight stop must not chop a pure buy-hold — it rides through.
+        df = _ramp_df(n=60, seed=9)
+        r = Backtester(n_days=20, fee_pct=0.0, stop_loss_pct=1.0).run(
+            _HoldEveryDay(), "H", df, ticker="X"
+        )
+        assert r.stopped_out_count == 0
 
 
 # ----------------------------------------------------------------------

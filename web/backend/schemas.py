@@ -373,6 +373,9 @@ class OOSTickerRow(BaseModel):
     oos_sharpe: float
     beats_bh_oos: int
     stable: int
+    # Market-index benchmark over the OOS window (best of the ticker's set).
+    oos_benchmark: float = 0.0
+    beats_benchmark_oos: int = 0
     # Gate / calibration (only meaningful when min_confidence > 0)
     min_confidence: float = 0.0
     oos_coverage: float = 1.0
@@ -393,6 +396,7 @@ class OOSSummary(BaseModel):
     median_in_sample_return: float
     in_sample_minus_oos_median: float
     median_oos_accuracy: float
+    oos_beat_benchmark_rate: float = 0.0
     min_confidence: float = 0.0
     median_oos_coverage: float = 1.0
     median_oos_brier: float = 0.0

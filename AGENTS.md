@@ -164,11 +164,11 @@ KRONOS_TOP_P = 0.9
 | `"prophet"` | ProphetModel | close (univariate) | No (fits per call) |
 | `"chronos"` | Chronos2Model | close (univariate) | No (zero-shot, downloads weights) |
 | `"kronos"` | KronosModel | OHLCV | No (zero-shot, sibling clone + downloads weights) |
-| *(baselines)* | AlwaysLong / AlwaysShort / PreviousDay / Momentum(n=5,20) / Random (price-only) + NewsPreviousDay / NewsInformed / NewsMomentum (news-aware) | close (+ sentiment for news-aware) | No (no parameters) |
+| *(baselines)* | AlwaysLong / HoldLong / AlwaysShort / PreviousDay / Momentum(n=5,20) / Random (price-only) + NewsPreviousDay / NewsInformed / NewsMomentum (news-aware) | close (+ sentiment for news-aware) | No (no parameters) |
 
 > Forecasting models (Prophet, Chronos-2, Kronos) subclass engine/forecast_base.py:ForecastModel and also expose forecast(df) → ForecastResult for the raw predicted value. use_time_weights is ignored (like LSTM).
 >
-> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract. **Price-only** ones (AlwaysLong, AlwaysShort, PreviousDay, Momentum, Random) ignore `sentiment_score`. **News-aware** ones *react* to today's look-ahead-safe sentiment with a fixed rule but never *learn* from past outcomes — staying valid stateless floors, not models: `NewsAwarePreviousDay` (yesterday's direction, flip when |sentiment| ≥ `config.BASELINE_NEWS_THRESHOLD`), `NewsAwareMomentum` (n-day momentum, same flip), and `NewsInformed` (trade the news sign on strong news, else return **`"FLAT"`** to sit the day out — distinct from NewsAwarePreviousDay, which always trades). `default_baseline_variants()` returns `(model, label, uses_news)`; `run_single_backtest` attaches the per-day sentiment provider to the news-aware ones (only when news exists). Included by default, skip with `--no-baselines`. A learning sentiment→outcome predictor would be a real model (e.g. a future sentiment-kNN), not a baseline.
+> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract. **Price-only** ones (AlwaysLong, HoldLong, AlwaysShort, PreviousDay, Momentum, Random) ignore `sentiment_score`. `HoldLong` returns the `"HOLD"` sentinel (buy once, hold to the end, single round-trip fee) — the "do nothing" floor, distinct from AlwaysLong's daily churn. **News-aware** ones *react* to today's look-ahead-safe sentiment with a fixed rule but never *learn* from past outcomes — staying valid stateless floors, not models: `NewsAwarePreviousDay` (yesterday's direction, flip when |sentiment| ≥ `config.BASELINE_NEWS_THRESHOLD`), `NewsAwareMomentum` (n-day momentum, same flip), and `NewsInformed` (trade the news sign on strong news, else return **`"FLAT"`** to sit the day out — distinct from NewsAwarePreviousDay, which always trades). `default_baseline_variants()` returns `(model, label, uses_news)`; `run_single_backtest` attaches the per-day sentiment provider to the news-aware ones (only when news exists). Included by default, skip with `--no-baselines`. A learning sentiment→outcome predictor would be a real model (e.g. a future sentiment-kNN), not a baseline.
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
@@ -191,7 +191,7 @@ Stop-loss uses intraday High/Low: Long exits if Low ≤ entry × (1 - SL%), Shor
 ```python
 @dataclass
 class DayResult:
-    date, predicted, actual, confidence, correct,   # predicted ∈ {UP, DOWN, FLAT}; FLAT = deliberate no-trade
+    date, predicted, actual, confidence, correct,   # predicted ∈ {UP, DOWN, FLAT, HOLD}; FLAT = deliberate no-trade, HOLD = buy-and-hold
     close_before, close_actual, exit_price,     # exit_price = SL price or close
     trade_pnl, trade_pnl_net, stopped_out,      # stopped_out: bool
     traded,                                      # False when sat out by the confidence gate OR a FLAT signal
@@ -375,7 +375,9 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - Yearly performance only shown when data spans 2+ calendar years.
 - Stop-loss: checked against intraday High/Low. Exit at SL price, not close.
 - When SL is on, each model runs twice (baseline + SL) in `run_single_backtest()`.
-- **FLAT signal**: `model.predict()` may return `"FLAT"` to sit a day out regardless of the confidence gate — recorded as an untraded day (0 P&L, no fee, excluded from accuracy / coverage / calibration), and it breaks a held run in position mode. Non-`UP/DOWN/FLAT` predictions are dropped (malformed). Used by the `NewsInformed` baseline (flat on weak news). Calibration (`pairs_from_days`) and `gating_metrics` count only real `UP/DOWN` calls.
+- **FLAT signal**: `model.predict()` may return `"FLAT"` to sit a day out regardless of the confidence gate — recorded as an untraded day (0 P&L, no fee, excluded from accuracy / coverage / calibration), and it breaks a held run in position mode. Non-`UP/DOWN/FLAT/HOLD` predictions are dropped (malformed). Used by the `NewsInformed` baseline (flat on weak news). Calibration (`pairs_from_days`) and `gating_metrics` count only real `UP/DOWN` calls.
+- **HOLD signal**: `model.predict()` may return `"HOLD"` to mean buy-and-hold — `is_hold` days are always "traded" (gate-independent) and book a long per-day mark-to-market, but are **fee-exempt per day** and **stop-loss-exempt**; the post-loop collapse pass (always run when any HOLD day exists, even with `position_mode=False`) compounds the whole run into a single trade with **one** round-trip fee. Net effect = B&H return minus one round-trip fee. Excluded from accuracy (not a directional call). Used by the `HoldLong` baseline. See `tests/test_backtester.py::TestHoldMode`.
+- **OOS benchmark column**: `scripts/oos_harness.py` compares each ticker's OOS winner against a fixed market benchmark (`compute_benchmarks`) over the eval window — surfaced as `oos_benchmark` / `beats_benchmark_oos` per row and `oos_beat_benchmark_rate` in the aggregate (web: `OOSTickerRow`/`OOSSummary` fields, "OOS Bench"/"Beat BM?" columns). A surfaced comparison, not a baseline (one benchmark spans all tickers).
 - Buy-and-hold = (last close - first close) / first close.
 - LSTM auto-loads best model (cluster > standard > quick). Normalizes via StandardScaler (saved with weights).
 - k-NN time-weighting uses exponential decay × distance (not data trimming).

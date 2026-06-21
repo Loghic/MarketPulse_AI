@@ -38,6 +38,18 @@ on the fresh window. This is the trustworthy version of "how often does this
 work?" Historically it's been low (and it *decays* over longer horizons as fees
 compound) — which is the honest finding.
 
+## Benchmark comparison (OOS Bench / Beat BM?)
+
+Beating the ticker's *own* buy-and-hold answers "did trading beat holding this
+asset?" The benchmark column answers a different question: "did it beat just
+holding the market?" Each ticker's OOS winner is compared against a fixed market
+benchmark (e.g. an index ETF) over the same fresh window. **OOS Bench** is that
+benchmark's return; **Beat BM?** flags whether the winner cleared it. A strategy
+that beats its own thin or declining ticker but loses to the broad market hasn't
+really earned its keep — this column keeps that honest. It's a surfaced
+comparison, not a baseline, because one market benchmark spans every ticker
+rather than living inside a single one.
+
 ## Significance: is it different from a coin flip?
 
 Even an out-of-sample number can be noise on a short window. Significance tests

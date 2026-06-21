@@ -52,8 +52,12 @@ Baselines are deliberately dumb "predictors". They exist so a real model has to
 clear a **real bar**, not just beat a coin. If a sophisticated model can't beat
 *Always-Long*, it isn't adding anything.
 
-- **Always-Long** — predict UP every single day (blind optimism; in a rising
-  market this is surprisingly hard to beat).
+- **Always-Long** — predict UP every single day, re-trading daily (so it pays a
+  fee every day unless you're in position/turnover mode).
+- **Hold-Long** — buy once and hold to the end: no daily churn, a single
+  round-trip fee. This is "just hold the ticker" — the cleanest test of whether
+  active trading added anything over doing nothing. (Distinct from Always-Long,
+  which churns daily.)
 - **Always-Short** — predict DOWN every day, the mirror of Always-Long. A
   control: if Always-Long only looks good because the market rose, Always-Short
   makes that explicit (it should look terrible in the same bull market).

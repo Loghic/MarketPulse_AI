@@ -9,7 +9,11 @@ list in ``backtest_helpers.run_single_backtest`` and share every metric.
 
 Price-only baselines (ignore news):
 
-* ``AlwaysLongBaseline``         — predict UP every day
+* ``AlwaysLongBaseline``         — predict UP every day (round-trips daily)
+* ``HoldLongBaseline``           — buy once, hold to the end (no churn, one fee);
+                                   emits the ``"HOLD"`` signal, always booked as
+                                   a single buy-and-hold by the backtester
+                                   regardless of turnover/position flags.
 * ``AlwaysShortBaseline``        — predict DOWN every day (mirror of Always-Long;
                                    a check on how much the bull-market
                                    assumption is doing the work)
@@ -101,6 +105,28 @@ class AlwaysLongBaseline:
         sentiment_score: float = 0.0,  # noqa: ARG002 - baselines ignore news
     ) -> tuple[str, float]:
         return "UP", _CONF_ALWAYS
+
+
+@dataclass
+class HoldLongBaseline:
+    """Buy on day one, hold to the end — no daily churn, one round-trip fee.
+
+    Returns the ``"HOLD"`` signal, which the backtester always books as a single
+    compounded buy-and-hold trade (one fee, rides through intraday stops),
+    *regardless* of --turnover-fees / --position-mode. This is the "just hold
+    the ticker" reference: distinct from AlwaysLong, which predicts UP every day
+    and (without position mode) round-trips daily and pays a fee each day. The
+    honest 'did active trading add anything over passively holding?' floor."""
+
+    name: str = "Baseline Hold Long"
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        use_time_weights: bool = False,  # noqa: ARG002 - interface parity
+        sentiment_score: float = 0.0,  # noqa: ARG002 - price-only
+    ) -> tuple[str, float]:
+        return "HOLD", _CONF_ALWAYS
 
 
 @dataclass
@@ -327,6 +353,7 @@ def default_baseline_variants() -> list[tuple[object, str, bool]]:
     return [
         # Price-only.
         (AlwaysLongBaseline(), AlwaysLongBaseline().name, False),
+        (HoldLongBaseline(), HoldLongBaseline().name, False),
         (AlwaysShortBaseline(), AlwaysShortBaseline().name, False),
         (PreviousDayBaseline(), PreviousDayBaseline().name, False),
         (MomentumBaseline(n=5), MomentumBaseline(n=5).name, False),

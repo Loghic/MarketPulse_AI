@@ -70,7 +70,11 @@ from config import (  # noqa: E402
     CRYPTO_BENCHMARKS,
     STOCK_BENCHMARKS,
 )
-from engine.backtest_helpers import _family_key, run_single_backtest  # noqa: E402
+from engine.backtest_helpers import (  # noqa: E402
+    _family_key,
+    compute_benchmarks,
+    run_single_backtest,
+)
 from engine.backtester import Backtester, BacktestResult  # noqa: E402
 from engine.calibration import (  # noqa: E402
     brier_score,
@@ -231,14 +235,23 @@ def oos_one_ticker(
     brier = brier_score(pairs)
     ece = expected_calibration_error(pairs)
 
-    # Traded-day count / accuracy already reflect the gate (eval_match was
-    # produced by the gated Backtester); coverage is traded / seen.
-    traded_days = [d for d in eval_days if d.traded]
+    # Significance over real directional traded days only (a HOLD buy-hold or a
+    # FLAT sit-out makes no UP/DOWN call to test).
+    dir_days = [d for d in eval_days if d.traded and d.predicted in ("UP", "DOWN")]
     sig = significance_for_days(
-        [d.predicted for d in traded_days],
-        [d.actual for d in traded_days],
-        [d.trade_pnl_net for d in traded_days],
+        [d.predicted for d in dir_days],
+        [d.actual for d in dir_days],
+        [d.trade_pnl_net for d in dir_days],
     )
+
+    # Market-benchmark return (SPY/QQQ/BTC…) over the OOS eval window — lets us
+    # compare the winner to its index, not just to holding the ticker itself.
+    try:
+        bench_map = compute_benchmarks(api, ticker, eval_days)
+    except Exception:  # noqa: BLE001
+        bench_map = {}
+    # Representative single number = best (max) benchmark return, or 0 if none.
+    oos_benchmark = max(bench_map.values()) if bench_map else 0.0
 
     return {
         "ticker": ticker,
@@ -254,6 +267,10 @@ def oos_one_ticker(
         "oos_sharpe": eval_match.sharpe_ratio,
         "beats_bh_oos": int(eval_match.total_return > eval_match.buy_hold_return),
         "stable": int(eval_match.total_return > 0),
+        # Market benchmark (best of the ticker's index set) over the OOS window,
+        # and whether the winner beat it. 0.0 when no benchmark data.
+        "oos_benchmark": round(oos_benchmark, 8),
+        "beats_benchmark_oos": int(eval_match.total_return > oos_benchmark) if bench_map else 0,
         # Confidence gating + calibration — only meaningful
         # columns when --min-confidence > 0, but always emitted so the CSV
         # schema is stable.
@@ -297,6 +314,7 @@ def aggregate(rows: list[dict]) -> dict:
             "median_in_sample_return": 0.0,
             "in_sample_minus_oos_median": 0.0,
             "median_oos_accuracy": 0.0,
+            "oos_beat_benchmark_rate": 0.0,
             "min_confidence": 0.0,
             "median_oos_coverage": 1.0,
             "median_oos_brier": 0.0,
@@ -319,6 +337,14 @@ def aggregate(rows: list[dict]) -> dict:
             [r["in_sample_return"] - r["oos_return"] for r in rows]
         ),
         "median_oos_accuracy": _safe_median([r["oos_accuracy"] for r in rows]),
+        # Beat the market index (not the ticker's own B&H), over rows that have
+        # a benchmark; 0 when none do.
+        "oos_beat_benchmark_rate": (
+            sum(r.get("beats_benchmark_oos", 0) for r in rows)
+            / sum(1 for r in rows if r.get("oos_benchmark", 0.0))
+            if any(r.get("oos_benchmark", 0.0) for r in rows)
+            else 0.0
+        ),
         # --- Gating / calibration block ---
         "min_confidence": theta,
         "median_oos_coverage": _safe_median([r.get("oos_coverage", 1.0) for r in rows]),
@@ -400,15 +426,19 @@ def print_results(rows: list[dict], summary: dict) -> str:
         return text
 
     gated = summary.get("min_confidence", 0.0) > 0
+    has_bench = any(r.get("oos_benchmark", 0.0) for r in rows)
 
     header = (
         f"  {'TICKER':<10} {'WINNER':<32} {'PERIOD':<5} "
         f"{'IN-SAMPLE':<12} {'OOS RET':<11} {'OOS B&H':<11} {'BEAT B&H?'}"
     )
+    if has_bench:
+        header += f"  {'OOS BENCH':<11} {'BEAT BM?'}"
     if gated:
         header += f"  {'COVERAGE':<13} {'OOS ACC':<8}"
     add(header)
-    add("  " + "-" * (86 + (24 if gated else 0)))
+    width = 86 + (20 if has_bench else 0) + (24 if gated else 0)
+    add("  " + "-" * width)
     for r in rows:
         marker = "✓" if r["beats_bh_oos"] else "✗"
         line = (
@@ -418,16 +448,24 @@ def print_results(rows: list[dict], summary: dict) -> str:
             f"{r['oos_return']:<+11.4%} "
             f"{r['oos_buy_hold']:<+11.4%} {marker}"
         )
+        if has_bench:
+            bm = "✓" if r.get("beats_benchmark_oos") else "✗"
+            line += f"  {r.get('oos_benchmark', 0.0):<+11.4%} {bm}"
         if gated:
             cov = f"{r.get('oos_traded_days', 0)}/{r.get('oos_traded_days', 0) + r.get('oos_sat_out', 0)} ({r.get('oos_coverage', 1.0):.0%})"
             line += f"  {cov:<13} {r.get('oos_accuracy', 0.0):<8.1%}"
         add(line)
 
-    add("  " + "-" * (86 + (24 if gated else 0)))
+    add("  " + "-" * width)
     add(" AGGREGATE")
     add("  " + "-" * 86)
     add(f"  Tickers evaluated         : {summary['tickers']}")
     add(f"  OOS beat-B&H rate         : {summary['oos_beat_bh_rate']:.1%}")
+    if has_bench:
+        add(
+            f"  OOS beat-benchmark rate   : {summary.get('oos_beat_benchmark_rate', 0.0):.1%}"
+            "  (vs the market index, not the ticker)"
+        )
     add(f"  Median OOS return         : {summary['median_oos_return']:+.4%}")
     add(f"  Mean OOS return           : {summary['mean_oos_return']:+.4%}")
     add(f"  Median in-sample return   : {summary['median_in_sample_return']:+.4%}")

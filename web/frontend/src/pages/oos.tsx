@@ -115,6 +115,7 @@ export default function OOS() {
   const summary: OOSSummary | undefined = runMut.data?.summary ?? loadedRun?.response?.summary;
   const fromCached = !runMut.data && (loadedRun?.response?.rows?.length ?? 0) > 0;
   const gateActive = (summary?.min_confidence ?? 0) > 0;
+  const hasBench = rows.some((r) => r.oos_benchmark);
 
   const toggleTicker = (t: string) => {
     const n = new Set(selTickers);
@@ -285,11 +286,14 @@ export default function OOS() {
                 <th style={rTh}>OOS acc</th>
                 <th style={rTh}>OOS B&H</th>
                 <th style={rTh}>Beat?</th>
+                {hasBench && <th style={rTh}>OOS Bench</th>}
+                {hasBench && <th style={rTh}>Beat BM?</th>}
                 {gateActive && <th style={rTh}>Coverage</th>}
                 {gateActive && <th style={rTh}>OOS p</th>}
               </tr></thead>
               <tbody>{rows.map((r) => {
                 const beat = r.beats_bh_oos === 1;
+                const beatBm = r.beats_benchmark_oos === 1;
                 return (
                   <tr key={r.ticker} style={{ borderBottom: `1px solid ${s.border}` }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = s.hover; }} onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}>
@@ -301,6 +305,8 @@ export default function OOS() {
                     <td style={{ padding: "4px 8px", textAlign: "center" }}>{pct(r.oos_accuracy * 100, false)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center", color: r.oos_buy_hold >= 0 ? s.green : s.red }}>{pct(r.oos_buy_hold * 100)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: beat ? s.green : s.red }}>{beat ? "✓" : "✗"}</td>
+                    {hasBench && <td style={{ padding: "4px 8px", textAlign: "center", color: r.oos_benchmark >= 0 ? s.green : s.red }}>{pct(r.oos_benchmark * 100)}</td>}
+                    {hasBench && <td style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: beatBm ? s.green : s.red }}>{beatBm ? "✓" : "✗"}</td>}
                     {gateActive && <td style={{ padding: "4px 8px", textAlign: "center", color: s.muted }}>{(r.oos_coverage * 100).toFixed(0)}%</td>}
                     {gateActive && <td style={{ padding: "4px 8px", textAlign: "center", color: r.oos_binomial_p < 0.05 ? s.green : s.muted }}>{r.oos_binomial_p.toFixed(3)}</td>}
                   </tr>);
@@ -309,7 +315,7 @@ export default function OOS() {
           </div>
           <div style={{ padding: "8px 12px", display: "flex", justifyContent: "flex-end" }}>
             <SmBtn label="Export CSV" color={s.muted} onClick={() => {
-              const cols = ["ticker", "winner_model", "winner_period", "in_sample_return", "oos_return", "oos_accuracy", "oos_buy_hold", "beats_bh_oos", "oos_coverage", "oos_binomial_p"];
+              const cols = ["ticker", "winner_model", "winner_period", "in_sample_return", "oos_return", "oos_accuracy", "oos_buy_hold", "beats_bh_oos", "oos_benchmark", "beats_benchmark_oos", "oos_coverage", "oos_binomial_p"];
               const h = cols.join(",") + "\n";
               const csv = rows.map((r) => cols.map((c) => (r as unknown as Record<string, unknown>)[c] ?? "").join(",")).join("\n");
               const b = new Blob([h + csv], { type: "text/csv" });

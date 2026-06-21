@@ -15,6 +15,7 @@ from config import BASELINE_NEWS_THRESHOLD
 from engine.baseline_models import (
     AlwaysLongBaseline,
     AlwaysShortBaseline,
+    HoldLongBaseline,
     MomentumBaseline,
     NewsAwareMomentumBaseline,
     NewsAwarePreviousDayBaseline,
@@ -173,6 +174,7 @@ class TestFactory:
         labels = [label for _, label, _ in variants]
         for needle in (
             "Always Long",
+            "Hold Long",
             "Always Short",
             "Previous Day",
             "5-Day Momentum",
@@ -209,7 +211,8 @@ class TestFactory:
         df = _df([100, 101, 102, 103, 104, 105, 106])
         for model, _, _ in default_baseline_variants():
             direction, conf = model.predict(df, use_time_weights=True, sentiment_score=0.3)
-            assert direction in ("UP", "DOWN")
+            # UP/DOWN are calls; HOLD = buy-hold; FLAT = sit out (all valid).
+            assert direction in ("UP", "DOWN", "HOLD", "FLAT")
             assert 0.0 <= conf <= 1.0
 
 
@@ -220,6 +223,15 @@ class TestFactory:
 # A clearly-strong and a clearly-weak sentiment relative to the threshold.
 _STRONG = BASELINE_NEWS_THRESHOLD + 0.3
 _WEAK = BASELINE_NEWS_THRESHOLD / 2
+
+
+class TestHoldLong:
+    def test_emits_hold_signal(self):
+        b = HoldLongBaseline()
+        for closes in ([100], [100, 99], [100, 101, 102]):
+            direction, conf = b.predict(_df(closes))
+            assert direction == "HOLD"
+            assert conf == 1.0
 
 
 class TestAlwaysShort:

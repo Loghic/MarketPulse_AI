@@ -206,12 +206,16 @@ class Backtester:
         short run). A stopped-out day ends its run at the stop price.
         """
         rt_fee = 2 * self.fee_pct / 100.0
+        # When position_mode is off we still collapse HOLD runs (HoldLong is
+        # always a single buy-hold); UP/DOWN runs are only collapsed in
+        # position_mode.
+        collapse_dirs = ("UP", "DOWN", "HOLD") if self.position_mode else ("HOLD",)
         i = 0
         n = len(days)
         while i < n:
             d = days[i]
-            if not d.traded or d.position not in ("UP", "DOWN"):
-                # Flat / untraded day already carries 0 P&L; just skip.
+            if not d.traded or d.position not in collapse_dirs:
+                # Flat / untraded / non-collapsed day keeps its per-day P&L.
                 i += 1
                 continue
             # Extend the run while the next day is traded, same direction, and
@@ -229,7 +233,8 @@ class Backtester:
             exit_ = days[j].exit_price  # SL price on a stop-out, else close
             if entry > 0:
                 raw = (exit_ - entry) / entry
-                raw = raw if d.position == "UP" else -raw
+                # HOLD is long; DOWN is short.
+                raw = -raw if d.position == "DOWN" else raw
             else:
                 raw = 0.0
             net = raw - rt_fee  # one round trip for the whole held run
@@ -611,21 +616,34 @@ class Backtester:
             )
 
             # ``FLAT`` is a deliberate no-trade signal (a model choosing to sit
-            # out today, e.g. the News-Informed baseline on weak news). It's
-            # recorded as an untraded day, NOT skipped. Anything else outside
-            # UP/DOWN/FLAT is a malformed prediction and is dropped.
-            if predicted not in ("UP", "DOWN", "FLAT"):
+            # out today, e.g. the News-Informed baseline on weak news). ``HOLD``
+            # is a buy-and-hold signal (the HoldLong baseline) — always
+            # collapsed into a single long buy-hold trade with one round-trip
+            # fee, independent of turnover/position flags. Both are recorded,
+            # not skipped. Anything else is malformed and dropped.
+            if predicted not in ("UP", "DOWN", "FLAT", "HOLD"):
                 continue
 
+            # HOLD is a long position that's exempt from the gate, daily fees,
+            # and stop-loss (a pure buy-hold rides through). It's collapsed to
+            # one trade in the post-loop pass; per-day it carries 0 (set below).
+            is_hold = predicted == "HOLD"
+
             # --- Trade only on a directional call above the confidence gate.
-            # A FLAT signal sits out regardless of the gate. ---
-            traded = predicted in ("UP", "DOWN") and confidence >= self.min_confidence
+            # FLAT sits out regardless of the gate; HOLD always "trades" (long). ---
+            traded = is_hold or (predicted in ("UP", "DOWN") and confidence >= self.min_confidence)
 
             # --- Resolve the position actually held today. ---
             # ``predicted`` is always the model's call (drives ``correct`` and
             # the calibration metrics). ``position`` is what we actually hold,
             # which can differ when hold_days > 1 forces a position to persist.
-            if not traded:
+            if is_hold:
+                # Always-long buy-hold; one continuous run, never churns.
+                position = "HOLD"
+                position_changed = held_position != "HOLD"
+                held_position = "HOLD"
+                hold_remaining = 0
+            elif not traded:
                 # Sat out: flat. A held position is closed (a change), then we
                 # carry no position into the next day.
                 position = ""
@@ -649,7 +667,9 @@ class Backtester:
             stopped_out = False
             exit_price = close_actual
 
-            if traded and self.stop_loss_pct > 0 and has_ohlc:
+            # HOLD rides through intraday stops (pure buy-hold); only real
+            # directional trades are stop-checked.
+            if traded and not is_hold and self.stop_loss_pct > 0 and has_ohlc:
                 day_high = float(df["high"].iloc[eval_idx])
                 day_low = float(df["low"].iloc[eval_idx])
                 sl_exit = self._check_stop_loss(position, entry_price, day_high, day_low)
@@ -661,7 +681,13 @@ class Backtester:
                     held_position = None
                     hold_remaining = 0
 
-            if traded:
+            if is_hold:
+                # Per-day P&L is the day's long move; fees/compounding are
+                # resolved in the always-on HOLD collapse pass, so we leave the
+                # raw daily move here and let the pass overwrite the run total.
+                raw_pnl = self._compute_trade_pnl("UP", entry_price, exit_price)
+                net_pnl = raw_pnl  # no per-day fee; one round trip booked on the run
+            elif traded:
                 raw_pnl = self._compute_trade_pnl(position, entry_price, exit_price)
                 # Fee model: by default every traded day is a full round-trip.
                 # With turnover_fees, the round-trip fee is charged only on days
@@ -703,9 +729,11 @@ class Backtester:
         # single compounded trade (one entry, one exit, one round-trip fee).
         # Rewrites each day's net P&L in place — the per-day list stays intact
         # for display, but a held run's whole compounded return lands on its
-        # last day and the interior days carry 0. No-op when position_mode is
-        # off, so the default daily mark-to-market behaviour is unchanged.
-        if self.position_mode:
+        # last day and the interior days carry 0. Also runs (HOLD-only) when a
+        # HoldLong baseline emitted HOLD days, so its buy-hold is always
+        # collapsed even with position_mode off. Otherwise a no-op → the default
+        # daily mark-to-market behaviour is unchanged.
+        if self.position_mode or any(d.position == "HOLD" for d in day_results):
             self._apply_position_mode(day_results)
 
         # Confidence gating splits the days: only *traded* days (confidence
@@ -717,9 +745,13 @@ class Backtester:
         total_seen = len(day_results)
         sat_out = total_seen - len(traded_days)
 
-        correct_count = sum(1 for d in traded_days if d.correct)
+        # Accuracy is over real directional calls only — a HOLD (buy-hold) day
+        # makes no UP/DOWN prediction, so it neither helps nor hurts accuracy.
+        directional = [d for d in traded_days if d.predicted in ("UP", "DOWN")]
+        correct_count = sum(1 for d in directional if d.correct)
         stopped_count = sum(1 for d in traded_days if d.stopped_out)
         total = len(traded_days)
+        n_directional = len(directional)
 
         metrics = self._compute_profit_metrics(traded_days)
         streaks = self._compute_streaks(traded_days)
@@ -749,7 +781,7 @@ class Backtester:
             ticker=ticker,
             test_days=total,
             correct=correct_count,
-            accuracy=round(correct_count / total, 4) if total > 0 else 0.0,
+            accuracy=round(correct_count / n_directional, 4) if n_directional > 0 else 0.0,
             fee_pct=self.fee_pct,
             stop_loss_pct=self.stop_loss_pct,
             min_confidence=self.min_confidence,

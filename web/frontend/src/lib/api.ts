@@ -163,6 +163,8 @@ export interface OOSTickerRow {
   oos_sharpe: number;
   beats_bh_oos: number;
   stable: number;
+  oos_benchmark: number;
+  beats_benchmark_oos: number;
   min_confidence: number;
   oos_coverage: number;
   oos_traded_days: number;
@@ -182,6 +184,7 @@ export interface OOSSummary {
   median_in_sample_return: number;
   in_sample_minus_oos_median: number;
   median_oos_accuracy: number;
+  oos_beat_benchmark_rate: number;
   min_confidence: number;
   median_oos_coverage: number;
   median_oos_brier: number;
