@@ -11,6 +11,27 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# --- Raise the per-process file descriptor limit on macOS ----------------
+# macOS defaults to ``ulimit -n = 256``. The pytest suite collectively
+# opens enough handles (HuggingFace caches loaded by FinBERT/Prophet/
+# Chronos/Kronos imports, per-test tmp_path dirs, SQLite connections in
+# the news pipeline, FastAPI TestClient sockets) that a fresh shell
+# exhausts the limit mid-run and the remaining tests fail with
+# ``OSError: [Errno 24] Too many open files``.
+#
+# We bump the soft limit to the hard limit (typically 10240 on macOS,
+# unlimited on Linux). Wrapped in a try/except because not every OS
+# exposes ``resource`` (Windows) and not every shell is allowed to
+# raise the limit (sandboxed CI).
+try:
+    import resource  # type: ignore[import-not-found]
+
+    _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if _soft < 4096:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(4096, _hard), _hard))
+except (ImportError, ValueError, OSError):
+    pass
+
 
 def _make_prices(days=400, seed=42, base=150.0, daily_return=0.0005, volatility=0.02):
     """Generate synthetic OHLCV data."""

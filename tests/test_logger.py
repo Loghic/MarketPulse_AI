@@ -55,11 +55,17 @@ class TestConfig:
     """Configuration sanity checks."""
 
     def test_all_tickers_defined(self):
-        from config import ALL_TICKERS, CRYPTO, STOCKS
+        from config import ALL_TICKERS, ASSET_CLASSES, CRYPTO, STOCKS
 
         assert len(STOCKS) > 0
         assert len(CRYPTO) > 0
-        assert ALL_TICKERS == STOCKS + CRYPTO
+        # ALL_TICKERS now spans every asset class (stocks, crypto,
+        # commodities, indices, FX), not just stocks + crypto.
+        assert set(STOCKS).issubset(ALL_TICKERS)
+        assert set(CRYPTO).issubset(ALL_TICKERS)
+        assert len(ALL_TICKERS) == sum(len(ac.tickers) for ac in ASSET_CLASSES)
+        # No duplicates across asset classes.
+        assert len(ALL_TICKERS) == len(set(ALL_TICKERS))
 
     def test_periods_defined(self):
         from config import ALL_PERIODS
