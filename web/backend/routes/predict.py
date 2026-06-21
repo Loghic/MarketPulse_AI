@@ -26,7 +26,8 @@ log = logging.getLogger("marketpulse.web")
 
 CACHE_DIR = Path("predictions")
 
-MODEL_VARIANTS = [
+# Always-available classifiers (no optional dependency).
+_BASE_VARIANTS = [
     {"type": "knn", "tw": False, "label": "k-NN"},
     {"type": "knn", "tw": True, "label": "k-NN (TW)"},
     {"type": "knn_enhanced", "tw": False, "label": "k-NN Enhanced"},
@@ -35,10 +36,28 @@ MODEL_VARIANTS = [
     {"type": "linreg", "tw": True, "label": "LinReg (TW)"},
     {"type": "linreg_enhanced", "tw": False, "label": "LinReg Enhanced"},
     {"type": "linreg_enhanced", "tw": True, "label": "LinReg Enhanced (TW)"},
-    {"type": "lstm", "tw": False, "label": "LSTM"},
 ]
+# Dependency-gated variants: only offered when the model is actually loadable
+# (LSTM needs torch; the forecasting models need the [forecast] extra / Kronos
+# clone). _available_variants() filters these against the live API flags.
+_LSTM_VARIANT = {"type": "lstm", "tw": False, "label": "LSTM"}
+_FORECAST_VARIANTS = [
+    {"type": "prophet", "tw": False, "label": "Prophet"},
+    {"type": "chronos", "tw": False, "label": "Chronos-2"},
+    {"type": "kronos", "tw": False, "label": "Kronos"},
+]
+# Full catalogue (for label lookup); availability is decided per-request.
+MODEL_VARIANTS = [*_BASE_VARIANTS, _LSTM_VARIANT, *_FORECAST_VARIANTS]
 VARIANT_BY_LABEL = {v["label"]: v for v in MODEL_VARIANTS}
-ALL_LABELS = [v["label"] for v in MODEL_VARIANTS]
+
+
+def _available_variants(api: StockAppAPI) -> list[dict]:
+    """The variants the running install can actually serve, in display order."""
+    variants = list(_BASE_VARIANTS)
+    if api.lstm_available:
+        variants.append(_LSTM_VARIANT)
+    variants.extend(v for v in _FORECAST_VARIANTS if api.forecast_available(str(v["type"])))
+    return variants
 
 
 def _cache_path(ticker: str, date: str) -> Path:
@@ -105,8 +124,9 @@ def _run_one(api: StockAppAPI, ticker: str, period: str, variant: dict, news: bo
 
 @router.get("/info")
 def predict_info():
+    api = get_api()
     return {
-        "variants": ALL_LABELS,
+        "variants": [v["label"] for v in _available_variants(api)],
         "periods": ALL_PERIODS,
         "next_trading_day": _next_trading_day(),
     }

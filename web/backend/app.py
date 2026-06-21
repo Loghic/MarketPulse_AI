@@ -13,7 +13,17 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web.backend.routes import analysis, backtest, data, predict, settings, train
+from web.backend.routes import (
+    analysis,
+    backtest,
+    data,
+    docs,
+    meta,
+    oos,
+    predict,
+    settings,
+    train,
+)
 
 sys.path.insert(0, ".")
 
@@ -26,7 +36,11 @@ logging.basicConfig(
 
 app = FastAPI(
     title="MarketPulse AI",
-    description="Stock/crypto prediction engine with k-NN, LinReg, LSTM + VADER sentiment",
+    description=(
+        "Multi-asset prediction engine: k-NN, LinReg, LSTM, Prophet, "
+        "Chronos-2, Kronos + naive baselines, with VADER/FinBERT sentiment, "
+        "walk-forward backtests and an out-of-sample harness."
+    ),
     version="0.1.0",
 )
 
@@ -45,12 +59,15 @@ app.add_middleware(
 )
 
 # Register route modules
+app.include_router(meta.router)
 app.include_router(data.router)
 app.include_router(predict.router)
 app.include_router(backtest.router)
+app.include_router(oos.router)
 app.include_router(train.router)
 app.include_router(settings.router)
 app.include_router(analysis.router)
+app.include_router(docs.router)
 
 
 @app.get("/")
@@ -60,9 +77,11 @@ def root():
         "version": "0.1.0",
         "docs": "/docs",
         "endpoints": {
+            "meta": "/api/meta",
             "tickers": "/api/data/tickers",
             "predict": "/api/predict",
             "backtest": "/api/backtest",
+            "oos": "/api/oos",
             "train": "/api/train/models",
             "settings": "/api/settings",
             "analysis": "/api/analysis/news-comparison",

@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from config import ALL_PERIODS, ALL_TICKERS, CRYPTO_BENCHMARKS, STOCK_BENCHMARKS
+from config import ALL_PERIODS, ALL_TICKERS, CRYPTO_BENCHMARKS, SL_SWEEP, STOCK_BENCHMARKS
 from engine.backtest_helpers import (
     compute_benchmarks,
     run_single_backtest,
@@ -116,6 +116,13 @@ def _result_to_schema(
         worst_day=r.worst_day,
         longest_win_streak=r.longest_win_streak,
         longest_loss_streak=r.longest_loss_streak,
+        min_confidence=getattr(r, "min_confidence", 0.0),
+        sat_out_count=getattr(r, "sat_out_count", 0),
+        coverage=getattr(r, "coverage", 1.0),
+        turnover_fees=getattr(r, "turnover_fees", False),
+        hold_days=getattr(r, "hold_days", 1),
+        turnover_count=getattr(r, "turnover_count", 0),
+        fees_paid=getattr(r, "fees_paid", 0.0),
         benchmarks=benchmarks or {},
         days=days,
     )
@@ -141,14 +148,29 @@ def _scope_label(tickers: list[str]) -> str:
 
 
 def _results_dir_name(
-    scope: str, days: int, fee_pct: float, sl_pct: float, bh: bool, ts: str
+    scope: str,
+    days: int,
+    fee_pct: float,
+    sl_pct: float,
+    bh: bool,
+    ts: str,
+    *,
+    min_confidence: float = 0.0,
+    turnover_fees: bool = False,
+    hold_days: int = 1,
 ) -> str:
-    """``results/{scope}_{days}d[_fee{N}][_sl{N}][_bh]_{timestamp}/``"""
+    """``results/{scope}_{days}d[_fee{N}][_sl{N}][_mc{N}][_to][_hold{N}][_bh]_{ts}/``"""
     parts = [scope, f"{days}d"]
     if fee_pct > 0:
         parts.append(f"fee{fee_pct * 100:03.0f}")
     if sl_pct > 0:
         parts.append(f"sl{sl_pct:g}")
+    if min_confidence > 0:
+        parts.append(f"mc{min_confidence * 100:03.0f}")
+    if turnover_fees:
+        parts.append("to")
+    if hold_days > 1:
+        parts.append(f"hold{hold_days}")
     if bh:
         parts.append("bh")
     parts.append(ts)
@@ -182,6 +204,12 @@ def _row_to_csv_dict(r: BacktestModelResult) -> dict:
         "fee_pct": r.fee_pct,
         "stop_loss_pct": r.stop_loss_pct,
         "stopped_out": r.stopped_out_count,
+        "min_confidence": r.min_confidence,
+        "coverage": round(r.coverage, 4),
+        "turnover_fees": r.turnover_fees,
+        "hold_days": r.hold_days,
+        "turnover_count": r.turnover_count,
+        "fees_paid": round(r.fees_paid, 8),
         "win_trades": r.win_trades,
         "loss_trades": r.loss_trades,
         "avg_win": round(r.avg_win, 8),
@@ -278,10 +306,25 @@ def run_backtest(req: BacktestRequest):
         all_to_refresh = list(set(tickers + STOCK_BENCHMARKS + CRYPTO_BENCHMARKS))
         api.refresh_tickers(all_to_refresh, verbose=False)
 
+    # Resolve the stop-loss level set (mirrors cli_helpers.resolve_sl_levels):
+    # sl_sweep > explicit sl_levels > single stop_loss_pct (legacy baseline+SL).
+    if req.sl_sweep:
+        sl_levels: list[float] | None = list(SL_SWEEP)
+        legacy_sl = 0.0
+    elif req.sl_levels:
+        sl_levels = [float(s) for s in req.sl_levels]
+        legacy_sl = 0.0
+    else:
+        sl_levels = None
+        legacy_sl = float(req.stop_loss_pct)
+
     backtester = Backtester(
         n_days=req.days,
         fee_pct=req.fee_pct,
-        stop_loss_pct=req.stop_loss_pct,
+        stop_loss_pct=legacy_sl,
+        min_confidence=req.min_confidence,
+        turnover_fees=req.turnover_fees,
+        hold_days=req.hold_days,
     )
 
     # Resolve which periods to run.
@@ -293,8 +336,13 @@ def run_backtest(req: BacktestRequest):
     else:
         periods = [req.period]
 
-    # Forward the news / sentiment knobs to run_single_backtest when given.
-    news_kwargs: dict = {}
+    # Forward the news / sentiment + model-filter + SL-sweep knobs to
+    # run_single_backtest when given.
+    news_kwargs: dict = {
+        "models": req.models,
+        "include_baselines": req.include_baselines,
+        "sl_levels": sl_levels,
+    }
     if req.sentiment_method is not None:
         news_kwargs["sentiment_method"] = req.sentiment_method
     if req.news_lookback_days is not None:
@@ -380,8 +428,18 @@ def run_backtest(req: BacktestRequest):
         # ------------------------------------------------------------------
         ts = started.strftime("%Y%m%d-%H%M%S")
         scope = _scope_label(tickers)
+        # Use the max swept level (or the single level) for the dir tag.
+        dir_sl = max(sl_levels) if sl_levels else legacy_sl
         results_dir_name = _results_dir_name(
-            scope, req.days, req.fee_pct, req.stop_loss_pct, req.buy_hold, ts
+            scope,
+            req.days,
+            req.fee_pct,
+            dir_sl,
+            req.buy_hold,
+            ts,
+            min_confidence=req.min_confidence,
+            turnover_fees=req.turnover_fees,
+            hold_days=req.hold_days,
         )
         run_id = f"{ts}_{scope}_{req.days}d"
         try:

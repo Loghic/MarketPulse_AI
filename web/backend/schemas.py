@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 class TickerInfo(BaseModel):
     ticker: str
-    asset_type: str  # "stock" or "crypto"
+    asset_type: str  # registry key: stock / crypto / commodity / index / fx
     rows: int
     last_date: str | None = None
 
@@ -131,6 +131,18 @@ class BacktestRequest(BaseModel):
     sentiment_method: str | None = None
     news_lookback_days: int | None = None
     news_half_life_days: float | None = None
+    # Model-family filter + baselines toggle (None / True = all + baselines).
+    models: list[str] | None = None
+    include_baselines: bool = True
+    # Confidence gate (Plan 1.3): days below this are sat out.
+    min_confidence: float = 0.0
+    # Turnover / fee realism (2.1).
+    turnover_fees: bool = False
+    hold_days: int = 1
+    # Stop-loss sweep (2.2): explicit levels, or sl_sweep to use config.SL_SWEEP.
+    # When either is set, each model runs once per level (overrides stop_loss_pct).
+    sl_levels: list[float] | None = None
+    sl_sweep: bool = False
 
 
 class BacktestDayRow(BaseModel):
@@ -170,6 +182,15 @@ class BacktestModelResult(BaseModel):
     worst_day: float
     longest_win_streak: int
     longest_loss_streak: int
+    # Confidence gate + turnover (Plan 1.3 / 2.1). Defaults keep older
+    # persisted runs loadable.
+    min_confidence: float = 0.0
+    sat_out_count: int = 0
+    coverage: float = 1.0
+    turnover_fees: bool = False
+    hold_days: int = 1
+    turnover_count: int = 0
+    fees_paid: float = 0.0
     benchmarks: dict[str, float] = Field(default_factory=dict)
     days: list[BacktestDayRow] = Field(default_factory=list)
 
@@ -258,3 +279,116 @@ class NewsComparisonRow(BaseModel):
     sharpe_with_news: float
     accuracy_no_news: float
     accuracy_with_news: float
+
+
+# ------------------------------------------------------------------
+# Meta — config-driven options for the frontend (single source of truth)
+# ------------------------------------------------------------------
+
+
+class ModelFamily(BaseModel):
+    """A model family the frontend can offer, with availability gating."""
+
+    key: str  # MODEL_FAMILIES key, e.g. "knn", "lstm", "chronos", "baseline"
+    label: str  # display label, e.g. "Chronos-2"
+    available: bool  # False when the optional dep / clone isn't installed
+    predict: bool  # True if usable in the per-ticker Predict flow (not just backtests)
+    note: str = ""  # short reason when unavailable / backtest-only
+
+
+class AssetClassInfo(BaseModel):
+    """One asset class from the registry (drives the scope pickers)."""
+
+    key: str  # "stock", "crypto", "commodity", "index", "fx"
+    label: str  # "Stocks", "Crypto", …
+    cli_flag: str  # "stocks", "crypto", …
+    tickers: list[str]
+    benchmarks: list[str]
+
+
+class MetaResponse(BaseModel):
+    """Everything the frontend needs to render pickers without hardcoding."""
+
+    model_families: list[ModelFamily]
+    asset_classes: list[AssetClassInfo]
+    benchmarks: list[str]  # every benchmark symbol available
+    periods: list[str]
+    sentiment_methods: list[str]
+    sl_sweep: list[float]  # default stop-loss sweep set
+    confidence_sweep: list[float]
+    defaults: dict[str, float | int | str | bool]
+
+
+# ------------------------------------------------------------------
+# Out-of-sample harness (select on window N → evaluate on disjoint N+1)
+# ------------------------------------------------------------------
+
+
+class OOSRequest(BaseModel):
+    tickers: list[str] = Field(default_factory=list)
+    days: int = 50
+    periods: list[str] | None = None  # None = all periods as selection candidates
+    fee_pct: float = 0.05
+    stop_loss_pct: float = 0.0
+    buy_hold: bool = True
+    refresh_data: bool = True
+    models: list[str] | None = None
+    include_baselines: bool = True
+    # Same gate / turnover knobs as backtest, applied to BOTH windows.
+    min_confidence: float = 0.0
+    turnover_fees: bool = False
+    hold_days: int = 1
+    # News / sentiment
+    sentiment_method: str | None = None
+    news_lookback_days: int | None = None
+    news_half_life_days: float | None = None
+
+
+class OOSTickerRow(BaseModel):
+    """One ticker's selection winner + its out-of-sample evaluation."""
+
+    ticker: str
+    winner_model: str
+    winner_period: str
+    winner_family: str
+    in_sample_return: float
+    in_sample_accuracy: float
+    in_sample_buy_hold: float
+    oos_return: float
+    oos_accuracy: float
+    oos_buy_hold: float
+    oos_sharpe: float
+    beats_bh_oos: int
+    stable: int
+    # Gate / calibration (only meaningful when min_confidence > 0)
+    min_confidence: float = 0.0
+    oos_coverage: float = 1.0
+    oos_traded_days: int = 0
+    oos_sat_out: int = 0
+    oos_brier: float = 0.0
+    oos_ece: float = 0.0
+    oos_binomial_p: float = 1.0
+    oos_acc_ci_lo: float = 0.0
+    oos_acc_ci_hi: float = 1.0
+
+
+class OOSSummary(BaseModel):
+    tickers: int
+    oos_beat_bh_rate: float
+    median_oos_return: float
+    mean_oos_return: float
+    median_in_sample_return: float
+    in_sample_minus_oos_median: float
+    median_oos_accuracy: float
+    min_confidence: float = 0.0
+    median_oos_coverage: float = 1.0
+    median_oos_brier: float = 0.0
+    median_oos_ece: float = 0.0
+    tickers_significant_p05: int = 0
+
+
+class OOSResponse(BaseModel):
+    rows: list[OOSTickerRow]
+    summary: OOSSummary
+    results_dir: str | None = None
+    run_id: str | None = None

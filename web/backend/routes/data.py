@@ -9,7 +9,7 @@ import logging
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
-from config import ALL_TICKERS, DEFAULT_SENTIMENT_METHOD
+from config import ALL_TICKERS, DEFAULT_SENTIMENT_METHOD, asset_type_of
 from interface.api import StockAppAPI
 from web.backend.schemas import (
     OHLCVRow,
@@ -41,7 +41,10 @@ def list_tickers():
     api = get_api()
     result = []
     for ticker in ALL_TICKERS:
-        asset_type = "crypto" if "-USD" in ticker else "stock"
+        # Registry-driven asset class (stock / crypto / commodity / index / fx)
+        # instead of the old "-USD" → crypto heuristic, so the new classes are
+        # tagged correctly for the frontend pickers.
+        asset_type = asset_type_of(ticker)
         df = api.db.get_prices(ticker)
         last_date = str(df["date"].iloc[-1]) if not df.empty else None
         result.append(

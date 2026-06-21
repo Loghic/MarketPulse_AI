@@ -101,8 +101,94 @@ export interface BacktestModelResult {
   worst_day: number;
   longest_win_streak: number;
   longest_loss_streak: number;
+  /** Confidence gate + turnover (Plan 1.3 / 2.1). */
+  min_confidence: number;
+  sat_out_count: number;
+  coverage: number;
+  turnover_fees: boolean;
+  hold_days: number;
+  turnover_count: number;
+  fees_paid: number;
   benchmarks: Record<string, number>;
   days: BacktestDayRow[];
+}
+
+// --- Meta (config-driven options; single source of truth) ---
+
+export interface ModelFamily {
+  key: string;
+  label: string;
+  available: boolean;
+  predict: boolean;
+  note: string;
+}
+
+export interface AssetClassInfo {
+  key: string;
+  label: string;
+  cli_flag: string;
+  tickers: string[];
+  benchmarks: string[];
+}
+
+export interface MetaResponse {
+  model_families: ModelFamily[];
+  asset_classes: AssetClassInfo[];
+  benchmarks: string[];
+  periods: string[];
+  sentiment_methods: string[];
+  sl_sweep: number[];
+  confidence_sweep: number[];
+  defaults: Record<string, number | string | boolean>;
+}
+
+// --- Out-of-sample harness ---
+
+export interface OOSTickerRow {
+  ticker: string;
+  winner_model: string;
+  winner_period: string;
+  winner_family: string;
+  in_sample_return: number;
+  in_sample_accuracy: number;
+  in_sample_buy_hold: number;
+  oos_return: number;
+  oos_accuracy: number;
+  oos_buy_hold: number;
+  oos_sharpe: number;
+  beats_bh_oos: number;
+  stable: number;
+  min_confidence: number;
+  oos_coverage: number;
+  oos_traded_days: number;
+  oos_sat_out: number;
+  oos_brier: number;
+  oos_ece: number;
+  oos_binomial_p: number;
+  oos_acc_ci_lo: number;
+  oos_acc_ci_hi: number;
+}
+
+export interface OOSSummary {
+  tickers: number;
+  oos_beat_bh_rate: number;
+  median_oos_return: number;
+  mean_oos_return: number;
+  median_in_sample_return: number;
+  in_sample_minus_oos_median: number;
+  median_oos_accuracy: number;
+  min_confidence: number;
+  median_oos_coverage: number;
+  median_oos_brier: number;
+  median_oos_ece: number;
+  tickers_significant_p05: number;
+}
+
+export interface OOSResponse {
+  rows: OOSTickerRow[];
+  summary: OOSSummary;
+  results_dir: string | null;
+  run_id: string | null;
 }
 
 export interface ModelInventoryItem {
@@ -211,6 +297,14 @@ export const api = {
       consensus: { direction: string; up: number; down: number; total: number; agreement: number } | null;
     }>(`/predict/cached/${ticker}`),
 
+  // Meta — config-driven options for the pickers (models / tickers / benchmarks)
+  getMeta: () => request<MetaResponse>("/meta"),
+
+  // Concept docs for the Help tab (end-user glossary).
+  listDocs: () => request<{ slug: string; title: string }[]>("/docs"),
+  getDoc: (slug: string) =>
+    request<{ slug: string; title: string; markdown: string }>(`/docs/${encodeURIComponent(slug)}`),
+
   // Backtest
   backtest: (params: {
     tickers?: string[];
@@ -226,6 +320,16 @@ export const api = {
     sentiment_method?: string;
     news_lookback_days?: number;
     news_half_life_days?: number;
+    /** Model-family filter (keys) + baselines toggle. */
+    models?: string[];
+    include_baselines?: boolean;
+    /** Confidence gate + turnover (Plan 1.3 / 2.1). */
+    min_confidence?: number;
+    turnover_fees?: boolean;
+    hold_days?: number;
+    /** Stop-loss sweep (2.2): explicit levels or the config default set. */
+    sl_levels?: number[];
+    sl_sweep?: boolean;
   }) =>
     request<{
       results: BacktestModelResult[];
@@ -235,6 +339,79 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }),
+
+  /** Live backtest progress (polled while a run is in flight). */
+  backtestProgress: () => request<Record<string, unknown>>("/backtest/progress"),
+
+  /** Persisted backtest runs (newest first) for tab redisplay. */
+  listBacktestRuns: () =>
+    request<{
+      run_id: string;
+      saved_at: string;
+      results_dir: string;
+      tickers: string[];
+      request: Record<string, unknown>;
+      result_count: number;
+    }[]>("/backtest/runs"),
+
+  loadBacktestRun: (runId: string) =>
+    request<{
+      run_id: string;
+      saved_at: string;
+      results_dir: string;
+      request: Record<string, unknown>;
+      tickers: string[];
+      response: {
+        results: BacktestModelResult[];
+        best_by_return: BacktestModelResult | null;
+        best_by_sharpe: BacktestModelResult | null;
+      };
+    }>(`/backtest/runs/${encodeURIComponent(runId)}`),
+
+  // Out-of-sample harness
+  oos: (params: {
+    tickers?: string[];
+    days?: number;
+    periods?: string[];
+    fee_pct?: number;
+    stop_loss_pct?: number;
+    buy_hold?: boolean;
+    refresh_data?: boolean;
+    models?: string[];
+    include_baselines?: boolean;
+    min_confidence?: number;
+    turnover_fees?: boolean;
+    hold_days?: number;
+    sentiment_method?: string;
+    news_lookback_days?: number;
+    news_half_life_days?: number;
+  }) =>
+    request<OOSResponse>("/oos", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
+  oosProgress: () => request<Record<string, unknown>>("/oos/progress"),
+
+  listOosRuns: () =>
+    request<{
+      run_id: string;
+      saved_at: string;
+      results_dir: string;
+      tickers: string[];
+      request: Record<string, unknown>;
+      row_count: number;
+    }[]>("/oos/runs"),
+
+  loadOosRun: (runId: string) =>
+    request<{
+      run_id: string;
+      saved_at: string;
+      results_dir: string;
+      request: Record<string, unknown>;
+      tickers: string[];
+      response: OOSResponse;
+    }>(`/oos/runs/${encodeURIComponent(runId)}`),
 
   // Training
   getModels: () => request<ModelInventoryItem[]>("/train/models"),

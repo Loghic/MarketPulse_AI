@@ -102,6 +102,26 @@ def scope_label(args: argparse.Namespace, default: str = "all") -> str:
     return default
 
 
+def scope_label_from_tickers(tickers: list[str], default: str = "custom") -> str:
+    """Label a *ticker list* by which asset class(es) it exactly matches.
+
+    Used by the web layer, which works with resolved ticker lists rather than
+    argparse flags. Returns "all" for the full universe, a single class's
+    cli_flag (or "-"-joined combo) when the list is exactly those classes'
+    tickers, else ``default`` (typically "custom").
+    """
+    wanted = set(tickers)
+    if not wanted:
+        return default
+    if wanted == set(ALL_TICKERS):
+        return "all"
+    matched = [ac.cli_flag for ac in ASSET_CLASSES if wanted >= set(ac.tickers)]
+    covered = {t for ac in ASSET_CLASSES if ac.cli_flag in matched for t in ac.tickers}
+    if matched and covered == wanted:
+        return "-".join(matched)
+    return default
+
+
 # ----------------------------------------------------------------------
 # Shared flag groups — reused by backtest.py / run_all.py / oos_harness.py
 # so a flag's spelling, default and help text live in exactly one place.
