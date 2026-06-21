@@ -37,13 +37,27 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
   - **Previous-Day Direction** — predict today = yesterday's realized direction.
   - **5-Day Momentum** — UP if `close[t] > close[t-5]`, else DOWN.
   - **Random Direction** — seeded coin flip (the floor + the null for significance).
+  - **Sign-Only Momentum** - predict UP if cumulative return over last N days > 0. (eg. N = 20, 50 etc.)
 - Implementation: each is a `predict()` that ignores the trained model; slot into the
   backtester as variants so they get identical metrics and are directly comparable.
   Consider a `--baselines` flag (or always include them).
 - Pass bar for any real model: **beat Previous-Day-Direction and Always-Long**, not
   just B&H.
 
-### 1.3 Statistical significance testing
+### 1.3 Confidence calibration + gating  [highest-value lever]
+- First read the existing confidence-calibration output: are high-confidence days
+actually more accurate? If calibration is flat, gating only shrinks exposure.
+- Add `--min-confidence θ`: days below θ are flat (0 P&L, no fee, excluded from
+accuracy). Sweep θ ∈ {0.55, 0.60, 0.65, 0.70}.
+- Track: accuracy on traded days, coverage (% days traded), return, fees saved.
+- Pass bar: traded-day accuracy materially > 0.5 AND return improves vs θ=0.
+- Implementation note: the gate lives in `engine/backtester.py` (per-day loop) plus a
+flag in `backtest.py` / `run_all.py`.
+- Reliability diagram
+- Brier score
+- Expected Calibration Error (ECE)
+
+### 1.4 Statistical significance testing
 - Currently reported: accuracy, returns, Sharpe, Sortino. Add:
   - **Binomial test** on directional accuracy (H0: p = 0.5) → p-value.
   - **Wilson score CI** on accuracy (honest interval, not ±point estimate).
@@ -53,15 +67,6 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
   selection-inflated. Either correct for multiple comparisons (Benjamini-Hochberg FDR)
   or formally test only the single OOS-selected config from 1.1. Don't p-hack the grid.
 
-### 1.4 Confidence calibration + gating  [highest-value lever]
-- First read the existing confidence-calibration output: are high-confidence days
-  actually more accurate? If calibration is flat, gating only shrinks exposure.
-- Add `--min-confidence θ`: days below θ are flat (0 P&L, no fee, excluded from
-  accuracy). Sweep θ ∈ {0.55, 0.60, 0.65, 0.70}.
-- Track: accuracy on traded days, coverage (% days traded), return, fees saved.
-- Pass bar: traded-day accuracy materially > 0.5 AND return improves vs θ=0.
-- Implementation note: the gate lives in `engine/backtester.py` (per-day loop) plus a
-  flag in `backtest.py` / `run_all.py`.
 
 ---
 
@@ -89,6 +94,21 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
 - Beating B&H absolute return in a bull market via daily flips is very hard. Also track
   risk-adjusted (Sharpe / Sortino) and drawdown vs B&H, and define a clear, falsifiable
   success bar up front.
+
+## Falsification criteria
+
+The project will consider daily-direction prediction unsuporrted if:
+
+- OOS accuracy remains statistically indistinguishable from 50%.
+- confidence gating fails to produce a profitable subset.
+- No model consistently beats the naive baselines.
+- No strategy beats buy-and-hold on a risk-adjusted basis after fees.
+
+If all four hold after Phase 2, future work shifts toward:
+- regression forecasting
+- portfolio construction
+- volatility/risk prediction
+ratther than next-day direction prediction.
 
 ---
 
@@ -125,6 +145,7 @@ The benchmark to beat is not just buy-and-hold — it's the **naive baselines** 
   and portfolio risk are valuable — but premature until individual signals beat the naive
   baselines (1.2). Allocating across coin-flip signals isn't meaningful. Revisit once
   Phase 1 shows something real.
+
 
 ---
 

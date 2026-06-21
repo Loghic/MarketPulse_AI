@@ -151,8 +151,11 @@ KRONOS_TOP_P = 0.9
 | `"prophet"` | ProphetModel | close (univariate) | No (fits per call) |
 | `"chronos"` | Chronos2Model | close (univariate) | No (zero-shot, downloads weights) |
 | `"kronos"` | KronosModel | OHLCV | No (zero-shot, sibling clone + downloads weights) |
+| *(baselines)* | AlwaysLong / PreviousDay / Momentum(n=5,20) / Random | close only | No (no parameters) |
 
 > Forecasting models (Prophet, Chronos-2, Kronos) subclass engine/forecast_base.py:ForecastModel and also expose forecast(df) → ForecastResult for the raw predicted value. use_time_weights is ignored (like LSTM).
+>
+> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract but ignore `sentiment_score` — no "+ News" siblings. They exist as the floor real models must clear; included by default, skip with `--no-baselines`. See *Phase-1 measurement rigor* in *2026 changes*.
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
@@ -396,7 +399,9 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 ### Helper scripts
 
 - `scripts/news_impact.py` — post-processor for a `run_all.py` result tree. Pairs `+ News` rows with their no-news siblings, emits `_news_vs_no_news_{TICKER}.csv`, `_news_vs_no_news_summary.csv`, `_news_vs_no_news_overall.csv`. Pure-function helpers (`pair_rows`, `summarize_per_ticker_model`, `overall_stats`) are unit-tested in `tests/test_news_impact.py`. The same pairing logic is reimplemented in TypeScript in `web/frontend/src/pages/Analysis.tsx` so the browser doesn't need a round-trip.
+- `scripts/oos_harness.py` — Phase-1.1 out-of-sample model-selection harness, see *Phase-1 measurement rigor* below.
 - `scripts/clean_prices.py` — one-off DB cleanup, see *Data sanity guards* above.
+- `scripts/clean_test_contamination.py` — one-off cleanup for the historical bug where test fixtures wrote the 400-day `_make_prices(seed=42)` series into the real `data/market_data.db` under real ticker names. Detect-by-fingerprint, dry-run by default, `--apply` to delete. The conftest now redirects to `tmp_path` so new test runs can't reproduce the leak.
 
 ### Forecasting models (Prophet, Chronos-2, Kronos)
 
@@ -411,4 +416,26 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - `BacktestResult.elapsed_seconds` — `Backtester.run()` times each walk-forward run. `backtest.py --timing` prints a slowest-first per-model breakdown (`print_timing_table` in `backtest_helpers`) after the summary; `run_all.py` prints a time-by-model-family rollup (time / share / wins) at the end of a batch. Use these to drop a model that costs a lot and rarely wins.
 - `--periods 1y 2y 5y` — on `run_all.py` (batch) and `backtest.py --compare-periods` (matrix), restricts the period set; default is all of `ALL_PERIODS`. Note `backtest.py` also keeps the singular `--period` for single-period mode. See *Architecture notes* for why skipping `max` is near-free.
 - Empirical finding (100-day FinBERT stocks batch): direction accuracy ≈ coin flip (~0.49), only ~19% of combos beat their own buy & hold, headline returns are largely selection bias + bull market. Chronos-2 was the most useful of the new models; Prophet and Kronos the slowest and weakest on average. Treat results as research, not signal. (Details in `docs/forecasting.md`.)
-- Confirmed across horizons (40/100/300-day batches): accuracy stays ~0.49–0.51 everywhere (no edge at any horizon), and the strategy's beat-buy-and-hold rate *decays* 27% → 19% → 2% as the horizon lengthens — daily fees compound (~4%/6%/30% drag) while B&H rides the bull. Even cherry-picking the best model per ticker, only ~2/11 beat B&H over 300 days. LSTM was the only family with a positive median return/Sharpe at 300d; k-NN consistently worst. See the README *Research roadmap* for the prioritized next experiments (out-of-sample selection harness, confidence gating `--min-confidence`, turnover/fee realism, SL sweep, LSTM focus).
+- Confirmed across horizons (40/100/300-day batches): accuracy stays ~0.49–0.51 everywhere (no edge at any horizon), and the strategy's beat-buy-and-hold rate *decays* 27% → 19% → 2% as the horizon lengthens — daily fees compound (~4%/6%/30% drag) while B&H rides the bull. Even cherry-picking the best model per ticker, only ~2/11 beat B&H over 300 days. LSTM was the only family with a positive median return/Sharpe at 300d; k-NN consistently worst. The first two items on `plan.md` *Phase 1 — Measurement rigor* (naive baselines and the OOS selection harness) are now implemented — see *Phase-1 measurement rigor* below; confidence gating + statistical significance testing remain.
+
+### Phase-1 measurement rigor (baselines + OOS harness)
+
+Implements `plan.md` §1.1 (out-of-sample model-selection harness) and §1.2 (naive baselines). The headline result rate from `run_all.py`'s `_summary.csv` is selection-inflated; these two pieces give an honest read.
+
+- **`engine/baseline_models.py`** (§1.2) — five trivial "predictors" sharing the same `predict(df, use_time_weights, sentiment_score) → (direction, confidence)` contract as the real models:
+  - `AlwaysLongBaseline` (UP every day, conf 1.0)
+  - `PreviousDayBaseline` (copy yesterday's realised direction)
+  - `MomentumBaseline(n=5)` and `MomentumBaseline(n=20)` (UP iff `close[-1] > close[-1-n]`; n=20 is the plan's "Sign-Only Momentum")
+  - `RandomBaseline(seed=42)` — deterministic coin flip seeded by `sha256(last_date_in_df, seed)`, so re-runs reproduce exactly.
+
+  Wired into `backtest_helpers.run_single_backtest()` via `default_baseline_variants()`. Labels start with `"Baseline "` so the existing `--models` filter picks them up via `config.MODEL_FAMILY_LABELS["baseline"]`. **No "+ News" siblings** — baselines ignore `sentiment_score` by construction. Skip with `--no-baselines` on `backtest.py` / `run_all.py`. Pass bar for any real model: beat `Previous Day` and `Always Long`, not just B&H.
+
+- **`scripts/oos_harness.py`** (§1.1) — disciplined alternative to `run_all.py`'s "best per ticker". For each ticker: trim the last `--days` rows → run every candidate on the selection holdout → pick the highest in-sample `total_return` → re-run **only** that exact `(model_name, period)` on the full df. The evaluation holdout is the last `--days` of the full df, strictly disjoint from selection. Reports OOS beat-B&H rate, median OOS return, and the **selection-inflation gap** (`median(in_sample − OOS)`) — the headline number for "how much of the in-sample edge is real".
+
+  Output mirrors `run_all.py`'s convention: `results/oos_<scope>_<days>d_..._<ts>/_oos_per_ticker.csv` + `_oos_summary.csv` + `_oos_console.txt`. Shares all the news/sentiment flags with `backtest.py`. Needs at least `2 × --days + 20` rows per ticker; shorter tickers are skipped with a log line.
+
+  Pairs naturally with baselines — `--models baseline` measures how often a coin flip "wins" OOS; mixed candidates (e.g. `--models lstm baseline`) detect when a baseline beats real models. The harness is the gating check for any Phase-2 experiment (turnover, SL sweep, LSTM tuning): if a config has no OOS edge, "tuning" it just selects on noise.
+
+- **Tests:** `tests/test_baselines.py` (18 cases pinning each baseline's behaviour plus interface contract on the factory) and `tests/test_oos_harness.py` (11 cases — aggregate math against a hand-computed two-ticker example, CSV roundtrips, **disjoint-window guarantee** via a `Backtester.run` spy that captures every call's `df` date range, winner-is-highest-in-sample invariant, beats-B&H flag definition). End-to-end OOS tests drive the harness with the baseline-only model set so they run in milliseconds without a trained LSTM.
+
+- **macOS FD pressure** — full pytest on macOS used to fail mid-run with `OSError: [Errno 24] Too many open files` (default `ulimit -n = 256` is exhausted by HuggingFace caches, SQLite, FastAPI TestClient sockets, tmp_path dirs). `tests/conftest.py` now bumps `RLIMIT_NOFILE` to `min(4096, hard)` at import time, wrapped in try/except so Linux / CI / sandboxed shells silently no-op. The OOS module-imports smoke test originally used `importlib.reload()` which re-executed the entire `engine.backtest_helpers` chain and was the FD-cascade trigger; it's a plain attribute check now.
