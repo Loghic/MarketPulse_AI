@@ -248,11 +248,15 @@ class NewsAwarePreviousDayBaseline:
 
 @dataclass
 class NewsInformedBaseline:
-    """Act on the news when it's clear; otherwise assume continuation.
+    """Trade only on a clear headline; otherwise sit out (FLAT).
 
-    When today's |sentiment| ≥ ``threshold``, predict the news sign directly.
-    Otherwise fall back to yesterday's direction. The "person who only trades
-    on a clear headline, and otherwise expects more of the same" baseline.
+    When today's |sentiment| ≥ ``threshold``, predict the news sign. When the
+    news is weak/neutral, return ``"FLAT"`` — a deliberate no-trade day (the
+    backtester sits it out: 0 P&L, no fee, excluded from accuracy). This is the
+    "only act on a clear signal, otherwise stay in cash" baseline, and it's what
+    makes this distinct from ``NewsAwarePreviousDayBaseline`` (which always
+    trades, defaulting to yesterday's direction). Expect low coverage — it only
+    trades on the minority of days with strong news.
     """
 
     threshold: float = BASELINE_NEWS_THRESHOLD
@@ -260,18 +264,15 @@ class NewsInformedBaseline:
 
     def predict(
         self,
-        df: pd.DataFrame,
+        df: pd.DataFrame,  # noqa: ARG002 - decision is news-only
         use_time_weights: bool = False,  # noqa: ARG002
         sentiment_score: float = 0.0,
     ) -> tuple[str, float]:
         news = _news_override(sentiment_score, self.threshold)
         if news is not None:
             return news, _CONF_DIRECTIONAL
-        # No clear news → previous-day fallback.
-        if len(df) < 2 or "close" not in df.columns:
-            return "UP", _CONF_DIRECTIONAL
-        close = df["close"].astype(float)
-        return ("UP" if close.iloc[-1] > close.iloc[-2] else "DOWN"), _CONF_DIRECTIONAL
+        # Weak / no news → sit out today (no trade).
+        return "FLAT", _CONF_RANDOM
 
 
 @dataclass

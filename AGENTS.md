@@ -168,7 +168,7 @@ KRONOS_TOP_P = 0.9
 
 > Forecasting models (Prophet, Chronos-2, Kronos) subclass engine/forecast_base.py:ForecastModel and also expose forecast(df) → ForecastResult for the raw predicted value. use_time_weights is ignored (like LSTM).
 >
-> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract. **Price-only** ones (AlwaysLong, AlwaysShort, PreviousDay, Momentum, Random) ignore `sentiment_score`. **News-aware** ones (NewsAwarePreviousDay, NewsInformed, NewsAwareMomentum) *react* to today's look-ahead-safe sentiment with a fixed rule (override the price call when |sentiment| ≥ `config.BASELINE_NEWS_THRESHOLD`) but never *learn* from past outcomes — staying valid stateless floors, not models. `default_baseline_variants()` returns `(model, label, uses_news)`; `run_single_backtest` attaches the per-day sentiment provider to the news-aware ones (only when news exists). Included by default, skip with `--no-baselines`. A learning sentiment→outcome predictor would be a real model (e.g. a future sentiment-kNN), not a baseline.
+> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract. **Price-only** ones (AlwaysLong, AlwaysShort, PreviousDay, Momentum, Random) ignore `sentiment_score`. **News-aware** ones *react* to today's look-ahead-safe sentiment with a fixed rule but never *learn* from past outcomes — staying valid stateless floors, not models: `NewsAwarePreviousDay` (yesterday's direction, flip when |sentiment| ≥ `config.BASELINE_NEWS_THRESHOLD`), `NewsAwareMomentum` (n-day momentum, same flip), and `NewsInformed` (trade the news sign on strong news, else return **`"FLAT"`** to sit the day out — distinct from NewsAwarePreviousDay, which always trades). `default_baseline_variants()` returns `(model, label, uses_news)`; `run_single_backtest` attaches the per-day sentiment provider to the news-aware ones (only when news exists). Included by default, skip with `--no-baselines`. A learning sentiment→outcome predictor would be a real model (e.g. a future sentiment-kNN), not a baseline.
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
@@ -191,10 +191,10 @@ Stop-loss uses intraday High/Low: Long exits if Low ≤ entry × (1 - SL%), Shor
 ```python
 @dataclass
 class DayResult:
-    date, predicted, actual, confidence, correct,
+    date, predicted, actual, confidence, correct,   # predicted ∈ {UP, DOWN, FLAT}; FLAT = deliberate no-trade
     close_before, close_actual, exit_price,     # exit_price = SL price or close
     trade_pnl, trade_pnl_net, stopped_out,      # stopped_out: bool
-    traded,                                      # False when sat out by the confidence gate
+    traded,                                      # False when sat out by the confidence gate OR a FLAT signal
     position, position_changed                   # held direction + whether it changed (turnover/hold-days)
 
 @dataclass
@@ -375,6 +375,7 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - Yearly performance only shown when data spans 2+ calendar years.
 - Stop-loss: checked against intraday High/Low. Exit at SL price, not close.
 - When SL is on, each model runs twice (baseline + SL) in `run_single_backtest()`.
+- **FLAT signal**: `model.predict()` may return `"FLAT"` to sit a day out regardless of the confidence gate — recorded as an untraded day (0 P&L, no fee, excluded from accuracy / coverage / calibration), and it breaks a held run in position mode. Non-`UP/DOWN/FLAT` predictions are dropped (malformed). Used by the `NewsInformed` baseline (flat on weak news). Calibration (`pairs_from_days`) and `gating_metrics` count only real `UP/DOWN` calls.
 - Buy-and-hold = (last close - first close) / first close.
 - LSTM auto-loads best model (cluster > standard > quick). Normalizes via StandardScaler (saved with weights).
 - k-NN time-weighting uses exponential decay × distance (not data trimming).

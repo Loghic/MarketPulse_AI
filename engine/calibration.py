@@ -202,7 +202,10 @@ def gating_metrics(
     post-hoc so a single un-gated backtest can be swept over many θ.
     """
     total = len(days)
-    traded_days = [d for d in days if d.confidence >= threshold]
+    # A day is traded iff it's a real directional call AND clears the gate.
+    # ``FLAT`` (deliberate no-trade) days never count as traded, whatever their
+    # nominal confidence.
+    traded_days = [d for d in days if d.predicted in ("UP", "DOWN") and d.confidence >= threshold]
     traded = len(traded_days)
     sat_out = total - traded
 
@@ -240,5 +243,9 @@ def gating_sweep(
 
 
 def pairs_from_days(days: list[DayResult]) -> list[tuple[float, bool]]:
-    """Extract ``(confidence, correct)`` from a list of DayResult."""
-    return [(float(d.confidence), bool(d.correct)) for d in days]
+    """Extract ``(confidence, correct)`` from a list of DayResult.
+
+    Only real directional calls (UP/DOWN) feed calibration — a ``FLAT``
+    no-trade day made no prediction, so it has no confidence to calibrate.
+    """
+    return [(float(d.confidence), bool(d.correct)) for d in days if d.predicted in ("UP", "DOWN")]

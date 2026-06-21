@@ -457,6 +457,57 @@ class TestPositionMode:
 
 
 # ----------------------------------------------------------------------
+# FLAT (no-trade) prediction path
+# ----------------------------------------------------------------------
+
+
+class _FlatEveryOther:
+    """Predicts UP, but returns FLAT (sit out) on every other window length —
+    a deterministic stand-in for a model that abstains some days."""
+
+    def predict(self, df, use_time_weights=False, sentiment_score=0.0):
+        return ("FLAT" if len(df) % 2 == 0 else "UP"), 0.8
+
+
+class TestFlatPrediction:
+    def test_flat_days_are_untraded(self):
+        df = _ramp_df(n=60)
+        r = Backtester(n_days=10, fee_pct=0.05).run(_FlatEveryOther(), "F", df, ticker="X")
+        flat = [d for d in r.days if d.predicted == "FLAT"]
+        assert flat, "expected some FLAT days"
+        for d in flat:
+            assert d.traded is False
+            assert d.trade_pnl_net == 0.0
+            assert d.trade_pnl == 0.0
+        # All recorded (not skipped): traded + flat == every eval day.
+        assert len(r.days) == 10
+
+    def test_flat_excluded_from_accuracy_and_counts(self):
+        df = _ramp_df(n=60)
+        r = Backtester(n_days=10, fee_pct=0.05).run(_FlatEveryOther(), "F", df, ticker="X")
+        traded = [d for d in r.days if d.traded]
+        # test_days counts only traded (directional) days.
+        assert r.test_days == len(traded)
+        assert r.test_days < len(r.days)
+        # Coverage reflects the sit-out days.
+        assert r.sat_out_count == len(r.days) - r.test_days
+        assert r.coverage == pytest.approx(r.test_days / len(r.days), abs=1e-6)
+        # No FLAT day pays a fee.
+        assert r.fees_paid == pytest.approx(r.test_days * 2 * 0.05 / 100, abs=1e-9)
+
+    def test_garbage_prediction_still_skipped(self):
+        # A non-UP/DOWN/FLAT prediction is dropped entirely (not recorded).
+        class _Garbage:
+            def predict(self, df, use_time_weights=False, sentiment_score=0.0):
+                return "SIDEWAYS", 0.8
+
+        df = _ramp_df(n=60)
+        r = Backtester(n_days=10).run(_Garbage(), "G", df, ticker="X")
+        assert len(r.days) == 0
+        assert r.test_days == 0
+
+
+# ----------------------------------------------------------------------
 # Stop-loss sweep via run_single_backtest (strategy experiments 2.2)
 # ----------------------------------------------------------------------
 

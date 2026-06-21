@@ -49,10 +49,12 @@ Count of winning vs losing days.
 
 ## Coverage
 
-Only shown when the [confidence gate](strategy#confidence-gate-min-confidence)
-is on. It's the percentage of days you actually traded (the rest were sat out
-for low confidence). Low coverage with high accuracy can be noise — a great
-score on 3 traded days means little.
+The percentage of days you actually traded; the rest were sat out. Days get
+sat out either by the [confidence gate](strategy#confidence-gate-min-confidence)
+(confidence below θ) or because the model itself chose not to trade — the
+News-Informed baseline, for instance, sits out whenever the news isn't clear.
+Low coverage with high accuracy can be noise — a great score on 3 traded days
+means little.
 
 ## Turnover
 

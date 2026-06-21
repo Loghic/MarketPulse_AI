@@ -610,11 +610,16 @@ class Backtester:
                 sentiment_score=sentiment_today,
             )
 
-            if predicted not in ("UP", "DOWN"):
+            # ``FLAT`` is a deliberate no-trade signal (a model choosing to sit
+            # out today, e.g. the News-Informed baseline on weak news). It's
+            # recorded as an untraded day, NOT skipped. Anything else outside
+            # UP/DOWN/FLAT is a malformed prediction and is dropped.
+            if predicted not in ("UP", "DOWN", "FLAT"):
                 continue
 
-            # --- Confidence gate: below θ we hold no position (flat). ---
-            traded = confidence >= self.min_confidence
+            # --- Trade only on a directional call above the confidence gate.
+            # A FLAT signal sits out regardless of the gate. ---
+            traded = predicted in ("UP", "DOWN") and confidence >= self.min_confidence
 
             # --- Resolve the position actually held today. ---
             # ``predicted`` is always the model's call (drives ``correct`` and

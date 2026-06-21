@@ -255,12 +255,11 @@ class TestNewsInformed:
         assert b.predict(_df([100, 101]), sentiment_score=_STRONG)[0] == "UP"
         assert b.predict(_df([100, 101]), sentiment_score=-_STRONG)[0] == "DOWN"
 
-    def test_weak_news_falls_back_to_previous_day(self):
+    def test_weak_news_sits_out_flat(self):
         b = NewsInformedBaseline()
-        # Weak news → previous-day. Yesterday up → UP.
-        assert b.predict(_df([100, 101]), sentiment_score=_WEAK)[0] == "UP"
-        # Yesterday down → DOWN.
-        assert b.predict(_df([100, 99]), sentiment_score=0.0)[0] == "DOWN"
+        # Weak / no news → FLAT (no trade), regardless of yesterday's move.
+        assert b.predict(_df([100, 101]), sentiment_score=_WEAK)[0] == "FLAT"
+        assert b.predict(_df([100, 99]), sentiment_score=0.0)[0] == "FLAT"
 
 
 class TestNewsAwareMomentum:

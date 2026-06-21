@@ -75,8 +75,9 @@ clearly strong (above a small threshold); weak news is ignored.
   the news is clearly positive/negative, in which case follow the news. ("Things
   keep going the way they were, unless the headlines say otherwise.")
 - **News-Informed** — when the news is clearly positive/negative, predict that;
-  otherwise fall back to previous-day. (The "person who only acts on a clear
-  headline, and otherwise expects more of the same.")
+  otherwise **sit out** the day entirely (no trade). The "only act on a clear
+  headline, otherwise stay in cash" baseline. It trades on a minority of days,
+  so expect low [coverage](metrics#coverage) — that's the point.
 - **News 5-Day Momentum** — 5-day momentum, but flipped to match strong news.
 
 The rule of thumb: a model is only worth attention if it beats **Previous-Day
