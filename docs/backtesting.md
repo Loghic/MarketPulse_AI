@@ -12,13 +12,21 @@ Each day, the model's prediction becomes a trade:
 - **UP** → Long (buy at open, sell at close). P/L = `(exit - entry) / entry`
 - **DOWN** → Short (sell at open, buy at close). P/L = `(entry - exit) / entry`
 
-The exit price is normally the end-of-day close, unless a stop-loss is triggered during the day.
+The exit price is normally the end-of-day close, unless a stop-loss is triggered during the day. A prediction of **FLAT** (only the News-Informed baseline currently does this) sits the day out: no trade, no fee, excluded from accuracy.
+
+By default this is **daily mark-to-market** — each day's close-to-close move is booked as its own trade. `--position-mode` instead holds one position across consecutive same-direction days and books the *compounded* entry→exit return as a single trade. The confidence gate (`--min-confidence θ`) sits out low-confidence days entirely.
 
 ### Trading fees
 
-`--fees 0.03` means 0.03% per side. Round-trip = 2 × 0.03% = 0.06% per trade. With 50 trades at 0.1% per side, you lose 10% to fees alone.
+`--fees 0.03` means 0.03% per side. Round-trip = 2 × 0.03% = 0.06% per trade. With 50 trades at 0.1% per side, you lose 10% to fees alone — which is why a daily-flip strategy usually trails buy-and-hold.
 
-Typical values:
+Two knobs make the cost realistic:
+- `--turnover-fees` — charge the round-trip fee only on days the position *changes* (open / flip), not every day. Same-direction days are held free.
+- `--hold-days N` — hold an opened position N days before re-reading the signal.
+
+(`--position-mode` is the strongest form: one fee per held run.)
+
+Typical fee values:
 - US stocks (commission-free brokers): `--fees 0.03` (spread + slippage)
 - EU stocks: `--fees 0.07`
 - Crypto: `--fees 0.15`
@@ -156,9 +164,17 @@ run roughly in half with little loss of signal. Full numbers live in
 | `--days N` | Holdout days (5=quick, 20=solid, 50=reliable) |
 | `--period` | Training window for single-period mode: 1mo, 1y, 2y, 5y, max |
 | `--periods P [...]` | Restrict which periods `--compare-periods` runs (subset of `ALL_PERIODS`). Skip the slow `max`. Same flag on `run_all.py` |
-| `--models F [...]` | Only run these model families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos` (default: all). Maps SL / `+ News` / time-weighted variants to the right family. Same flag on `run_all.py` |
+| `--models F [...]` | Only run these model families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos`, `baseline` (default: all). Same flag on `run_all.py` |
+| `--no-baselines` | Skip the naive + news-aware baselines |
 | `--fees FLOAT` | Fee % per side (default from config.py) |
-| `--stop-loss FLOAT` | Stop-loss % (0=disabled). Runs each model twice for comparison |
+| `--turnover-fees` | Charge the round-trip fee only on position changes, not every day |
+| `--hold-days N` | Hold an opened position N days before re-reading the signal |
+| `--position-mode` | Compound consecutive same-direction days into one trade (one fee per held run) |
+| `--stop-loss FLOAT [...]` | Stop-loss % (0=disabled). Single value runs each model twice; pass several to sweep |
+| `--sl-sweep` | Sweep the default stop-loss set (`config.SL_SWEEP`) |
+| `--min-confidence θ` | Confidence gate: sit out days below θ confidence (excluded from accuracy) |
+| `--confidence-sweep` | θ-sweep table (coverage / traded accuracy / return / fees) + Brier/ECE |
+| `--significance` | Binomial p + Wilson CI + bootstrap CI + Benjamini-Hochberg FDR |
 | `--buy-hold` | Add buy-and-hold return to output |
 | `--no-refresh` | Skip data download, use cached DB only (offline mode) |
 | `--full` | Detailed: consensus, direction accuracy, profit analysis, streaks |

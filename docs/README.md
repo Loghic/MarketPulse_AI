@@ -11,10 +11,10 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Models
 
-- **[k-NN](k-NN.md)** — Nearest Neighbors classifier. Naive vs enhanced, exponential time-weighting, parameters.
-- **[Linear Regression](linear_regression.md)** — Return prediction with sigmoid confidence. Naive vs enhanced, comparison with k-NN.
 - **[LSTM Neural Network](lstm.md)** — Recurrent network for sequential patterns. Training presets, early stopping, input normalization, save/load, cluster deployment.
 - **[Forecasting Models](forecasting.md)** — Prophet, Chronos-2 and Kronos. The `ForecastModel` / `ForecastResult` interface, deriving direction from a value forecast, post-hoc sentiment, per-model timing (`--timing`) and period selection (`--periods`), backtest integration, and how to add a model.
+- **[k-NN](k-NN.md)** / **[Linear Regression](linear_regression.md)** — the simple/educational references. Naive vs enhanced, time-weighting, sigmoid confidence.
+- **Baselines** — naive (Always-Long/Short, Previous-Day, Momentum, Random) + stateless news-aware ones (News Previous-Day, News-Informed, News Momentum); defined in `engine/baseline_models.py`, used as the floor real models must clear. See [run/research.md](run/research.md).
 
 ## Engine
 
@@ -24,7 +24,8 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Evaluation
 
-- **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees, stop-loss, buy-and-hold benchmark, profit factor, max drawdown, Sharpe / Sortino ratios, streaks, yearly rolling performance, news sentiment in backtests, data sanity guards, per-model timing, CSV export, interpreting results.
+- **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees (incl. turnover / position-based), stop-loss + sweep, confidence gate, buy-and-hold benchmark, profit factor, max drawdown, Sharpe / Sortino, streaks, yearly performance, news sentiment, data sanity guards, per-model timing, CSV export.
+- **[Research workflow](run/research.md)** — The out-of-sample harness (selection-inflation gap, beat-B&H rate, calibration/significance), news-vs-no-news impact, confidence-sweep + significance flags. The honest-results tooling.
 
 ## Architecture
 
@@ -33,7 +34,7 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 ## Web GUI
 
-- **[Web GUI](web.md)** — Architecture, all six pages (Dashboard, Predict, Backtest, Training, Analysis, Settings), API endpoints with examples, reusable components, prediction + backtest caching, file structure.
+- **[Web GUI](web.md)** — Architecture, all pages (Dashboard, Predict, Backtest, OOS, OOS Compare, Training, Analysis, Settings, Help), the config-driven `/api/meta` + OOS + docs endpoints, reusable components, caching, file structure. End-user concept glossary lives in [web/docs/](../web/docs/) and renders in the Help tab.
 FastAPI backend wraps `StockAppAPI` with REST endpoints. React frontend provides a browser dashboard with live progress polling during backtests and on-disk persistence so closing a tab doesn't lose results. Swagger docs at `http://localhost:8000/docs`. Run: `./web/dev.sh` (or see [run.md](run.md)).
 
 ## Testing & CI

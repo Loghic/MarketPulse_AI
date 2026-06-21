@@ -3,10 +3,13 @@
 [![Tests](https://github.com/Loghic/MarketPulse_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/loghi-gh/mp_ai/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/Loghic/MarketPulse_AI/graph/badge.svg)](https://codecov.io/gh/loghi-gh/mp_ai)
 
-Stock prediction engine combining k-NN, Linear Regression, LSTM neural networks,
-and time-series forecasting models (Prophet, Chronos-2, Kronos) with VADER/FinBERT
-sentiment analysis. Built as a modular system with a clean separation between
-data layer, model engine, and interface — ready to plug into a web or desktop UI.
+Stock/crypto/commodity/index/FX prediction engine combining LSTM neural networks
+and time-series forecasting models (Prophet, Chronos-2, Kronos) — plus simple
+k-NN / LinReg references and a suite of naive + news-aware baselines — with
+VADER/FinBERT sentiment. Walk-forward backtesting with realistic fees (turnover /
+position-based), stop-loss sweeps, a confidence gate, and an **out-of-sample
+harness** + significance tests so results are honest, not selection-inflated.
+Modular: clean separation of data layer, model engine, CLI, and a React web UI.
 
 > **Disclaimer:** This is an educational/research project. Predictions are not financial advice.
 
@@ -67,9 +70,9 @@ uv run python main.py --tickers AAPL NVDA BNB-USD GLD
 
 ## Models
 
-**k-NN** (naive + enhanced) — classifies next-day direction from return patterns. Enhanced adds volume, RSI, volatility, MACD.
+Models fall in three tiers (the web UI groups them this way):
 
-**Linear Regression** (naive + enhanced) — predicts next-day return, derives direction from sign. Confidence via sigmoid mapping.
+**Forecast / main models** — the ones to actually study:
 
 **LSTM** — recurrent neural network for sequential patterns. Requires pre-training via `train.py`. Three presets: `quick` (~1-5 min), `standard` (~5-15 min), `cluster` (hours on GPU). Early stopping prevents overfitting.
 
@@ -79,7 +82,15 @@ uv run python main.py --tickers AAPL NVDA BNB-USD GLD
 
 **Kronos** (forecasting) — shiyu-coder's decoder-only foundation model for OHLCV candlesticks (MIT). Cloned as a sibling repo, not pip-installed; uses full open/high/low/close. Direction from sampled forecast paths. *Forecasting models are available in backtests and via the API; TiRex is parked. See [docs/forecasting.md](docs/forecasting.md).*
 
-**Sentiment** — all models predict from price first, then VADER/FinBERT sentiment shifts the probability post-hoc.
+**Educational / simple models** — kept as illustrative references, not the focus:
+
+**k-NN** (naive + enhanced) — classifies next-day direction from return patterns. Enhanced adds volume, RSI, volatility, MACD.
+
+**Linear Regression** (naive + enhanced) — predicts next-day return, derives direction from sign. Confidence via sigmoid mapping.
+
+**Baselines** — trivial floors every real model must clear (not just buy-and-hold). Price-only: **Always-Long**, **Always-Short**, **Previous-Day**, **5/20-Day Momentum**, **Random**. News-aware (stateless — they *react* to sentiment but never *learn*): **News Previous-Day**, **News-Informed** (trades only on clear news, else sits out), **News Momentum**. A model is only interesting if it beats Previous-Day and Always-Long. See [docs/run/research.md](docs/run/research.md).
+
+**Sentiment** — models predict from price first, then VADER/FinBERT sentiment shifts the probability post-hoc; the news-aware baselines use the same look-ahead-safe per-day score.
 
 ## LSTM Training
 
@@ -149,26 +160,32 @@ chmod +x web/dev.sh
 
 | Tab | Status | Description |
 |---|---|---|
-| **Dashboard** | ✓ | Ticker selector, zoomable chart (line/candle, pan bar), stats cards, OHLCV table with Δ% sorting, custom period, export CSV |
-| **Predict** | ✓ | Prediction builder (per-model period + news), quick presets, 9 model variants incl. LSTM, auto consensus, **per-ticker backend caching with timestamp + re-run**, historical predictions, optional price chart |
-| **Backtest** | ✓ | Grouped ticker selector (All Stocks / All Crypto / individual), multi-period builder, global Fee/SL/B&H, results filtering, best-models with ties, optional price chart |
+| **Dashboard** | ✓ | Ticker selector grouped by every asset class, zoomable chart (line/candle, pan bar), stats cards, OHLCV table with Δ% sorting, custom period, export CSV, news refresh |
+| **Predict** | ✓ | Prediction builder (per-model period + news); model variants come from the backend (gated by availability — Prophet/Chronos/Kronos appear when installed); auto consensus, per-ticker caching, historical predictions, optional chart |
+| **Backtest** | ✓ | Tickers grouped by all asset classes, model **family** picker (main vs simple tiers) + baselines toggle, Fee / SL / **SL-sweep** / **min-confidence** / **turnover** / **hold-days** / **position-mode** knobs, live progress, persisted-run picker, Coverage/Turnover columns |
+| **OOS** | ✓ | Out-of-sample harness: select-on-one-window → evaluate-on-disjoint-window; aggregate (beat-B&H rate, selection-inflation gap, calibration) + per-ticker table, live progress, persisted runs |
+| **OOS Compare** | ✓ | Diff two saved OOS runs side-by-side (aggregate + per-ticker), e.g. gate on vs off |
 | **Training** | ✓ | LSTM model inventory with timestamps, active-model marker (preset priority cluster > standard > quick), one-click "Start training" with live status polling |
 | **Analysis** | ✓ | Research tab: pick a `results/` directory, see best-models, news-vs-no-news win rates with leaderboards, **compare two runs side-by-side** (e.g. VADER vs FinBERT) |
 | **Settings** | ✓ | Persistent k, fees, SL, LSTM preference with fallback, developer settings (collapsible) |
+| **Help** | ✓ | Searchable in-app glossary — what every model, knob, and metric means (served from `web/docs/`); the Backtest/OOS tabs deep-link into it |
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/data/tickers` | List all tickers with metadata |
+| GET | `/api/meta` | Config-driven options: model families (gated + tiers), asset classes, benchmarks, periods, SL/confidence sweeps, defaults — the frontend's single source of truth |
+| GET | `/api/data/tickers` | List all tickers with metadata (registry asset class) |
 | GET | `/api/data/ticker/{ticker}` | OHLCV data (period filter, limit=0 for all) |
 | POST | `/api/data/refresh` | Download latest prices + news |
-| GET | `/api/predict/info` | Available models, periods, next trading day |
+| GET | `/api/predict/info` | Available models (availability-gated), periods, next trading day |
 | POST | `/api/predict/run` | Unified prediction (per-model period + news) |
 | GET | `/api/predict/cached` | List all cached prediction files (every ticker × date) |
 | GET | `/api/predict/cached/{ticker}` | Latest cached prediction for one ticker + `cached_at` timestamp (powers the in-page cache badge) |
 | POST | `/api/predict/historical` | Predict for any past date |
-| POST | `/api/backtest` | Walk-forward backtest (multi-period via `periods: list[str]`, news/sentiment knobs) |
+| POST | `/api/backtest` | Walk-forward backtest (multi-period, news + model-filter + gate/turnover/hold/position/SL-sweep knobs); `/progress` + `/runs` for live progress and persisted-run reload |
+| POST | `/api/oos` | Out-of-sample harness run (+ `/progress`, `/runs`, `/runs/{id}`) |
+| GET | `/api/docs` · `/api/docs/{slug}` | End-user concept glossary served to the Help tab |
 | GET | `/api/train/models` | List saved LSTM models with training timestamps |
 | POST | `/api/train/start` | Start LSTM training (background) |
 | GET | `/api/train/status/{key}` | Live training status (used for the Training tab spinner) |
@@ -208,24 +225,26 @@ uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y --mod
 
 ### Choosing models, periods, and timing
 
-- `--models F [...]` — run only these families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos` (default: all). Same flag on `run_all.py`. Handy for dropping the slow forecasting models.
+- `--models F [...]` — run only these families: `knn`, `linreg`, `lstm`, `prophet`, `chronos`, `kronos`, `baseline` (default: all). Same flag on `run_all.py`. Handy for dropping the slow forecasting models. `--no-baselines` drops the naive baselines.
 - `--periods P [...]` — restrict the period set in `--compare-periods` (and on `run_all.py`); skip the slow `max` window.
 - `--timing` — print a slowest-first per-model compute-time table after the summary. `run_all.py` prints a time-by-model-family rollup automatically.
 
-### Stop-loss
+### Measurement rigor
 
-`--stop-loss 2` means: if the position drops 2% intraday, exit immediately at the stop-loss price instead of holding until close. Uses actual High/Low data to check if the stop would have triggered.
+- `--min-confidence θ` — confidence gate: sit out days the model is less than θ sure about (excluded from accuracy; coverage reported). `--confidence-sweep` shows coverage/traded-accuracy/return + Brier/ECE across thresholds.
+- `--significance` — binomial p + Wilson CI on accuracy, bootstrap CI on return, with Benjamini-Hochberg FDR — is the result distinguishable from a coin flip?
+- For the **honest** read, use the out-of-sample harness rather than `--compare-periods`' best-of: `scripts/oos_harness.py` picks a winner on one window and scores it on a disjoint one. See [docs/run/research.md](docs/run/research.md).
 
-When enabled, every model runs twice — once without SL (baseline) and once with SL — so you can directly compare:
+### Stop-loss (single or sweep)
 
-```
-k-NN Enhanced              +3.26%  (PF 1.38)
-k-NN Enhanced SL2%         +6.35%  (PF 2.15)  ← SL cut 2 big losses
-```
+`--stop-loss 2` means: if the position drops 2% intraday, exit immediately at the stop-loss price instead of holding until close (uses real High/Low). A single value runs each model twice (no-SL baseline + SL). Pass several (`--stop-loss 0 5 10 15`) or `--sl-sweep` to compare levels side by side.
 
-### Trading fees
+### Fees & turnover realism
 
-`--fees 0.03` means 0.03% per side (buy + sell = 0.06% round-trip). Covers commission + spread + slippage. Default from `config.py`.
+- `--fees 0.03` — 0.03% per side (buy + sell = 0.06% round-trip). Default from `config.py`.
+- `--turnover-fees` — charge the round-trip fee only on days the position *changes*, not every day (the realistic "trade on signal changes" cost).
+- `--hold-days N` — hold an opened position N days before re-reading the signal.
+- `--position-mode` — hold one position across same-direction days and book its *compounded* entry→exit return as a single trade, paying one round-trip fee per held run (vs the default daily mark-to-market).
 
 ### Batch runner (`run_all.py`)
 
@@ -347,7 +366,7 @@ marketpulse-ai/
 
 ## Documentation
 
-`docs/` has in-depth explanations of every component. `AGENTS.md` is a compact context file for AI assistants — upload it when working on the codebase in any AI chat.
+`docs/` has in-depth explanations of every component (start at [docs/README.md](docs/README.md)); the runbook with every CLI flag + recipes is in [docs/run/](docs/run/) and the full web API in [docs/web.md](docs/web.md). End users get plain-language concept docs (what stop-loss / OOS / the baselines / each metric mean) in the app's **Help** tab, sourced from [web/docs/](web/docs/). `AGENTS.md` is a compact context file for AI assistants — upload it when working on the codebase in any AI chat.
 
 ## Testing
 
@@ -365,7 +384,7 @@ uv run python -m pytest tests/test_backtester.py -v
 uv run python -m pytest tests/test_backtester.py::TestFees -v
 ```
 
-Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L math, fees, stop-loss, risk metrics, streaks, yearly), benchmarks (SPY/QQQ/BTC), CSV export, sentiment, logger, config.
+Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L, fees, stop-loss + sweep, turnover, hold-days, position mode, FLAT no-trade, risk metrics, streaks, yearly), baselines (naive + news-aware), confidence calibration + gating, statistical significance, the OOS harness, shared CLI arg groups, news pipeline, web API (data / meta / predict / backtest / oos / docs / settings / analysis), CSV export, logger, config.
 
 ## CI / CD
 
