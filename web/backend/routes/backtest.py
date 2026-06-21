@@ -123,6 +123,7 @@ def _result_to_schema(
         hold_days=getattr(r, "hold_days", 1),
         turnover_count=getattr(r, "turnover_count", 0),
         fees_paid=getattr(r, "fees_paid", 0.0),
+        position_mode=getattr(r, "position_mode", False),
         benchmarks=benchmarks or {},
         days=days,
     )
@@ -158,8 +159,9 @@ def _results_dir_name(
     min_confidence: float = 0.0,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
 ) -> str:
-    """``results/{scope}_{days}d[_fee{N}][_sl{N}][_mc{N}][_to][_hold{N}][_bh]_{ts}/``"""
+    """``results/{scope}_{days}d[_fee{N}][_sl{N}][_mc{N}][_to][_hold{N}][_pos][_bh]_{ts}/``"""
     parts = [scope, f"{days}d"]
     if fee_pct > 0:
         parts.append(f"fee{fee_pct * 100:03.0f}")
@@ -171,6 +173,8 @@ def _results_dir_name(
         parts.append("to")
     if hold_days > 1:
         parts.append(f"hold{hold_days}")
+    if position_mode:
+        parts.append("pos")
     if bh:
         parts.append("bh")
     parts.append(ts)
@@ -210,6 +214,7 @@ def _row_to_csv_dict(r: BacktestModelResult) -> dict:
         "hold_days": r.hold_days,
         "turnover_count": r.turnover_count,
         "fees_paid": round(r.fees_paid, 8),
+        "position_mode": r.position_mode,
         "win_trades": r.win_trades,
         "loss_trades": r.loss_trades,
         "avg_win": round(r.avg_win, 8),
@@ -325,6 +330,7 @@ def run_backtest(req: BacktestRequest):
         min_confidence=req.min_confidence,
         turnover_fees=req.turnover_fees,
         hold_days=req.hold_days,
+        position_mode=req.position_mode,
     )
 
     # Resolve which periods to run.
@@ -440,6 +446,7 @@ def run_backtest(req: BacktestRequest):
             min_confidence=req.min_confidence,
             turnover_fees=req.turnover_fees,
             hold_days=req.hold_days,
+            position_mode=req.position_mode,
         )
         run_id = f"{ts}_{scope}_{req.days}d"
         try:

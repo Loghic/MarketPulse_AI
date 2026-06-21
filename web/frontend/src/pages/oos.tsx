@@ -26,6 +26,7 @@ export default function OOS() {
   const [minConfidence, setMinConfidence] = useState("0");
   const [turnoverFees, setTurnoverFees] = useState(false);
   const [holdDays, setHoldDays] = useState("1");
+  const [positionMode, setPositionMode] = useState(false);
   const [buyHold, setBuyHold] = useState(true);
   const [refreshData, setRefreshData] = useState(false);
   const [selNews, setSelNews] = useState<"no" | "yes">("no");
@@ -38,6 +39,8 @@ export default function OOS() {
   const PERIODS = meta?.periods ?? PERIODS_FALLBACK;
   const families = meta?.model_families ?? [];
   const nonBaselineFamilies = families.filter((f) => f.key !== "baseline");
+  const mainFamilies = nonBaselineFamilies.filter((f) => f.tier !== "educational");
+  const eduFamilies = nonBaselineFamilies.filter((f) => f.tier === "educational");
   const assetClasses = meta?.asset_classes ?? [];
   const tickersByClass = useMemo(() => {
     const out: { key: string; label: string; tickers: string[] }[] = [];
@@ -98,6 +101,7 @@ export default function OOS() {
         min_confidence: parseFloat(minConfidence) || 0,
         turnover_fees: turnoverFees,
         hold_days: parseInt(holdDays) || 1,
+        position_mode: positionMode,
         ...(selNews === "yes" ? { sentiment_method: sentimentMethod } : {}),
       });
     },
@@ -180,14 +184,23 @@ export default function OOS() {
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <SelRow label="Models">
             <Chip label="All" active={selFamilies.size === 0} onClick={() => setSelFamilies(new Set())} accent />
-            {nonBaselineFamilies.map((f) => (
-              <Chip key={f.key} label={f.available ? f.label : `${f.label} (n/a)`} active={selFamilies.has(f.key)}
+            {mainFamilies.map((f) => (
+              <Chip key={f.key} label={(f.available ? f.label : `${f.label} (n/a)`) + (f.slow ? " ⏳" : "")} active={selFamilies.has(f.key)}
                 onClick={() => { if (!f.available) return; const n = new Set(selFamilies); if (n.has(f.key)) n.delete(f.key); else n.add(f.key); setSelFamilies(n); }} />
             ))}
             <span style={{ width: 12 }} />
             <Chk label="Baselines as candidates" checked={includeBaselines} onChange={setIncludeBaselines} />
             <HelpLink to="models/baselines" title="Include the naive baselines as selection candidates — detects when a coin flip 'wins' OOS." />
           </SelRow>
+          {eduFamilies.length > 0 && (
+            <SelRow label="Simple">
+              {eduFamilies.map((f) => (
+                <Chip key={f.key} label={f.label} active={selFamilies.has(f.key)}
+                  onClick={() => { const n = new Set(selFamilies); if (n.has(f.key)) n.delete(f.key); else n.add(f.key); setSelFamilies(n); }} />
+              ))}
+              <span style={{ fontSize: 10, color: s.muted, alignSelf: "center" }}>educational / illustrative</span>
+            </SelRow>
+          )}
           <SelRow label="Periods">
             <Chip label="All" active={selPeriods.size === PERIODS.length} onClick={() => setSelPeriods(selPeriods.size === PERIODS.length ? new Set() : new Set(PERIODS))} accent />
             {PERIODS.map((p) => <Chip key={p} label={p.toUpperCase()} active={selPeriods.has(p)} onClick={() => { const n = new Set(selPeriods); if (n.has(p)) n.delete(p); else n.add(p); setSelPeriods(n); }} />)}
@@ -219,6 +232,10 @@ export default function OOS() {
             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
               <NumField label="Hold days" value={holdDays} onChange={setHoldDays} width={50} />
               <HelpLink to="strategy/hold-days" title="Hold N days before re-reading the signal." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <Chk label="Position mode" checked={positionMode} onChange={setPositionMode} />
+              <HelpLink to="strategy/position-mode" title="Compound same-direction holds into one trade (one round-trip fee per run)." />
             </span>
             <Chk label="B&H" checked={buyHold} onChange={setBuyHold} />
             <Chk label="Update data" checked={refreshData} onChange={setRefreshData} />

@@ -109,6 +109,7 @@ export interface BacktestModelResult {
   hold_days: number;
   turnover_count: number;
   fees_paid: number;
+  position_mode: boolean;
   benchmarks: Record<string, number>;
   days: BacktestDayRow[];
 }
@@ -121,6 +122,10 @@ export interface ModelFamily {
   available: boolean;
   predict: boolean;
   note: string;
+  /** UI tier: "educational" (k-NN, LinReg), "forecast" (main), "baseline". */
+  tier: string;
+  /** Rough compute hint — slow models fit/infer per call. */
+  slow: boolean;
 }
 
 export interface AssetClassInfo {
@@ -327,6 +332,8 @@ export const api = {
     min_confidence?: number;
     turnover_fees?: boolean;
     hold_days?: number;
+    /** Position mode: compound same-direction holds into one trade. */
+    position_mode?: boolean;
     /** Stop-loss sweep (2.2): explicit levels or the config default set. */
     sl_levels?: number[];
     sl_sweep?: boolean;
@@ -382,6 +389,7 @@ export const api = {
     min_confidence?: number;
     turnover_fees?: boolean;
     hold_days?: number;
+    position_mode?: boolean;
     sentiment_method?: string;
     news_lookback_days?: number;
     news_half_life_days?: number;

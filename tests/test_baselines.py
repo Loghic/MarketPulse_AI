@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import pandas as pd
 
+from config import BASELINE_NEWS_THRESHOLD
 from engine.baseline_models import (
     AlwaysLongBaseline,
+    AlwaysShortBaseline,
     MomentumBaseline,
+    NewsAwareMomentumBaseline,
+    NewsAwarePreviousDayBaseline,
+    NewsInformedBaseline,
     PreviousDayBaseline,
     RandomBaseline,
     default_baseline_variants,
@@ -163,30 +168,112 @@ class TestRandom:
 
 
 class TestFactory:
-    def test_default_variants_cover_all_five(self):
+    def test_default_variants_cover_expected_set(self):
         variants = default_baseline_variants()
-        labels = [label for _, label in variants]
-        assert any("Always Long" in lbl for lbl in labels)
-        assert any("Previous Day" in lbl for lbl in labels)
-        assert any("5-Day Momentum" in lbl for lbl in labels)
-        assert any("20-Day Momentum" in lbl for lbl in labels)
-        assert any("Random" in lbl for lbl in labels)
+        labels = [label for _, label, _ in variants]
+        for needle in (
+            "Always Long",
+            "Always Short",
+            "Previous Day",
+            "5-Day Momentum",
+            "20-Day Momentum",
+            "Random",
+            "News Previous Day",
+            "News Informed",
+            "News 5-Day Momentum",
+        ):
+            assert any(needle in lbl for lbl in labels), f"missing baseline: {needle}"
 
     def test_every_default_label_starts_with_baseline(self):
         # The variants filter resolves family via name.startswith("Baseline"),
         # so this prefix must hold for every default baseline.
-        variants = default_baseline_variants()
-        for _, label in variants:
+        for _, label, _ in default_baseline_variants():
             assert label.startswith("Baseline"), (
                 f"Baseline label {label!r} must start with 'Baseline' "
                 "for --models filtering to recognise it"
             )
 
+    def test_uses_news_flag(self):
+        # Price-only baselines flagged False; the three news-aware ones True.
+        by_label = {label: uses for _, label, uses in default_baseline_variants()}
+        assert by_label["Baseline Always Long"] is False
+        assert by_label["Baseline Always Short"] is False
+        assert by_label["Baseline 5-Day Momentum"] is False
+        assert by_label["Baseline News Previous Day"] is True
+        assert by_label["Baseline News Informed"] is True
+        assert by_label["Baseline News 5-Day Momentum"] is True
+
     def test_predict_signature_accepts_kwargs(self):
         # All variants must accept the same keyword set the backtester
         # invokes them with — silent TypeError there is hard to debug.
         df = _df([100, 101, 102, 103, 104, 105, 106])
-        for model, _ in default_baseline_variants():
+        for model, _, _ in default_baseline_variants():
             direction, conf = model.predict(df, use_time_weights=True, sentiment_score=0.3)
             assert direction in ("UP", "DOWN")
             assert 0.0 <= conf <= 1.0
+
+
+# ----------------------------------------------------------------------
+# News-aware baselines
+# ----------------------------------------------------------------------
+
+# A clearly-strong and a clearly-weak sentiment relative to the threshold.
+_STRONG = BASELINE_NEWS_THRESHOLD + 0.3
+_WEAK = BASELINE_NEWS_THRESHOLD / 2
+
+
+class TestAlwaysShort:
+    def test_always_predicts_down(self):
+        b = AlwaysShortBaseline()
+        for closes in ([100], [100, 101], [100, 99, 98]):
+            direction, conf = b.predict(_df(closes))
+            assert direction == "DOWN"
+            assert conf == 1.0
+
+
+class TestNewsAwarePreviousDay:
+    def test_no_news_copies_previous_day(self):
+        b = NewsAwarePreviousDayBaseline()
+        assert b.predict(_df([100, 99]), sentiment_score=0.0)[0] == "DOWN"  # fell yesterday
+        assert b.predict(_df([100, 101]), sentiment_score=0.0)[0] == "UP"  # rose yesterday
+
+    def test_strong_news_overrides(self):
+        b = NewsAwarePreviousDayBaseline()
+        # Yesterday DOWN, but strong positive news flips to UP.
+        assert b.predict(_df([100, 99]), sentiment_score=_STRONG)[0] == "UP"
+        # Yesterday UP, but strong negative news flips to DOWN.
+        assert b.predict(_df([100, 101]), sentiment_score=-_STRONG)[0] == "DOWN"
+
+    def test_weak_news_does_not_override(self):
+        b = NewsAwarePreviousDayBaseline()
+        assert b.predict(_df([100, 99]), sentiment_score=_WEAK)[0] == "DOWN"
+
+
+class TestNewsInformed:
+    def test_strong_news_drives_prediction(self):
+        b = NewsInformedBaseline()
+        assert b.predict(_df([100, 101]), sentiment_score=_STRONG)[0] == "UP"
+        assert b.predict(_df([100, 101]), sentiment_score=-_STRONG)[0] == "DOWN"
+
+    def test_weak_news_falls_back_to_previous_day(self):
+        b = NewsInformedBaseline()
+        # Weak news → previous-day. Yesterday up → UP.
+        assert b.predict(_df([100, 101]), sentiment_score=_WEAK)[0] == "UP"
+        # Yesterday down → DOWN.
+        assert b.predict(_df([100, 99]), sentiment_score=0.0)[0] == "DOWN"
+
+
+class TestNewsAwareMomentum:
+    def test_momentum_then_news_override(self):
+        b = NewsAwareMomentumBaseline(n=5)
+        rising = _df(list(range(100, 110)))  # clear up-momentum
+        assert b.predict(rising, sentiment_score=0.0)[0] == "UP"
+        assert b.predict(rising, sentiment_score=-_STRONG)[0] == "DOWN"  # news flips it
+
+    def test_weak_news_keeps_momentum(self):
+        b = NewsAwareMomentumBaseline(n=5)
+        rising = _df(list(range(100, 110)))
+        assert b.predict(rising, sentiment_score=-_WEAK)[0] == "UP"
+
+    def test_name_includes_n(self):
+        assert "5-Day" in NewsAwareMomentumBaseline(n=5).name

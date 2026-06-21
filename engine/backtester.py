@@ -113,6 +113,8 @@ class BacktestResult:
     hold_days: int = 1
     turnover_count: int = 0
     fees_paid: float = 0.0
+    # Position mode: held runs compounded into single trades (see Backtester).
+    position_mode: bool = False
     # Profit metrics (net of fees)
     total_return: float = 0.0
     profit_factor: float = 0.0
@@ -186,6 +188,61 @@ class BacktestResult:
 class Backtester:
     """Walk-forward backtester with fees, stop-loss, and risk metrics."""
 
+    def _apply_position_mode(self, days: list[DayResult]) -> None:
+        """Collapse consecutive same-direction *traded* held days into single
+        compounded trades, in place.
+
+        Daily mark-to-market (the default) books each day's close-to-close move
+        separately. Position mode instead holds one position across a run of
+        same-direction days and books the **compounded** entry→exit return as a
+        single trade, paying the round-trip fee once (on the run, attributed to
+        its last day). Interior days of a run get ``trade_pnl``/``trade_pnl_net``
+        of 0 so the daily series sums to the same per-trade totals.
+
+        A "run" is a maximal block of traded days sharing the same ``position``,
+        broken by a flip, a sat-out (gated) day, or a stop-out. Compounding uses
+        the actual prices: a long run's return is
+        ``exit_price_of_last / close_before_of_first - 1`` (sign-flipped for a
+        short run). A stopped-out day ends its run at the stop price.
+        """
+        rt_fee = 2 * self.fee_pct / 100.0
+        i = 0
+        n = len(days)
+        while i < n:
+            d = days[i]
+            if not d.traded or d.position not in ("UP", "DOWN"):
+                # Flat / untraded day already carries 0 P&L; just skip.
+                i += 1
+                continue
+            # Extend the run while the next day is traded, same direction, and
+            # the current day wasn't a stop-out (a stop closes the position).
+            j = i
+            while (
+                j + 1 < n
+                and not days[j].stopped_out
+                and days[j + 1].traded
+                and days[j + 1].position == d.position
+                and not days[j + 1].position_changed
+            ):
+                j += 1
+            entry = days[i].close_before
+            exit_ = days[j].exit_price  # SL price on a stop-out, else close
+            if entry > 0:
+                raw = (exit_ - entry) / entry
+                raw = raw if d.position == "UP" else -raw
+            else:
+                raw = 0.0
+            net = raw - rt_fee  # one round trip for the whole held run
+            # Book the whole run on its last day; zero the interior days.
+            for k in range(i, j + 1):
+                if k == j:
+                    days[k].trade_pnl = round(raw, 8)
+                    days[k].trade_pnl_net = round(net, 8)
+                else:
+                    days[k].trade_pnl = 0.0
+                    days[k].trade_pnl_net = 0.0
+            i = j + 1
+
     def __init__(
         self,
         n_days: int = 5,
@@ -194,6 +251,7 @@ class Backtester:
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         turnover_fees: bool = False,
         hold_days: int = 1,
+        position_mode: bool = False,
     ):
         self.n_days = n_days
         self.fee_pct = fee_pct
@@ -207,6 +265,13 @@ class Backtester:
         #   the signal (>=1; 1 = re-evaluate every day, current behaviour).
         self.turnover_fees = turnover_fees
         self.hold_days = max(1, int(hold_days))
+        # Position mode: instead of booking each day's close-to-close move
+        # separately (daily mark-to-market), hold ONE position across
+        # consecutive same-direction days and book its *compounded* entry→exit
+        # return as a single trade, paying the round-trip fee once. This models
+        # "buy and hold the position while the signal agrees, cash out on a
+        # flip". Implies turnover-style fees (one round trip per held run).
+        self.position_mode = position_mode
 
     # ------------------------------------------------------------------
     # Trade P/L
@@ -629,6 +694,15 @@ class Backtester:
                 )
             )
 
+        # Position mode: collapse consecutive same-direction held days into a
+        # single compounded trade (one entry, one exit, one round-trip fee).
+        # Rewrites each day's net P&L in place — the per-day list stays intact
+        # for display, but a held run's whole compounded return lands on its
+        # last day and the interior days carry 0. No-op when position_mode is
+        # off, so the default daily mark-to-market behaviour is unchanged.
+        if self.position_mode:
+            self._apply_position_mode(day_results)
+
         # Confidence gating splits the days: only *traded* days (confidence
         # ≥ min_confidence) count toward accuracy / returns / streaks / risk.
         # Sat-out days remain in ``day_results`` (their confidence feeds the
@@ -680,6 +754,7 @@ class Backtester:
             hold_days=self.hold_days,
             turnover_count=turnover_count,
             fees_paid=fees_paid,
+            position_mode=self.position_mode,
             elapsed_seconds=round(elapsed, 4),
             buy_hold_return=buy_hold,
             buy_hold_max_drawdown=buy_hold_dd,

@@ -139,6 +139,9 @@ class BacktestRequest(BaseModel):
     # Turnover / fee realism (2.1).
     turnover_fees: bool = False
     hold_days: int = 1
+    # Position mode: compound consecutive same-direction days into one held
+    # trade (one round-trip fee per run) instead of daily mark-to-market.
+    position_mode: bool = False
     # Stop-loss sweep (2.2): explicit levels, or sl_sweep to use config.SL_SWEEP.
     # When either is set, each model runs once per level (overrides stop_loss_pct).
     sl_levels: list[float] | None = None
@@ -191,6 +194,7 @@ class BacktestModelResult(BaseModel):
     hold_days: int = 1
     turnover_count: int = 0
     fees_paid: float = 0.0
+    position_mode: bool = False
     benchmarks: dict[str, float] = Field(default_factory=dict)
     days: list[BacktestDayRow] = Field(default_factory=list)
 
@@ -294,6 +298,14 @@ class ModelFamily(BaseModel):
     available: bool  # False when the optional dep / clone isn't installed
     predict: bool  # True if usable in the per-ticker Predict flow (not just backtests)
     note: str = ""  # short reason when unavailable / backtest-only
+    # UI grouping tier: "educational" (simple, illustrative — k-NN, LinReg),
+    # "forecast" (the main predictive models — LSTM, Prophet, Chronos-2, Kronos),
+    # or "baseline" (reference floors). Lets the frontend de-emphasise the
+    # simple ones without dropping them.
+    tier: str = "forecast"
+    # Rough compute cost hint for the UI ("fast" / "slow"). LSTM is fast once
+    # trained; Prophet/Chronos-2/Kronos are slow (fit/inference per call).
+    slow: bool = False
 
 
 class AssetClassInfo(BaseModel):
@@ -338,6 +350,7 @@ class OOSRequest(BaseModel):
     min_confidence: float = 0.0
     turnover_fees: bool = False
     hold_days: int = 1
+    position_mode: bool = False
     # News / sentiment
     sentiment_method: str | None = None
     news_lookback_days: int | None = None

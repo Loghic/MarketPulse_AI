@@ -224,6 +224,11 @@ SL_SWEEP = [0.0, 5.0, 10.0, 15.0]
 DEFAULT_MIN_CONFIDENCE = 0.0
 CONFIDENCE_SWEEP = [0.0, 0.55, 0.60, 0.65, 0.70]
 
+# News-aware baselines: how strong the per-day sentiment must be (absolute
+# value, sentiment ∈ [-1, 1]) before it overrides the baseline's price rule.
+# 0.15 matches the POSITIVE/NEGATIVE cutoff used elsewhere (api.get_prediction).
+BASELINE_NEWS_THRESHOLD = 0.15
+
 # ==================================================================
 # News & sentiment defaults
 # ==================================================================

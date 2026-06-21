@@ -350,14 +350,17 @@ def run_single_backtest(
                 f"Train: uv run python train.py --ticker {ticker} --period {period}"
             )
 
-    # Naive baselines (Phase 1.2): the bar real models must clear.
-    # They ignore sentiment_score so we only emit a plain (non-News)
-    # variant for each — no "+ News" sibling.
+    # Naive baselines: the bar real models must clear. Price-only baselines
+    # ignore sentiment (no provider). News-aware baselines (uses_news=True)
+    # receive the SAME look-ahead-safe per-day sentiment provider as the
+    # "+ News" model variants — but only when news actually exists; otherwise
+    # they degrade to their price rule (provider=None).
     if include_baselines:
         from engine.baseline_models import default_baseline_variants
 
-        for baseline_model, label in default_baseline_variants():
-            variants.append((baseline_model, label, False, None))
+        for baseline_model, label, uses_news in default_baseline_variants():
+            provider = per_day_sentiment if (uses_news and has_news) else None
+            variants.append((baseline_model, label, False, provider))
 
     # Forecasting models (Prophet, Chronos-2, …): one plain variant each,
     # plus "+ News" when news exists. Flows through the same SL-duplication

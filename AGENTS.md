@@ -164,11 +164,11 @@ KRONOS_TOP_P = 0.9
 | `"prophet"` | ProphetModel | close (univariate) | No (fits per call) |
 | `"chronos"` | Chronos2Model | close (univariate) | No (zero-shot, downloads weights) |
 | `"kronos"` | KronosModel | OHLCV | No (zero-shot, sibling clone + downloads weights) |
-| *(baselines)* | AlwaysLong / PreviousDay / Momentum(n=5,20) / Random | close only | No (no parameters) |
+| *(baselines)* | AlwaysLong / AlwaysShort / PreviousDay / Momentum(n=5,20) / Random (price-only) + NewsPreviousDay / NewsInformed / NewsMomentum (news-aware) | close (+ sentiment for news-aware) | No (no parameters) |
 
 > Forecasting models (Prophet, Chronos-2, Kronos) subclass engine/forecast_base.py:ForecastModel and also expose forecast(df) → ForecastResult for the raw predicted value. use_time_weights is ignored (like LSTM).
 >
-> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract but ignore `sentiment_score` — no "+ News" siblings. They exist as the floor real models must clear; included by default, skip with `--no-baselines`. See *Phase-1 measurement rigor* in *2026 changes*.
+> Baselines (`engine/baseline_models.py`, family key `baseline`) share the same `predict()` contract. **Price-only** ones (AlwaysLong, AlwaysShort, PreviousDay, Momentum, Random) ignore `sentiment_score`. **News-aware** ones (NewsAwarePreviousDay, NewsInformed, NewsAwareMomentum) *react* to today's look-ahead-safe sentiment with a fixed rule (override the price call when |sentiment| ≥ `config.BASELINE_NEWS_THRESHOLD`) but never *learn* from past outcomes — staying valid stateless floors, not models. `default_baseline_variants()` returns `(model, label, uses_news)`; `run_single_backtest` attaches the per-day sentiment provider to the news-aware ones (only when news exists). Included by default, skip with `--no-baselines`. A learning sentiment→outcome predictor would be a real model (e.g. a future sentiment-kNN), not a baseline.
 
 Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str, float)`
 
@@ -178,9 +178,13 @@ Shared interface: `model.predict(df, use_time_weights, sentiment_score) → (str
 
 Stop-loss uses intraday High/Low: Long exits if Low ≤ entry × (1 - SL%), Short exits if High ≥ entry × (1 + SL%). A stop-out flattens the position (the next traded day re-opens and pays a turnover fee). Without `--stop-loss`/`--sl-sweep`, a single run (no duplication).
 
-## Turnover / fee realism + hold-days
+## Turnover / fee realism + hold-days + position mode
 
 `Backtester(turnover_fees=True)` charges the round-trip fee only on days `position_changed` (open / flip), not every day — the realistic "trade only on signal changes" cost. `hold_days=N` holds an opened position N days before re-reading the signal: the model still `predict()`s every day (so **accuracy = model skill, unchanged**), but P&L uses the held `position`, which can differ from `predicted` inside a hold window. Both default off (`turnover_fees=False`, `hold_days=1`) → byte-for-byte the old charge-every-day behaviour. `BacktestResult` gains `turnover_count` (number of position changes) and `fees_paid` (actual fee drag = Σ raw−net over traded days). CLI: `--turnover-fees` / `--hold-days N` on `backtest.py`, `run_all.py`, `oos_harness.py`; `run_all` tags the dir `to` / `holdN`.
+
+`Backtester(position_mode=True)` switches from daily mark-to-market to **position-based** P&L: the post-loop pass `_apply_position_mode()` collapses each maximal run of consecutive same-direction *traded* days (broken by a flip, a sat-out gate day, or a stop-out) into one trade — booking the **compounded** `exit/entry−1` (sign-flipped for shorts) on the run's last day, zeroing interior days, and charging **one** round-trip fee per run. This is the "buy at 100 → hold → cash out at 90 = −10% + 1 round trip" model the daily mode doesn't do. Default off → unchanged. CLI `--position-mode` everywhere; `run_all`/route dir tag `pos`. Covered by `tests/test_backtester.py::TestPositionMode`.
+
+**Model tiers (UI):** `/api/meta` tags each family `tier` ∈ {`educational` (k-NN, LinReg — simple/illustrative), `forecast` (LSTM, Prophet, Chronos-2, Kronos — main), `baseline`} and a `slow` flag (Prophet/Chronos/Kronos slow; LSTM fast). The Backtest/OOS pickers render the main families first and the educational pair in a de-emphasised "Simple" row; `--models` keys are unchanged.
 
 ## Key types
 
@@ -199,6 +203,7 @@ class BacktestResult:
     fee_pct, stop_loss_pct, stopped_out_count,
     min_confidence, sat_out_count, coverage,     # confidence gate; accuracy/return describe TRADED days only
     turnover_fees, hold_days, turnover_count, fees_paid,  # turnover / fee realism (2.1)
+    position_mode,                               # compound same-direction holds into one trade (one round-trip fee/run)
     total_return, profit_factor, gross_profit, gross_loss,
     avg_win, avg_loss, best_day, worst_day, win_trades, loss_trades,
     max_drawdown, sharpe_ratio, sortino_ratio,

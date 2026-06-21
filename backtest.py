@@ -77,6 +77,7 @@ def run_backtest(
     significance: bool = False,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
     sl_levels=None,
 ):
     """Standard single-period backtest mode."""
@@ -88,6 +89,7 @@ def run_backtest(
         min_confidence=min_confidence,
         turnover_fees=turnover_fees,
         hold_days=hold_days,
+        position_mode=position_mode,
     )
     all_export_rows = []
 
@@ -211,6 +213,7 @@ def run_compare_periods(
     min_confidence: float = 0.0,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
     sl_levels=None,
 ):
     """Run backtest across all periods, find optimal model+period."""
@@ -223,6 +226,7 @@ def run_compare_periods(
         min_confidence=min_confidence,
         turnover_fees=turnover_fees,
         hold_days=hold_days,
+        position_mode=position_mode,
     )
     all_export_rows = []
 
@@ -562,6 +566,7 @@ def main():
             min_confidence=args.min_confidence,
             turnover_fees=args.turnover_fees,
             hold_days=args.hold_days,
+            position_mode=args.position_mode,
             sl_levels=sl_levels,
         )
     else:
@@ -583,6 +588,7 @@ def main():
             significance=args.significance,
             turnover_fees=args.turnover_fees,
             hold_days=args.hold_days,
+            position_mode=args.position_mode,
             sl_levels=sl_levels,
         )
 

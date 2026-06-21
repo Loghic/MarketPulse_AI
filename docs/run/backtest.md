@@ -372,6 +372,18 @@ uv run python backtest.py --tickers NVDA --days 100 --turnover-fees --buy-hold
 uv run python backtest.py --tickers NVDA --days 100 --turnover-fees --hold-days 5 --buy-hold
 ```
 
+* **`--position-mode`** — the most realistic accounting: instead of booking
+  each day's close-to-close move separately (daily mark-to-market), hold **one**
+  position across consecutive same-direction days and book its **compounded**
+  entry→exit return as a single trade, paying the round-trip fee **once** per
+  held run. Models "buy and hold while the signal agrees, cash out on a flip".
+  Changes return / drawdown / fees; accuracy (a per-prediction measure) is
+  unaffected. `run_all.py` tags the dir `pos`.
+
+```bash
+uv run python backtest.py --tickers NVDA --days 100 --position-mode --buy-hold
+```
+
 The summary line then reports turnover: `Turnover: 7/100 (fees
 +0.7000%, hold=5d)` — the number of position changes, the fee actually
 paid, and the hold window. CSV exports gain `turnover_fees`,

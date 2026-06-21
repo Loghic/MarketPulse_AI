@@ -102,6 +102,7 @@ def run_oos(req: OOSRequest) -> OOSResponse:
                     min_confidence=req.min_confidence,
                     turnover_fees=req.turnover_fees,
                     hold_days=req.hold_days,
+                    position_mode=req.position_mode,
                 )
             except Exception:  # noqa: BLE001 — one bad ticker shouldn't kill the run
                 row = None

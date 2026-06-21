@@ -38,6 +38,20 @@ router = APIRouter(prefix="/api/meta", tags=["meta"])
 _PREDICT_FAMILIES = {"knn", "linreg", "lstm"}
 # Families that depend on an optional extra / external clone.
 _FORECAST_FAMILIES = {"prophet", "chronos", "kronos"}
+# UI tier per family. The "educational" pair (k-NN, LinReg) is simple and
+# illustrative — kept available but de-emphasised vs the main predictive models.
+_EDUCATIONAL_FAMILIES = {"knn", "linreg"}
+# Rough compute hint: LSTM is fast once trained; the forecasting models fit /
+# infer per call and are slow.
+_SLOW_FAMILIES = {"prophet", "chronos", "kronos"}
+
+
+def _tier(key: str) -> str:
+    if key == "baseline":
+        return "baseline"
+    if key in _EDUCATIONAL_FAMILIES:
+        return "educational"
+    return "forecast"
 
 
 @router.get("", response_model=MetaResponse)
@@ -61,10 +75,18 @@ def get_meta() -> MetaResponse:
             predict = False
         else:  # knn, linreg — always available
             available = True
-            note = ""
+            note = "simple / educational model"
             predict = key in _PREDICT_FAMILIES
         families.append(
-            ModelFamily(key=key, label=label, available=available, predict=predict, note=note)
+            ModelFamily(
+                key=key,
+                label=label,
+                available=available,
+                predict=predict,
+                note=note,
+                tier=_tier(key),
+                slow=key in _SLOW_FAMILIES,
+            )
         )
 
     asset_classes = [

@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import Layout from "./components/layout";
+import Layout from "./components/Layout";
 import Dashboard from "./pages/dashboard";
 import Predict from "./pages/predict";
 import Backtest from "./pages/backtest";

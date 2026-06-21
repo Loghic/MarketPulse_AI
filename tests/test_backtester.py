@@ -384,6 +384,79 @@ class TestTurnoverDefaultsUnchanged:
 
 
 # ----------------------------------------------------------------------
+# Position mode — compound a held run into one trade, fee once
+# ----------------------------------------------------------------------
+
+
+def _step_df(closes: list[float]) -> pd.DataFrame:
+    """OHLCV from an explicit close path (open=high=low=close, no SL noise)."""
+    n = len(closes)
+    dates = pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d")
+    c = np.array(closes, dtype=float)
+    return pd.DataFrame(
+        {"date": dates, "open": c, "high": c, "low": c, "close": c, "volume": np.full(n, 1e6)}
+    )
+
+
+class TestPositionMode:
+    def test_compound_hold_books_one_trade_one_fee(self):
+        # 25 flat warm-up rows + the demo: hold UP across 100→110→90→95→97.
+        # AllUp holds one position across the whole 5-day eval window.
+        closes = [100.0] * 25 + [100, 110, 90, 95, 97]
+        df = _step_df(closes)
+        r = Backtester(n_days=5, fee_pct=0.05, position_mode=True).run(
+            _AlwaysUp(), "AU", df, ticker="X"
+        )
+        # Entry = close_before of the first eval day; exit = last day's close.
+        entry = r.days[0].close_before
+        exit_ = r.days[-1].close_actual
+        expected_raw = (exit_ - entry) / entry  # long, so unsigned
+        rt = 2 * 0.05 / 100
+        # The whole run lands on the last day; interior days are zeroed.
+        assert r.days[-1].trade_pnl == pytest.approx(expected_raw, abs=1e-9)
+        assert r.days[-1].trade_pnl_net == pytest.approx(expected_raw - rt, abs=1e-9)
+        for d in r.days[:-1]:
+            assert d.trade_pnl == 0.0 and d.trade_pnl_net == 0.0
+        # Exactly ONE round-trip fee for the whole held run.
+        assert r.fees_paid == pytest.approx(rt, abs=1e-9)
+        # Total return = the compounded entry→exit move minus one fee.
+        assert r.total_return == pytest.approx(expected_raw - rt, abs=1e-9)
+
+    def test_position_mode_vs_daily_differ_on_holds(self):
+        closes = [100.0] * 25 + [100, 110, 90, 95, 97]
+        df = _step_df(closes)
+        daily = Backtester(n_days=5, fee_pct=0.05).run(_AlwaysUp(), "AU", df, ticker="X")
+        pos = Backtester(n_days=5, fee_pct=0.05, position_mode=True).run(
+            _AlwaysUp(), "AU", df, ticker="X"
+        )
+        # Daily mode pays 5 round trips; position mode pays 1.
+        assert daily.fees_paid == pytest.approx(5 * 2 * 0.05 / 100, abs=1e-9)
+        assert pos.fees_paid == pytest.approx(1 * 2 * 0.05 / 100, abs=1e-9)
+        assert pos.position_mode is True
+        assert daily.position_mode is False
+
+    def test_flip_breaks_the_run(self):
+        # _Alternating flips direction every day → every day is its own run,
+        # so position mode pays a fee per day, like daily mode.
+        df = _ramp_df(n=60)
+        pos = Backtester(n_days=20, fee_pct=0.05, position_mode=True).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        # One run per day → one fee per traded day.
+        rt = 2 * 0.05 / 100
+        assert pos.fees_paid == pytest.approx(pos.test_days * rt, abs=1e-9)
+
+    def test_accuracy_unchanged_by_position_mode(self):
+        df = _ramp_df(n=60)
+        daily = Backtester(n_days=20, fee_pct=0.0).run(_Alternating(), "ALT", df, ticker="X")
+        pos = Backtester(n_days=20, fee_pct=0.0, position_mode=True).run(
+            _Alternating(), "ALT", df, ticker="X"
+        )
+        # Position mode only changes P&L accounting, never the predictions.
+        assert daily.accuracy == pos.accuracy
+
+
+# ----------------------------------------------------------------------
 # Stop-loss sweep via run_single_backtest (strategy experiments 2.2)
 # ----------------------------------------------------------------------
 

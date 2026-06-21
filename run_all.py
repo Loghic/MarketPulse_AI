@@ -86,6 +86,7 @@ def build_dir_name(
     min_confidence: float = 0.0,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
 ) -> str:
     """
     Build subdirectory name from run parameters.
@@ -110,6 +111,8 @@ def build_dir_name(
         parts.append("to")
     if hold_days > 1:
         parts.append(f"hold{hold_days}")
+    if position_mode:
+        parts.append("pos")
     if buy_hold:
         parts.append("bh")
     # Only tag the dir when the user explicitly overrode the default scorer,
@@ -138,6 +141,7 @@ def run_ticker_comparison(
     min_confidence: float = 0.0,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
     sl_levels=None,
 ):
     """Run compare-periods for one ticker, save CSV, return best combo."""
@@ -155,6 +159,7 @@ def run_ticker_comparison(
         min_confidence=min_confidence,
         turnover_fees=turnover_fees,
         hold_days=hold_days,
+        position_mode=position_mode,
     )
     all_rows = []
     all_combos = []
@@ -329,6 +334,7 @@ def main():
         min_confidence=args.min_confidence,
         turnover_fees=args.turnover_fees,
         hold_days=args.hold_days,
+        position_mode=args.position_mode,
     )
     run_dir = Path(args.dir) / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -387,6 +393,7 @@ def main():
             min_confidence=args.min_confidence,
             turnover_fees=args.turnover_fees,
             hold_days=args.hold_days,
+            position_mode=args.position_mode,
             sl_levels=sl_levels,
         )
         if best:

@@ -109,6 +109,7 @@ def oos_one_ticker(
     min_confidence: float = 0.0,
     turnover_fees: bool = False,
     hold_days: int = 1,
+    position_mode: bool = False,
 ) -> dict | None:
     """Run the OOS pipeline for one ticker.
 
@@ -147,6 +148,7 @@ def oos_one_ticker(
         min_confidence=min_confidence,
         turnover_fees=turnover_fees,
         hold_days=hold_days,
+        position_mode=position_mode,
     )
 
     # ------------------------------------------------------------------
@@ -555,6 +557,7 @@ def main() -> int:
             min_confidence=args.min_confidence,
             turnover_fees=args.turnover_fees,
             hold_days=args.hold_days,
+            position_mode=args.position_mode,
         )
         if row is not None:
             rows.append(row)

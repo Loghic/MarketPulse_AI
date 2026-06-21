@@ -29,6 +29,29 @@ model still makes a prediction every day (so accuracy is unchanged), but your
 *position* — and therefore your profit/loss — follows the held trade. Most
 useful together with turnover fees, which then skips fees on the held days.
 
+## Position mode
+
+By default the backtest is **daily mark-to-market**: it books each day's
+close-to-close move as its own little trade. That's fine for measuring
+direction accuracy, but it isn't how you'd actually trade — you wouldn't sell
+and re-buy every single day.
+
+**Position mode** models real holding instead. While the signal keeps saying
+the same direction, you hold **one** position; you only cash out when the
+signal flips (or you get stopped out, or the test ends). That held run's profit
+is the **compounded** price change from where you entered to where you exited,
+and you pay the round-trip fee **once** for the whole run — not once per day.
+
+Example: you go long at \$100, it rises to \$110, you keep holding, then it
+falls to \$90 and the signal flips. Position mode books that as a single trade:
+\$100 → \$90 = −10%, minus one round-trip fee. (Daily mode would instead book
++10% on day one and −18% on day two, with a fee each day.)
+
+Use it together with [turnover fees](strategy#turnover-fees) thinking in mind —
+position mode already charges fees per held run, so it's the most realistic
+"hold while the signal agrees" cost. It changes the return, drawdown, and fee
+numbers; accuracy (a per-day, per-prediction measure) is unaffected.
+
 ## Stop-loss
 
 A **stop-loss** automatically closes a losing position once it falls a set

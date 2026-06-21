@@ -207,6 +207,16 @@ def add_strategy_args(
         ),
     )
     group.add_argument(
+        "--position-mode",
+        action="store_true",
+        help=(
+            "Hold ONE position across consecutive same-direction days and book "
+            "its compounded entry→exit return as a single trade, paying the "
+            "round-trip fee once per held run (vs the default daily "
+            "mark-to-market that books each close-to-close move separately)."
+        ),
+    )
+    group.add_argument(
         "--min-confidence",
         type=float,
         default=DEFAULT_MIN_CONFIDENCE,

@@ -678,6 +678,20 @@ class TestMeta:
         assert data["sl_sweep"] == [0.0, 5.0, 10.0, 15.0]
         assert data["confidence_sweep"][0] == 0.0
 
+    def test_model_tiers(self, client):
+        data = client.get("/api/meta").json()
+        by_key = {f["key"]: f for f in data["model_families"]}
+        # k-NN / LinReg are the educational tier; the forecasters are "forecast".
+        assert by_key["knn"]["tier"] == "educational"
+        assert by_key["linreg"]["tier"] == "educational"
+        assert by_key["chronos"]["tier"] == "forecast"
+        assert by_key["baseline"]["tier"] == "baseline"
+        # Forecasting models flagged slow; LSTM is not.
+        assert by_key["chronos"]["slow"] is True
+        assert by_key["kronos"]["slow"] is True
+        assert by_key["prophet"]["slow"] is True
+        assert by_key["lstm"]["slow"] is False
+
 
 # ------------------------------------------------------------------
 # Tickers carry registry asset_type (commodities/indices/fx)
@@ -735,8 +749,16 @@ class TestBacktestNewArgs:
             "hold_days",
             "turnover_count",
             "fees_paid",
+            "position_mode",
         ):
             assert key in result
+
+    def test_position_mode_flag(self, refreshed_client):
+        r = refreshed_client.post(
+            "/api/backtest", json=self._body(fee_pct=0.05, position_mode=True)
+        )
+        assert r.status_code == 200
+        assert r.json()["results"][0]["position_mode"] is True
 
     def test_min_confidence_gate(self, refreshed_client):
         r = refreshed_client.post("/api/backtest", json=self._body(min_confidence=0.6))

@@ -54,11 +54,31 @@ clear a **real bar**, not just beat a coin. If a sophisticated model can't beat
 
 - **Always-Long** — predict UP every single day (blind optimism; in a rising
   market this is surprisingly hard to beat).
+- **Always-Short** — predict DOWN every day, the mirror of Always-Long. A
+  control: if Always-Long only looks good because the market rose, Always-Short
+  makes that explicit (it should look terrible in the same bull market).
 - **Previous-Day** — predict that tomorrow repeats today's realised direction.
 - **5-Day / 20-Day Momentum** — predict UP if the price is higher than it was
   5 (or 20) days ago.
 - **Random** — a seeded coin flip. The floor, and the reference for
   significance tests.
 
+### News-aware baselines
+
+These still aren't *models* — they're fixed rules — but they're allowed to
+**react** to today's news sentiment (the same look-ahead-safe score the "+ News"
+models use). They never *learn* from past news outcomes; that would make them
+models, not baselines. News overrides the price rule only when the sentiment is
+clearly strong (above a small threshold); weak news is ignored.
+
+- **News Previous-Day** — assume tomorrow repeats today's direction, *unless*
+  the news is clearly positive/negative, in which case follow the news. ("Things
+  keep going the way they were, unless the headlines say otherwise.")
+- **News-Informed** — when the news is clearly positive/negative, predict that;
+  otherwise fall back to previous-day. (The "person who only acts on a clear
+  headline, and otherwise expects more of the same.")
+- **News 5-Day Momentum** — 5-day momentum, but flipped to match strong news.
+
 The rule of thumb: a model is only worth attention if it beats **Previous-Day
-and Always-Long**, not merely 50% or buy-and-hold.
+and Always-Long** (and now the news-aware baselines too), not merely 50% or
+buy-and-hold.

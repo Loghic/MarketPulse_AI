@@ -59,6 +59,7 @@ export default function Backtest() {
   const [minConfidence, setMinConfidence] = useState("0");
   const [turnoverFees, setTurnoverFees] = useState(false);
   const [holdDays, setHoldDays] = useState("1");
+  const [positionMode, setPositionMode] = useState(false);
 
   // News / sentiment knobs — match the CLI defaults (config.py).
   const [sentimentMethod, setSentimentMethod] = useState<"vader" | "finbert" | "naive">("vader");
@@ -106,6 +107,10 @@ export default function Backtest() {
   const PERIODS = meta?.periods ?? PERIODS_FALLBACK;
   const families = meta?.model_families ?? [];
   const nonBaselineFamilies = families.filter((f) => f.key !== "baseline");
+  // Split by tier: the main predictive models vs the simple/educational pair
+  // (k-NN, LinReg), shown in a de-emphasised second row.
+  const mainFamilies = nonBaselineFamilies.filter((f) => f.tier !== "educational");
+  const eduFamilies = nonBaselineFamilies.filter((f) => f.tier === "educational");
   const assetClasses = meta?.asset_classes ?? [];
   const tickersByClass = useMemo(() => {
     const out: { key: string; label: string; tickers: string[] }[] = [];
@@ -174,6 +179,7 @@ export default function Backtest() {
         min_confidence: parseFloat(minConfidence) || 0,
         turnover_fees: turnoverFees,
         hold_days: parseInt(holdDays) || 1,
+        position_mode: positionMode,
         ...(newsRequested
           ? {
               sentiment_method: sentimentMethod,
@@ -336,10 +342,10 @@ export default function Backtest() {
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <SelRow label="Models">
             <Chip label="All" active={selFamilies.size === 0} onClick={() => setSelFamilies(new Set())} accent />
-            {nonBaselineFamilies.map((f) => (
+            {mainFamilies.map((f) => (
               <Chip
                 key={f.key}
-                label={f.available ? f.label : `${f.label} (n/a)`}
+                label={(f.available ? f.label : `${f.label} (n/a)`) + (f.slow ? " ⏳" : "")}
                 active={selFamilies.has(f.key)}
                 onClick={() => {
                   if (!f.available) return;
@@ -352,8 +358,25 @@ export default function Backtest() {
             <span style={{ width: 12 }} />
             <Chk label="Baselines" checked={includeBaselines} onChange={setIncludeBaselines} />
             <HelpLink to="models/baselines" title="Baselines are dumb predictors (Always-Long, Random…) a real model must beat. Click for details." />
-            <HelpLink to="models/model-families" title="What each model family is (k-NN, LinReg, LSTM, Prophet, Chronos-2, Kronos)." />
+            <HelpLink to="models/model-families" title="What each model family is (k-NN, LinReg, LSTM, Prophet, Chronos-2, Kronos). ⏳ = slow." />
           </SelRow>
+          {eduFamilies.length > 0 && (
+            <SelRow label="Simple">
+              {eduFamilies.map((f) => (
+                <Chip
+                  key={f.key}
+                  label={f.label}
+                  active={selFamilies.has(f.key)}
+                  onClick={() => {
+                    const n = new Set(selFamilies);
+                    if (n.has(f.key)) n.delete(f.key); else n.add(f.key);
+                    setSelFamilies(n);
+                  }}
+                />
+              ))}
+              <span style={{ fontSize: 10, color: s.muted, alignSelf: "center" }}>educational / illustrative</span>
+            </SelRow>
+          )}
           <SelRow label="Periods">
             <Chip label="All" active={selPeriods.size === PERIODS.length} onClick={() => setSelPeriods(selPeriods.size === PERIODS.length ? new Set() : new Set(PERIODS))} accent />
             {PERIODS.map((p) => <Chip key={p} label={p.toUpperCase()} active={selPeriods.has(p)} onClick={() => { const n = new Set(selPeriods); if (n.has(p)) n.delete(p); else n.add(p); setSelPeriods(n); }} />)}
@@ -404,6 +427,10 @@ export default function Backtest() {
             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
               <NumField label="Hold days" value={holdDays} onChange={setHoldDays} width={50} />
               <HelpLink to="strategy/hold-days" title="Hold a position N days before re-reading the signal. Accuracy is unchanged." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <Chk label="Position mode" checked={positionMode} onChange={setPositionMode} />
+              <HelpLink to="strategy/position-mode" title="Hold one position across same-direction days and compound it into a single trade (one round-trip fee per run)." />
             </span>
             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
               <Chk label="B&H benchmark" checked={buyHold} onChange={setBuyHold} />

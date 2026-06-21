@@ -7,9 +7,12 @@ just buy-and-hold. Each baseline implements the same
 contract the trained models use, so they slot straight into the variants
 list in ``backtest_helpers.run_single_backtest`` and share every metric.
 
-The five baselines:
+Price-only baselines (ignore news):
 
 * ``AlwaysLongBaseline``         — predict UP every day
+* ``AlwaysShortBaseline``        — predict DOWN every day (mirror of Always-Long;
+                                   a check on how much the bull-market
+                                   assumption is doing the work)
 * ``PreviousDayBaseline``        — copy yesterday's realised direction
 * ``MomentumBaseline(n)``        — UP iff ``close[t-1] > close[t-1-n]``
                                    (n=5 by default = "5-Day Momentum";
@@ -20,9 +23,25 @@ The five baselines:
                                    pair so re-running gives identical
                                    sequences
 
-The ``sentiment_score`` argument is accepted for interface parity and
-is deliberately ignored — baselines exist precisely to test what happens
-without any model signal. There is no "+ News" variant for baselines.
+News-aware baselines (use the look-ahead-safe per-day ``sentiment_score``):
+
+* ``NewsAwarePreviousDayBaseline`` — copy yesterday's direction, but flip to
+                                   match the news when today's |sentiment|
+                                   clears ``threshold`` ("assume continuation
+                                   unless the news clearly says otherwise").
+* ``NewsInformedBaseline``       — predict the news sign when |sentiment| ≥
+                                   ``threshold``, else fall back to
+                                   previous-day (the "person who only acts on
+                                   clear news" baseline).
+* ``NewsAwareMomentumBaseline(n)`` — n-day momentum, flipped to match the news
+                                   when |sentiment| clears ``threshold``.
+
+The news-aware ones remain **stateless** — they *react* to today's sentiment
+with a fixed rule but never *learn* from past sentiment→outcome pairs. That
+keeps them valid baselines (a fixed floor), not models. (A predictor that
+learns the sentiment→direction relationship belongs as a real model, e.g. a
+sentiment-conditioned k-NN, not here.) The price-only baselines accept
+``sentiment_score`` for interface parity and ignore it.
 """
 
 from __future__ import annotations
@@ -31,6 +50,22 @@ import hashlib
 from dataclasses import dataclass
 
 import pandas as pd
+
+from config import BASELINE_NEWS_THRESHOLD
+
+
+def _news_override(sentiment_score: float, threshold: float) -> str | None:
+    """Direction the news implies, or None when it isn't strong enough.
+
+    UP when sentiment ≥ +threshold, DOWN when ≤ −threshold, else None
+    (too weak to act on). Pure function of today's look-ahead-safe score.
+    """
+    if sentiment_score >= threshold:
+        return "UP"
+    if sentiment_score <= -threshold:
+        return "DOWN"
+    return None
+
 
 # Confidence values per baseline — used by confidence gating.
 # AlwaysLong returns max confidence (it never "doubts"); the directional
@@ -66,6 +101,25 @@ class AlwaysLongBaseline:
         sentiment_score: float = 0.0,  # noqa: ARG002 - baselines ignore news
     ) -> tuple[str, float]:
         return "UP", _CONF_ALWAYS
+
+
+@dataclass
+class AlwaysShortBaseline:
+    """Predict DOWN every day — the mirror of Always-Long.
+
+    Useful as a control: if Always-Long looks good only because the market
+    rose, Always-Short makes that explicit (it should look terrible in a
+    bull market, mirroring Always-Long's success)."""
+
+    name: str = "Baseline Always Short"
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        use_time_weights: bool = False,  # noqa: ARG002 - interface parity
+        sentiment_score: float = 0.0,  # noqa: ARG002 - baselines ignore news
+    ) -> tuple[str, float]:
+        return "DOWN", _CONF_ALWAYS
 
 
 @dataclass
@@ -155,21 +209,130 @@ class RandomBaseline:
 
 
 # ----------------------------------------------------------------------
+# News-aware baselines — react to today's look-ahead-safe sentiment with a
+# fixed rule (stateless; they never learn from past sentiment→outcome pairs).
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class NewsAwarePreviousDayBaseline:
+    """Previous-day continuation, but flip to the news when it's strong.
+
+    Default to yesterday's realised direction (the "things keep going the way
+    they were" prior). If today's |sentiment| clears ``threshold``, override
+    with the news direction — modelling someone who assumes continuation
+    unless the headlines clearly say otherwise.
+    """
+
+    threshold: float = BASELINE_NEWS_THRESHOLD
+    name: str = "Baseline News Previous Day"
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        use_time_weights: bool = False,  # noqa: ARG002
+        sentiment_score: float = 0.0,
+    ) -> tuple[str, float]:
+        # Base call = yesterday's direction (UP on insufficient data).
+        if len(df) < 2 or "close" not in df.columns:
+            base = "UP"
+        else:
+            close = df["close"].astype(float)
+            base = "UP" if close.iloc[-1] > close.iloc[-2] else "DOWN"
+        news = _news_override(sentiment_score, self.threshold)
+        if news is not None and news != base:
+            # News strong enough to override the price rule → higher conviction.
+            return news, _CONF_DIRECTIONAL
+        return base, _CONF_DIRECTIONAL
+
+
+@dataclass
+class NewsInformedBaseline:
+    """Act on the news when it's clear; otherwise assume continuation.
+
+    When today's |sentiment| ≥ ``threshold``, predict the news sign directly.
+    Otherwise fall back to yesterday's direction. The "person who only trades
+    on a clear headline, and otherwise expects more of the same" baseline.
+    """
+
+    threshold: float = BASELINE_NEWS_THRESHOLD
+    name: str = "Baseline News Informed"
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        use_time_weights: bool = False,  # noqa: ARG002
+        sentiment_score: float = 0.0,
+    ) -> tuple[str, float]:
+        news = _news_override(sentiment_score, self.threshold)
+        if news is not None:
+            return news, _CONF_DIRECTIONAL
+        # No clear news → previous-day fallback.
+        if len(df) < 2 or "close" not in df.columns:
+            return "UP", _CONF_DIRECTIONAL
+        close = df["close"].astype(float)
+        return ("UP" if close.iloc[-1] > close.iloc[-2] else "DOWN"), _CONF_DIRECTIONAL
+
+
+@dataclass
+class NewsAwareMomentumBaseline:
+    """n-day momentum, flipped to the news when sentiment is strong.
+
+    Same momentum rule as ``MomentumBaseline`` (UP iff
+    ``close[-1] > close[-1-n]``), but if today's |sentiment| clears
+    ``threshold`` the news direction overrides it.
+    """
+
+    n: int = 5
+    threshold: float = BASELINE_NEWS_THRESHOLD
+
+    @property
+    def name(self) -> str:
+        return f"Baseline News {self.n}-Day Momentum"
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        use_time_weights: bool = False,  # noqa: ARG002
+        sentiment_score: float = 0.0,
+    ) -> tuple[str, float]:
+        if len(df) < self.n + 1 or "close" not in df.columns:
+            base = "UP"
+        else:
+            close = df["close"].astype(float)
+            base = "UP" if close.iloc[-1] > close.iloc[-1 - self.n] else "DOWN"
+        news = _news_override(sentiment_score, self.threshold)
+        if news is not None and news != base:
+            return news, _CONF_DIRECTIONAL
+        return base, _CONF_DIRECTIONAL
+
+
+# ----------------------------------------------------------------------
 # Factory used by backtest_helpers.run_single_backtest
 # ----------------------------------------------------------------------
 
 
-def default_baseline_variants() -> list[tuple[object, str]]:
-    """Return ``[(model_instance, label), ...]`` for the default set.
+def default_baseline_variants() -> list[tuple[object, str, bool]]:
+    """Return ``[(model_instance, label, uses_news), ...]`` for the default set.
 
-    Centralising the choice of N values here means there is one place
-    to edit if we ever want to add 50-day momentum or a second random
-    seed.
+    ``uses_news`` tells ``run_single_backtest`` whether to feed the baseline the
+    look-ahead-safe per-day sentiment provider. Price-only baselines get
+    ``False`` (no sentiment); the news-aware ones get ``True`` so they receive
+    the same per-day sentiment the "+ News" model variants use.
+
+    Centralising the choice of N values + the baseline set here means there is
+    one place to edit if we ever want to add 50-day momentum or a second seed.
     """
     return [
-        (AlwaysLongBaseline(), AlwaysLongBaseline().name),
-        (PreviousDayBaseline(), PreviousDayBaseline().name),
-        (MomentumBaseline(n=5), MomentumBaseline(n=5).name),
-        (MomentumBaseline(n=20), MomentumBaseline(n=20).name),
-        (RandomBaseline(seed=42), RandomBaseline(seed=42).name),
+        # Price-only.
+        (AlwaysLongBaseline(), AlwaysLongBaseline().name, False),
+        (AlwaysShortBaseline(), AlwaysShortBaseline().name, False),
+        (PreviousDayBaseline(), PreviousDayBaseline().name, False),
+        (MomentumBaseline(n=5), MomentumBaseline(n=5).name, False),
+        (MomentumBaseline(n=20), MomentumBaseline(n=20).name, False),
+        (RandomBaseline(seed=42), RandomBaseline(seed=42).name, False),
+        # News-aware (stateless).
+        (NewsAwarePreviousDayBaseline(), NewsAwarePreviousDayBaseline().name, True),
+        (NewsInformedBaseline(), NewsInformedBaseline().name, True),
+        (NewsAwareMomentumBaseline(n=5), NewsAwareMomentumBaseline(n=5).name, True),
     ]
