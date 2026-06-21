@@ -1,25 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import PriceChart from "../components/PriceChart";
+import PriceChart from "../components/priceChart";
 import { s, Panel, Btn, pct } from "../components/ui";
 
 const CHART_PERIODS = ["1mo", "1y", "2y", "5y", "max"];
-const PERIODS = ["1mo", "1y", "2y", "5y", "max"];
+const PERIODS_FALLBACK = ["1mo", "1y", "2y", "5y", "max"];
 
-const ALL_MODELS = [
-  "k-NN", "k-NN (TW)", "k-NN Enhanced", "k-NN Enhanced (TW)",
-  "LinReg", "LinReg (TW)", "LinReg Enhanced", "LinReg Enhanced (TW)",
-  "LSTM",
-];
-
-const FILTER_GROUPS = [
-  { label: "Family", tags: ["k-NN", "LinReg", "LSTM"] },
-  { label: "Type", tags: ["Basic", "Enhanced"] },
-  { label: "Variant", tags: ["TW", "No TW"] },
-  { label: "Sentiment", tags: ["News", "No News"] },
-  { label: "Period", tags: PERIODS.map((p) => p.toUpperCase()) },
-];
+// Family display labels for tagging the consensus filter (Prophet/Chronos/
+// Kronos appear when the backend reports them as available).
+const FAMILY_LABELS = ["k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "Kronos"];
 
 interface BuilderRow { model: string; period: string; news: boolean }
 function bKey(r: BuilderRow): string { return `${r.model}|${r.period}|${r.news}`; }
@@ -33,9 +23,9 @@ interface Pred {
 // Tags for filtering
 function getTags(m: string): string[] {
   const tags: string[] = [];
-  if (m.startsWith("k-NN")) tags.push("k-NN");
-  if (m.startsWith("LinReg")) tags.push("LinReg");
-  if (m.startsWith("LSTM")) tags.push("LSTM");
+  for (const fam of FAMILY_LABELS) {
+    if (m.startsWith(fam)) { tags.push(fam); break; }
+  }
   if (m.includes("Enhanced")) tags.push("Enhanced");
   if (m.includes("(TW)")) tags.push("TW");
   if (m.includes("News")) tags.push("News");
@@ -56,7 +46,7 @@ export default function Predict() {
   // Builder
   const [items, setItems] = useState<BuilderRow[]>([]);
   const [buildSel, setBuildSel] = useState<Set<string>>(new Set());
-  const [selModels, setSelModels] = useState<Set<string>>(new Set(ALL_MODELS));
+  const [selModels, setSelModels] = useState<Set<string>>(new Set());
   const [selPeriods, setSelPeriods] = useState<Set<string>>(new Set(["1y"]));
   const [selNews, setSelNews] = useState<"no" | "yes" | "both">("no");
 
@@ -69,10 +59,26 @@ export default function Predict() {
   const queryClient = useQueryClient();
 
   const { data: tickers } = useQuery({ queryKey: ["tickers"], queryFn: api.getTickers });
+  const { data: meta } = useQuery({ queryKey: ["meta"], queryFn: api.getMeta, staleTime: 60_000 });
   const { data: predictInfo } = useQuery({
     queryKey: ["predictInfo"],
     queryFn: () => fetch("/api/predict/info").then((r) => r.json()),
   });
+
+  // Model variants + periods come from the backend (availability-gated), so
+  // Prophet / Chronos-2 / Kronos appear only when actually installed.
+  const ALL_MODELS: string[] = (predictInfo?.variants as string[] | undefined) ?? [];
+  const PERIODS: string[] = (predictInfo?.periods as string[] | undefined) ?? meta?.periods ?? PERIODS_FALLBACK;
+  const filterGroups = useMemo(() => {
+    const fams = FAMILY_LABELS.filter((f) => ALL_MODELS.some((m) => m.startsWith(f)));
+    return [
+      { label: "Family", tags: fams },
+      { label: "Type", tags: ["Basic", "Enhanced"] },
+      { label: "Variant", tags: ["TW", "No TW"] },
+      { label: "Sentiment", tags: ["News", "No News"] },
+      { label: "Period", tags: PERIODS.map((p) => p.toUpperCase()) },
+    ];
+  }, [ALL_MODELS, PERIODS]);
   const { data: tickerData } = useQuery({
     queryKey: ["tickerData", ticker, chartPeriod],
     queryFn: () => api.getTickerData(ticker, chartPeriod),
@@ -167,7 +173,7 @@ export default function Predict() {
   const filteredPredIdx = useMemo(() => {
     // Group active filters by their group
     const activeByGroup: Map<string, string[]> = new Map();
-    for (const g of FILTER_GROUPS) {
+    for (const g of filterGroups) {
       const active = g.tags.filter((t) => consFilters.has(t));
       if (active.length > 0) activeByGroup.set(g.label, active);
     }
@@ -189,7 +195,7 @@ export default function Predict() {
 
       return matchesFilters && matchesSearch ? i : -1;
     }).filter((i) => i >= 0);
-  }, [predictions, consFilters, consSearch]);
+  }, [predictions, consFilters, consSearch, filterGroups]);
 
   // Sort filtered results
   const sortedFilteredIdx = useMemo(() => {
@@ -271,8 +277,17 @@ export default function Predict() {
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: s.muted }}>Ticker</span>
         <select value={ticker} onChange={(e) => setTicker(e.target.value)} style={selSt}>
-          {tickers?.filter((t) => t.asset_type === "stock").map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}
-          {tickers?.filter((t) => t.asset_type === "crypto").map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}
+          {(meta?.asset_classes ?? []).map((ac) => {
+            const syms = (tickers ?? []).filter((t) => t.asset_type === ac.key).map((t) => t.ticker);
+            if (!syms.length) return null;
+            return (
+              <optgroup key={ac.key} label={ac.label}>
+                {syms.map((sym) => <option key={sym} value={sym}>{sym}</option>)}
+              </optgroup>
+            );
+          })}
+          {/* Fallback before meta loads: flat list */}
+          {!meta && tickers?.map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}
         </select>
         <Chk label="Chart" checked={showChart} onChange={setShowChart} />
         {showChart && <><span style={{ fontSize: 12, color: s.muted }}>Period:</span><Pills values={CHART_PERIODS} selected={chartPeriod} onSelect={setChartPeriod} /></>}
@@ -364,7 +379,7 @@ export default function Predict() {
                   style={{ padding: "4px 8px", borderRadius: 4, fontSize: 11, background: "transparent", border: `1px solid ${s.border}`, color: s.text, width: 140, outline: "none" }} />
                 {consFilters.size > 0 && <SmBtn label="Clear filters" color={s.accent} onClick={() => setConsFilters(new Set())} />}
               </div>
-              {FILTER_GROUPS.map((g) => (
+              {filterGroups.map((g) => (
                 <div key={g.label} style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={{ fontSize: 10, color: s.muted, minWidth: 55, textAlign: "right", paddingRight: 4 }}>{g.label}</span>
                   {g.tags.map((t) => <Chip key={t} label={t} active={consFilters.has(t)} onClick={() => toggleConsFilter(t)} />)}

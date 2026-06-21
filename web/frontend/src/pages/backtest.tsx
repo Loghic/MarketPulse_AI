@@ -1,48 +1,40 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import PriceChart from "../components/PriceChart";
-import { s, Panel, Btn, pct } from "../components/ui";
+import PriceChart from "../components/priceChart";
+import { s, Panel, Btn, pct, HelpLink } from "../components/ui";
 
-const PERIODS = ["1mo", "1y", "2y", "5y", "max"];
+// Fallback period set used until /api/meta loads (kept in sync with config).
+const PERIODS_FALLBACK = ["1mo", "1y", "2y", "5y", "max"];
 const CHART_PERIODS = ["1mo", "1y", "2y", "5y", "max"];
-const ALL_MODELS = [
-  "k-NN", "k-NN (TW)", "k-NN Enhanced", "k-NN Enhanced (TW)",
-  "LinReg", "LinReg (TW)", "LinReg Enhanced", "LinReg Enhanced (TW)",
-  "LSTM",
-];
 const METRICS = [
   { key: "total_return", label: "Return", fmt: (v: number) => pct(v * 100), higher: true },
   { key: "accuracy", label: "Accuracy", fmt: (v: number) => pct(v * 100, false), higher: true },
-  { key: "profit_factor", label: "PF", fmt: (v: number) => v >= 100 ? "∞" : v.toFixed(2), higher: true },
+  { key: "profit_factor", label: "PF", fmt: (v: number) => (v >= 100 ? "∞" : v.toFixed(2)), higher: true },
   { key: "sharpe_ratio", label: "Sharpe", fmt: (v: number) => v.toFixed(2), higher: true },
-  { key: "sortino_ratio", label: "Sortino", fmt: (v: number) => v >= 100 ? "∞" : v.toFixed(2), higher: true },
-  { key: "max_drawdown", label: "Max DD", fmt: (v: number) => pct(v * 100), higher: true }, // higher=closer to 0
+  { key: "sortino_ratio", label: "Sortino", fmt: (v: number) => (v >= 100 ? "∞" : v.toFixed(2)), higher: true },
+  { key: "max_drawdown", label: "Max DD", fmt: (v: number) => pct(v * 100), higher: true },
   { key: "buy_hold_return", label: "B&H", fmt: (v: number) => pct(v * 100), higher: true },
 ];
 
-const FILTER_GROUPS = [
-  { label: "Family", tags: ["k-NN", "LinReg", "LSTM"] },
-  { label: "Type", tags: ["Basic", "Enhanced"] },
-  { label: "Variant", tags: ["TW", "No TW"] },
-  { label: "Sentiment", tags: ["News", "No News"] },
-  { label: "Period", tags: PERIODS.map((p) => p.toUpperCase()) },
-];
+// Family display labels used for the result-table "Family" filter + tagging.
+const FAMILY_LABELS = ["k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "Kronos", "Baseline"];
 
 function getTags(model: string, period: string): string[] {
   const t: string[] = [];
-  if (model.startsWith("k-NN")) t.push("k-NN");
-  if (model.startsWith("LinReg")) t.push("LinReg");
-  if (model.startsWith("LSTM")) t.push("LSTM");
-  if (model.includes("Enhanced")) t.push("Enhanced"); else t.push("Basic");
-  if (model.includes("(TW)")) t.push("TW"); else t.push("No TW");
-  if (model.includes("News")) t.push("News"); else t.push("No News");
+  const name = String(model);
+  for (const fam of FAMILY_LABELS) {
+    if (name.startsWith(fam)) { t.push(fam); break; }
+  }
+  if (name.includes("Enhanced")) t.push("Enhanced"); else t.push("Basic");
+  if (name.includes("(TW)") || name.includes("Time-Weighted") || name.includes("TW")) t.push("TW");
+  else t.push("No TW");
+  if (name.includes("News")) t.push("News"); else t.push("No News");
+  if (/SL\d/.test(name)) t.push("SL");
   t.push(period.toUpperCase());
   return t;
 }
 
-interface BItem { model: string; period: string; news: boolean; fee: number; sl: number }
-function bKey(r: BItem) { return `${r.model}|${r.period}|${r.news}|${r.fee}|${r.sl}`; }
 type Res = Record<string, unknown>;
 
 export default function Backtest() {
@@ -51,93 +43,96 @@ export default function Backtest() {
   const [chartPeriod, setChartPeriod] = useState("1y");
   const [showChart, setShowChart] = useState(false);
 
-  const [selModels, setSelModels] = useState<Set<string>>(new Set(ALL_MODELS));
+  // Model FAMILIES (keys from /api/meta), sent to the backend as `models`.
+  // Empty = all families. Baselines toggled separately.
+  const [selFamilies, setSelFamilies] = useState<Set<string>>(new Set());
+  const [includeBaselines, setIncludeBaselines] = useState(true);
   const [selPeriods, setSelPeriods] = useState<Set<string>>(new Set(["1y"]));
   const [selNews, setSelNews] = useState<"no" | "yes" | "both">("no");
   const [globalFee, setGlobalFee] = useState("0.05");
   const [globalSL, setGlobalSL] = useState("0");
+  const [slSweep, setSlSweep] = useState(false);
   const [days, setDays] = useState("20");
   const [buyHold, setBuyHold] = useState(true);
   const [refreshData, setRefreshData] = useState(false);
+  // Phase 1.3 / 2.1 knobs.
+  const [minConfidence, setMinConfidence] = useState("0");
+  const [turnoverFees, setTurnoverFees] = useState(false);
+  const [holdDays, setHoldDays] = useState("1");
 
   // News / sentiment knobs — match the CLI defaults (config.py).
-  // Forwarded to POST /api/backtest so the backend's per-day sentiment
-  // provider uses the same scorer + lookback window + decay half-life.
   const [sentimentMethod, setSentimentMethod] = useState<"vader" | "finbert" | "naive">("vader");
   const [newsLookback, setNewsLookback] = useState("7");
   const [newsHalfLife, setNewsHalfLife] = useState("3");
 
-  const [items, setItems] = useState<BItem[]>([]);
-  const [buildSel, setBuildSel] = useState<Set<string>>(new Set());
-
   // Summary
   const [sumMetrics, setSumMetrics] = useState<Set<string>>(new Set(["total_return", "sharpe_ratio", "accuracy"]));
-  const [sumTickers, setSumTickers] = useState<Set<string>>(new Set()); // empty = all
+  const [sumTickers, setSumTickers] = useState<Set<string>>(new Set());
 
   // Results filter
   const [resSort, setResSort] = useState<{ col: string; asc: boolean }>({ col: "total_return", asc: false });
   const [resFilters, setResFilters] = useState<Set<string>>(new Set());
   const [resSearch, setResSearch] = useState("");
-  const [newsTicker, setNewsTicker] = useState("all");
 
   const queryClient = useQueryClient();
   const { data: tickers } = useQuery({ queryKey: ["tickers"], queryFn: api.getTickers });
+  const { data: meta } = useQuery({ queryKey: ["meta"], queryFn: api.getMeta, staleTime: 60_000 });
   const { data: tickerData } = useQuery({
     queryKey: ["tickerData", chartTicker, chartPeriod],
     queryFn: () => api.getTickerData(chartTicker, chartPeriod),
     enabled: showChart && !!chartTicker,
   });
 
-  // ------------------------------------------------------------------
-  // Persisted runs — every successful POST /api/backtest writes
-  // backtests/{run_id}.json plus per-ticker CSVs to results/{...}/.
-  // On mount we list them so the user can (a) see the latest result
-  // without re-running and (b) pick an older run from a dropdown.
-  // ------------------------------------------------------------------
+  // Persisted runs (every POST /api/backtest writes a JSON + CSVs).
   const { data: persistedRuns } = useQuery({
     queryKey: ["backtestRuns"],
     queryFn: api.listBacktestRuns,
     staleTime: 5_000,
   });
-
-  // Which persisted run (if any) the user wants to display. By default
-  // we auto-select the newest so the tab is never blank.
   const [loadedRunId, setLoadedRunId] = useState<string | null>(null);
   useEffect(() => {
     if (loadedRunId !== null) return;
-    if (persistedRuns && persistedRuns.length > 0) {
-      setLoadedRunId(persistedRuns[0].run_id);
-    }
+    if (persistedRuns && persistedRuns.length > 0) setLoadedRunId(persistedRuns[0].run_id);
   }, [persistedRuns, loadedRunId]);
-
   const { data: loadedRun } = useQuery({
     queryKey: ["backtestRun", loadedRunId],
     queryFn: () => api.loadBacktestRun(loadedRunId!),
     enabled: !!loadedRunId,
   });
+
   const chartRows = useMemo(() => [...(tickerData?.data ?? [])].reverse(), [tickerData]);
 
-  const stocks = tickers?.filter((t) => t.asset_type === "stock") ?? [];
-  const crypto = tickers?.filter((t) => t.asset_type === "crypto") ?? [];
-  const stockTickers = stocks.map((t) => t.ticker);
-  const cryptoTickers = crypto.map((t) => t.ticker);
+  // --- Meta-driven options (periods, families, asset classes) ---
+  const PERIODS = meta?.periods ?? PERIODS_FALLBACK;
+  const families = meta?.model_families ?? [];
+  const nonBaselineFamilies = families.filter((f) => f.key !== "baseline");
+  const assetClasses = meta?.asset_classes ?? [];
+  const tickersByClass = useMemo(() => {
+    const out: { key: string; label: string; tickers: string[] }[] = [];
+    for (const ac of assetClasses) {
+      const present = (tickers ?? []).filter((t) => t.asset_type === ac.key).map((t) => t.ticker);
+      if (present.length) out.push({ key: ac.key, label: ac.label, tickers: present });
+    }
+    return out;
+  }, [tickers, assetClasses]);
+  const allTickerSyms = useMemo(() => (tickers ?? []).map((t) => t.ticker), [tickers]);
 
-  // The 2026 backend takes a single global fee_pct + stop_loss_pct per
-  // request and runs *all* model variants per (ticker × period). The
-  // "items[]" / per-row fee that the old API exposed is gone. Periods
-  // selected in the builder are forwarded as the new ``periods: list[str]``
-  // parameter so the user can pick a subset (or all of them via "All").
-  // Models selected in the builder are kept client-side and used purely as
-  // a filter on the response (the backend always returns every variant —
-  // we just hide what wasn't selected).
+  // Dynamic result-table filter groups (Family list comes from meta).
+  const filterGroups = useMemo(() => {
+    const famTags = nonBaselineFamilies.map((f) => f.label);
+    if (includeBaselines || famTags.length === 0) famTags.push("Baseline");
+    return [
+      { label: "Family", tags: famTags },
+      { label: "Type", tags: ["Basic", "Enhanced"] },
+      { label: "Variant", tags: ["TW", "No TW"] },
+      { label: "Sentiment", tags: ["News", "No News"] },
+      { label: "Stop-loss", tags: ["SL"] },
+      { label: "Period", tags: PERIODS.map((p) => p.toUpperCase()) },
+    ];
+  }, [nonBaselineFamilies, includeBaselines, PERIODS]);
+
   // ------------------------------------------------------------------
-  // Live progress polling — the backend updates a module-level dict as
-  // it iterates tickers/periods. We drive polling explicitly with a
-  // setInterval (rather than refetchInterval's predicate) because the
-  // predicate-based approach was flaky: TanStack would sometimes settle
-  // into "running=false" between renders and stop polling before the
-  // backtest finished. Direct setInterval gives us deterministic 500ms
-  // ticks while ``polling`` is true.
+  // Live progress polling
   // ------------------------------------------------------------------
   const [polling, setPolling] = useState(false);
   const { data: progress, refetch: refetchProgress } = useQuery({
@@ -145,18 +140,12 @@ export default function Backtest() {
     queryFn: api.backtestProgress,
     staleTime: 0,
   });
-
   useEffect(() => {
     if (!polling) return;
-    // Kick once immediately, then poll every 500ms.
     refetchProgress();
     const id = setInterval(() => refetchProgress(), 500);
     return () => clearInterval(id);
   }, [polling, refetchProgress]);
-
-  // Separate per-second tick so the "Elapsed: 12s" counter keeps
-  // advancing between polls (rather than freezing on whatever the last
-  // payload's started_at was).
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => {
     if (!polling) return;
@@ -166,118 +155,70 @@ export default function Backtest() {
 
   const runMut = useMutation({
     mutationFn: () => {
-      const periodList = items.length
-        ? Array.from(new Set(items.map((r) => r.period)))
-        : [...selPeriods];
-      const newsRequested = items.length
-        ? items.some((r) => r.news)
-        : selNews !== "no";
-      return fetch("/api/backtest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tickers: [...selTickers],
-          periods: periodList,
-          days: parseInt(days) || 20,
-          fee_pct: parseFloat(globalFee) || 0,
-          stop_loss_pct: parseFloat(globalSL) || 0,
-          buy_hold: buyHold,
-          refresh_data: refreshData,
-          // News knobs — only sent when the user actually wants news.
-          // The backend always produces "+ News" variants if news is in
-          // the DB, but these knobs control WHICH scorer / lookback /
-          // half-life it uses when computing the per-day sentiment.
-          ...(newsRequested
-            ? {
-                sentiment_method: sentimentMethod,
-                news_lookback_days: parseInt(newsLookback) || 7,
-                news_half_life_days: parseFloat(newsHalfLife) || 0,
-              }
-            : {}),
-        }),
-      }).then((r) => r.json());
+      const newsRequested = selNews !== "no";
+      const fams = [...selFamilies];
+      return api.backtest({
+        tickers: [...selTickers],
+        periods: [...selPeriods],
+        days: parseInt(days) || 20,
+        fee_pct: parseFloat(globalFee) || 0,
+        stop_loss_pct: parseFloat(globalSL) || 0,
+        sl_sweep: slSweep,
+        buy_hold: buyHold,
+        refresh_data: refreshData,
+        // Family filter — omit (= all) when nothing or everything selected.
+        ...(fams.length && fams.length !== nonBaselineFamilies.length
+          ? { models: includeBaselines ? [...fams, "baseline"] : fams }
+          : {}),
+        include_baselines: includeBaselines,
+        min_confidence: parseFloat(minConfidence) || 0,
+        turnover_fees: turnoverFees,
+        hold_days: parseInt(holdDays) || 1,
+        ...(newsRequested
+          ? {
+              sentiment_method: sentimentMethod,
+              news_lookback_days: parseInt(newsLookback) || 7,
+              news_half_life_days: parseFloat(newsHalfLife) || 0,
+            }
+          : {}),
+      });
     },
     onMutate: () => {
       setPolling(true);
-      // Immediately kick the progress query so we don't wait the full 500ms
-      // before the first frame paints.
       queryClient.invalidateQueries({ queryKey: ["backtestProgress"] });
     },
     onSuccess: () => {
       setSumTickers(new Set());
-      // A fresh run just landed — refresh the persisted-runs list so the
-      // new run_id appears in the picker.
+      setLoadedRunId(null); // prefer the fresh run over any loaded cached run
       queryClient.invalidateQueries({ queryKey: ["backtestRuns"] });
     },
     onSettled: () => setPolling(false),
   });
 
   // Prefer fresh run results, fall back to the loaded cached run.
-  // Each row's shape is identical between the two sources.
-  const allResults: Res[] = (runMut.data?.results as Res[] | undefined)
+  const results: Res[] = (runMut.data?.results as Res[] | undefined)
     ?? ((loadedRun?.response?.results as Res[] | undefined))
     ?? [];
   const fromCachedRun = !runMut.data && (loadedRun?.response?.results?.length ?? 0) > 0;
-  // Apply client-side model filter (backend always returns every variant
-  // produced by run_single_backtest; we narrow to what the user selected).
-  // Empty selection = show all (treat as "no filter").
-  const results: Res[] = useMemo(() => {
-    if (selModels.size === 0 || selModels.size === ALL_MODELS.length) return allResults;
-    const familyMatch = (modelName: string) => {
-      // model names from backend include suffixes like " + News", " SL2%",
-      // and "Enh." abbrev. Match against the selected variant labels.
-      const name = String(modelName);
-      for (const sel of selModels) {
-        if (name === sel) return true;
-        // Strip news / SL suffix for fuzzy match
-        if (name.startsWith(sel)) return true;
-      }
-      return false;
-    };
-    return allResults.filter((r) => familyMatch(String(r.model ?? "")));
-  }, [allResults, selModels]);
-
-  const newsData: Record<string, string[]> = runMut.data?.news ?? {};
 
   // Ticker toggle helpers
   const toggleTicker = (t: string) => {
-    const n = new Set(selTickers); if (n.has(t)) { if (n.size > 1) n.delete(t); } else n.add(t);
-    setSelTickers(n); if (!n.has(chartTicker)) setChartTicker([...n][0]);
+    const n = new Set(selTickers);
+    if (n.has(t)) { if (n.size > 1) n.delete(t); } else n.add(t);
+    setSelTickers(n);
+    if (!n.has(chartTicker)) setChartTicker([...n][0]);
   };
-  const setAllStocks = () => { const n = new Set(stockTickers); setSelTickers(n); setChartTicker(stockTickers[0]); };
-  const setAllCrypto = () => { const n = new Set(cryptoTickers); setSelTickers(n); setChartTicker(cryptoTickers[0]); };
-  const setAllTickers = () => { const n = new Set([...stockTickers, ...cryptoTickers]); setSelTickers(n); };
-
-  // Builder
-  const addSelected = () => {
-    const nv: boolean[] = selNews === "both" ? [false, true] : selNews === "yes" ? [true] : [false];
-    const fee = parseFloat(globalFee) || 0; const sl = parseFloat(globalSL) || 0;
-    const existing = new Set(items.map(bKey)); const toAdd: BItem[] = [];
-    for (const m of selModels) for (const p of selPeriods) for (const n of nv) {
-      const row: BItem = { model: m, period: p, news: n, fee, sl };
-      if (!existing.has(bKey(row))) { toAdd.push(row); existing.add(bKey(row)); }
-    }
-    if (toAdd.length > 0) setItems([...items, ...toAdd]);
-  };
-  const previewCount = useMemo(() => {
-    const nv = selNews === "both" ? [false, true] : selNews === "yes" ? [true] : [false];
-    const fee = parseFloat(globalFee) || 0; const sl = parseFloat(globalSL) || 0;
-    const existing = new Set(items.map(bKey)); let c = 0;
-    for (const m of selModels) for (const p of selPeriods) for (const n of nv)
-      if (!existing.has(bKey({ model: m, period: p, news: n, fee, sl }))) c++;
-    return c;
-  }, [selModels, selPeriods, selNews, globalFee, globalSL, items]);
+  const setClass = (syms: string[]) => { setSelTickers(new Set(syms)); if (syms[0]) setChartTicker(syms[0]); };
+  const setAllTickers = () => setSelTickers(new Set(allTickerSyms));
 
   const allResultTickers = useMemo(() => [...new Set(results.map((r) => String(r.ticker)))], [results]);
 
-  // Filtered results (OR within group, AND between groups)
   const filteredResults = useMemo(() => {
     const activeByGroup: Map<string, string[]> = new Map();
-    for (const g of FILTER_GROUPS) {
+    for (const g of filterGroups) {
       const active = g.tags.filter((t) => resFilters.has(t));
       if (active.length > 0) activeByGroup.set(g.label, active);
     }
-    // Ticker filters (not in FILTER_GROUPS)
     const tickerFilters = allResultTickers.filter((t) => resFilters.has(t.toUpperCase()));
     if (tickerFilters.length > 0) activeByGroup.set("Ticker", tickerFilters.map((t) => t.toUpperCase()));
 
@@ -289,7 +230,7 @@ export default function Backtest() {
         String(r.ticker ?? "").toLowerCase().includes(resSearch.toLowerCase());
       return matchFilters && matchSearch;
     });
-  }, [results, resFilters, resSearch, allResultTickers]);
+  }, [results, resFilters, resSearch, allResultTickers, filterGroups]);
 
   const sortedResults = useMemo(() => {
     return [...filteredResults].sort((a, b) => {
@@ -298,8 +239,11 @@ export default function Backtest() {
     });
   }, [filteredResults, resSort]);
 
-  const handleResSort = (col: string) => setResSort((p) => p.col === col ? { col, asc: !p.asc } : { col, asc: false });
+  const handleResSort = (col: string) => setResSort((p) => (p.col === col ? { col, asc: !p.asc } : { col, asc: false }));
   const toggleResFilter = (f: string) => { const n = new Set(resFilters); if (n.has(f)) n.delete(f); else n.add(f); setResFilters(n); };
+
+  const gateActive = (parseFloat(minConfidence) || 0) > 0;
+  const turnoverActive = turnoverFees || (parseInt(holdDays) || 1) > 1;
 
   // Summary with ties + ticker filter
   const summaryData = useMemo(() => {
@@ -309,12 +253,11 @@ export default function Backtest() {
       return sumTickers.has(String(r.ticker ?? ""));
     });
     if (pool.length === 0) return {};
-
     const out: Record<string, { models: { model: string; ticker: string; period: string; value: number }[] }> = {};
     for (const m of METRICS) {
       if (!sumMetrics.has(m.key)) continue;
-      const vals = pool.map((r) => ({ model: String(r.model), ticker: String(r.ticker), period: String(r.period), value: (r[m.key] as number) ?? (m.key === "max_drawdown" ? -999 : -999) }));
-      const bestVal = vals.reduce((best, v) => v.value > best ? v.value : best, -Infinity);
+      const vals = pool.map((r) => ({ model: String(r.model), ticker: String(r.ticker), period: String(r.period), value: (r[m.key] as number) ?? -999 }));
+      const bestVal = vals.reduce((best, v) => (v.value > best ? v.value : best), -Infinity);
       const epsilon = Math.abs(bestVal) * 0.001 || 0.0001;
       const ties = vals.filter((v) => Math.abs(v.value - bestVal) < epsilon);
       out[m.key] = { models: ties };
@@ -322,30 +265,22 @@ export default function Backtest() {
     return out;
   }, [results, sumMetrics, sumTickers]);
 
-  const filteredNews = useMemo(() => {
-    if (newsTicker === "all") return newsData;
-    return newsTicker in newsData ? { [newsTicker]: newsData[newsTicker] } : {};
-  }, [newsData, newsTicker]);
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <h2 style={{ fontSize: 20, fontWeight: 700 }}>Backtest</h2>
 
-      {/* Tickers */}
+      {/* Tickers — grouped by every asset class from /api/meta */}
       <Panel title="Tickers">
         <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: s.muted, minWidth: 50 }}>Stocks</span>
-            <Chip label="All Stocks" active={stockTickers.every((t) => selTickers.has(t))} onClick={setAllStocks} accent />
-            {stocks.map((t) => <Chip key={t.ticker} label={t.ticker} active={selTickers.has(t.ticker)} onClick={() => toggleTicker(t.ticker)} />)}
-          </div>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: s.muted, minWidth: 50 }}>Crypto</span>
-            <Chip label="All Crypto" active={cryptoTickers.every((t) => selTickers.has(t))} onClick={setAllCrypto} accent />
-            {crypto.map((t) => <Chip key={t.ticker} label={t.ticker} active={selTickers.has(t.ticker)} onClick={() => toggleTicker(t.ticker)} />)}
-          </div>
+          {tickersByClass.map((cls) => (
+            <div key={cls.key} style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: s.muted, minWidth: 80 }}>{cls.label}</span>
+              <Chip label={`All ${cls.label}`} active={cls.tickers.every((t) => selTickers.has(t))} onClick={() => setClass(cls.tickers)} accent />
+              {cls.tickers.map((t) => <Chip key={t} label={t} active={selTickers.has(t)} onClick={() => toggleTicker(t)} />)}
+            </div>
+          ))}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Chip label="All" active={selTickers.size === stockTickers.length + cryptoTickers.length} onClick={setAllTickers} accent />
+            <Chip label="All" active={selTickers.size === allTickerSyms.length && allTickerSyms.length > 0} onClick={setAllTickers} accent />
             <span style={{ fontSize: 11, color: s.muted }}>{selTickers.size} selected</span>
           </div>
         </div>
@@ -392,11 +327,6 @@ export default function Backtest() {
                 </option>
               ))}
             </select>
-            {loadedRunId && (
-              <span style={{ fontSize: 11, color: s.muted }}>
-                {loadedRun?.tickers?.length ?? 0} tickers
-              </span>
-            )}
           </div>
         </Panel>
       )}
@@ -405,8 +335,24 @@ export default function Backtest() {
       <Panel title="Backtest Builder">
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <SelRow label="Models">
-            <Chip label="All" active={selModels.size === ALL_MODELS.length} onClick={() => setSelModels(selModels.size === ALL_MODELS.length ? new Set() : new Set(ALL_MODELS))} accent />
-            {ALL_MODELS.map((m) => <Chip key={m} label={m} active={selModels.has(m)} onClick={() => { const n = new Set(selModels); if (n.has(m)) n.delete(m); else n.add(m); setSelModels(n); }} />)}
+            <Chip label="All" active={selFamilies.size === 0} onClick={() => setSelFamilies(new Set())} accent />
+            {nonBaselineFamilies.map((f) => (
+              <Chip
+                key={f.key}
+                label={f.available ? f.label : `${f.label} (n/a)`}
+                active={selFamilies.has(f.key)}
+                onClick={() => {
+                  if (!f.available) return;
+                  const n = new Set(selFamilies);
+                  if (n.has(f.key)) n.delete(f.key); else n.add(f.key);
+                  setSelFamilies(n);
+                }}
+              />
+            ))}
+            <span style={{ width: 12 }} />
+            <Chk label="Baselines" checked={includeBaselines} onChange={setIncludeBaselines} />
+            <HelpLink to="models/baselines" title="Baselines are dumb predictors (Always-Long, Random…) a real model must beat. Click for details." />
+            <HelpLink to="models/model-families" title="What each model family is (k-NN, LinReg, LSTM, Prophet, Chronos-2, Kronos)." />
           </SelRow>
           <SelRow label="Periods">
             <Chip label="All" active={selPeriods.size === PERIODS.length} onClick={() => setSelPeriods(selPeriods.size === PERIODS.length ? new Set() : new Set(PERIODS))} accent />
@@ -414,73 +360,76 @@ export default function Backtest() {
           </SelRow>
           <SelRow label="News">
             {(["no", "yes", "both"] as const).map((v) => <Chip key={v} label={v === "no" ? "Without" : v === "yes" ? "With" : "Both"} active={selNews === v} onClick={() => setSelNews(v)} accent={selNews === v} />)}
+            <HelpLink to="models/news-sentiment" title="Models can read recent headlines (sentiment) and nudge their call. Look-ahead-safe in backtests." />
           </SelRow>
           {selNews !== "no" && (
             <>
               <SelRow label="Scorer">
                 {(["vader", "finbert", "naive"] as const).map((m) => (
-                  <Chip
-                    key={m}
-                    label={m === "vader" ? "VADER" : m === "finbert" ? "FinBERT" : "Naive"}
-                    active={sentimentMethod === m}
-                    onClick={() => setSentimentMethod(m)}
-                    accent={sentimentMethod === m}
-                  />
+                  <Chip key={m} label={m === "vader" ? "VADER" : m === "finbert" ? "FinBERT" : "Naive"} active={sentimentMethod === m} onClick={() => setSentimentMethod(m)} accent={sentimentMethod === m} />
                 ))}
               </SelRow>
               <SelRow label="News cfg">
                 <NumField label="Lookback days" value={newsLookback} onChange={setNewsLookback} width={50} />
                 <NumField label="Half-life days" value={newsHalfLife} onChange={setNewsHalfLife} width={50} />
-                <span style={{ fontSize: 10, color: s.muted, alignSelf: "center" }}>
-                  0 = no decay (uniform within window)
-                </span>
+                <span style={{ fontSize: 10, color: s.muted, alignSelf: "center" }}>0 = no decay</span>
               </SelRow>
             </>
           )}
+          {/* Strategy / fee / risk knobs */}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-            <NumField label="Fee %" value={globalFee} onChange={setGlobalFee} width={60} />
-            <NumField label="SL %" value={globalSL} onChange={setGlobalSL} width={60} />
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <NumField label="Fee %" value={globalFee} onChange={setGlobalFee} width={60} />
+              <HelpLink to="strategy/trading-fees" title="Cost per side (buy + sell = 2×). Piles up over a daily-trading backtest." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <NumField label="SL %" value={globalSL} onChange={setGlobalSL} width={50} />
+              <HelpLink to="strategy/stop-loss" title="Auto-close a losing trade at this % drop. A risk control, not an edge. 0 = off." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <Chk label={`SL sweep ${meta ? "(" + meta.sl_sweep.join("/") + ")" : ""}`} checked={slSweep} onChange={setSlSweep} />
+              <HelpLink to="strategy/stop-loss-sweep" title="Run several stop-loss levels at once and compare. Overrides the single SL%." />
+            </span>
             <NumField label="Days" value={days} onChange={setDays} width={50} />
-            <Chk label="B&H benchmark" checked={buyHold} onChange={setBuyHold} />
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <NumField label="Min conf θ" value={minConfidence} onChange={setMinConfidence} width={50} />
+              <HelpLink to="strategy/confidence-gate-min-confidence" title="Sit out days the model isn't confident about. Helps only if confidence is calibrated." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <Chk label="Turnover fees" checked={turnoverFees} onChange={setTurnoverFees} />
+              <HelpLink to="strategy/turnover-fees" title="Charge fees only when the position changes, not every day. The realistic cost." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <NumField label="Hold days" value={holdDays} onChange={setHoldDays} width={50} />
+              <HelpLink to="strategy/hold-days" title="Hold a position N days before re-reading the signal. Accuracy is unchanged." />
+            </span>
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <Chk label="B&H benchmark" checked={buyHold} onChange={setBuyHold} />
+              <HelpLink to="strategy/buy-and-hold" title="The do-nothing benchmark. Beating it after fees is the real test." />
+            </span>
             <Chk label="Update data" checked={refreshData} onChange={setRefreshData} />
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Btn onClick={addSelected} label={previewCount > 0 ? `Add ${previewCount}` : "All added"} secondary={previewCount === 0} />
-            <span style={{ fontSize: 11, color: s.muted }}>{selModels.size}×{selPeriods.size}×{selNews === "both" ? 2 : 1}</span>
+          <div style={{ fontSize: 10, color: s.muted }}>
+            {gateActive && <span>Gate θ={minConfidence}: low-confidence days sit out. </span>}
+            {turnoverActive && <span>Turnover-aware fees{(parseInt(holdDays) || 1) > 1 ? `, ${holdDays}-day holds` : ""}. </span>}
+            {slSweep && <span>Stop-loss sweep overrides the single SL%. </span>}
           </div>
-          <div style={{ borderTop: `1px solid ${s.border}` }} />
-
-          {items.length > 0 ? (<>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <Chk label={`All (${items.length})`} checked={buildSel.size === items.length} onChange={() => setBuildSel(buildSel.size === items.length ? new Set() : new Set(items.map(bKey)))} />
-              {buildSel.size > 0 && <SmBtn label={`Remove (${buildSel.size})`} color={s.red} onClick={() => { setItems(items.filter((r) => !buildSel.has(bKey(r)))); setBuildSel(new Set()); }} />}
-              <SmBtn label="Clear" color={s.muted} onClick={() => { setItems([]); setBuildSel(new Set()); }} />
-              <span style={{ marginLeft: "auto", fontSize: 12, color: s.muted }}>{items.length} × {selTickers.size} = {items.length * selTickers.size} backtests</span>
-            </div>
-            <div style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${s.border}`, borderRadius: 6 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                <thead><tr style={{ borderBottom: `1px solid ${s.border}` }}>
-                  <th style={thSt}></th><th style={{ ...thSt, textAlign: "left" }}>Model</th><th style={thSt}>Period</th><th style={thSt}>News</th><th style={thSt}>Fee</th><th style={thSt}>SL</th>
-                </tr></thead>
-                <tbody>{items.map((r, i) => { const k = bKey(r); return (
-                  <tr key={i} style={{ borderBottom: `1px solid ${s.border}` }} onMouseEnter={(e) => { e.currentTarget.style.background = s.hover; }} onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}>
-                    <td style={{ padding: "3px 6px", width: 24 }}><input type="checkbox" checked={buildSel.has(k)} onChange={() => { const n = new Set(buildSel); if (n.has(k)) n.delete(k); else n.add(k); setBuildSel(n); }} style={{ accentColor: s.accent }} /></td>
-                    <td style={{ padding: "3px 6px", color: s.text }}>{r.model}</td>
-                    <td style={{ padding: "3px 6px", color: s.muted, textAlign: "center" }}>{r.period.toUpperCase()}</td>
-                    <td style={{ padding: "3px 6px", textAlign: "center", color: r.news ? s.green : s.muted }}>{r.news ? "✓" : "—"}</td>
-                    <td style={{ padding: "3px 6px", textAlign: "center", color: s.muted }}>{r.fee}%</td>
-                    <td style={{ padding: "3px 6px", textAlign: "center", color: r.sl > 0 ? s.text : s.muted }}>{r.sl > 0 ? `${r.sl}%` : "—"}</td>
-                  </tr>);})}</tbody>
-              </table>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <Btn onClick={() => runMut.mutate()} loading={runMut.isPending} label={runMut.isPending ? "Running..." : `Run ${items.length * selTickers.size}`} />
-            </div>
-          </>) : (<div style={{ textAlign: "center", padding: 16, color: s.muted, fontSize: 13 }}>Select models → Add → Run</div>)}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn
+              onClick={() => runMut.mutate()}
+              loading={runMut.isPending}
+              label={runMut.isPending ? "Running..." : `Run (${selTickers.size} × ${selPeriods.size || PERIODS.length})`}
+            />
+          </div>
         </div>
       </Panel>
 
       {runMut.isPending && <ProgressPanel p={progress} tick={nowTick} />}
+      {runMut.isError && (
+        <Panel title="Error"><div style={{ padding: 12, color: s.red, fontSize: 12 }}>{String((runMut.error as Error)?.message ?? runMut.error)}</div></Panel>
+      )}
 
       {/* Summary */}
       {results.length > 0 && (
@@ -533,33 +482,17 @@ export default function Backtest() {
               <span style={{ fontSize: 11, color: s.muted }}>{sortedResults.length}/{results.length}</span>
               <SmBtn label="Export CSV" color={s.muted} onClick={() => {
                 const cols = [
-                  "model", "ticker", "period",
-                  "total_return", "accuracy", "profit_factor", "sharpe_ratio",
-                  "max_drawdown", "buy_hold_return", "fee_pct", "stop_loss_pct",
-                  // Per-day sentiment summary so the user can quickly see
-                  // "did this model see news, and how much?" outside the UI.
-                  "mean_sentiment", "sentiment_active_days",
+                  "model", "ticker", "period", "total_return", "accuracy", "profit_factor",
+                  "sharpe_ratio", "max_drawdown", "buy_hold_return", "fee_pct", "stop_loss_pct",
+                  "min_confidence", "coverage", "turnover_count", "fees_paid",
                 ];
-                // The API response has per-day sentiment in r.days[]; the
-                // mean_sentiment / sentiment_active_days columns are derived
-                // client-side so the CSV matches what the row shows in the UI.
                 const h = cols.join(",") + "\n";
-                const csv = sortedResults.map((r) => {
-                  const days = (r.days as { sentiment_score?: number }[] | undefined) ?? [];
-                  const sents = days.map((d) => d.sentiment_score ?? 0);
-                  const meanS = sents.length ? sents.reduce((a, b) => a + b, 0) / sents.length : 0;
-                  const activeS = sents.filter((x) => x !== 0).length;
-                  const enriched: Record<string, unknown> = {
-                    ...r,
-                    mean_sentiment: meanS.toFixed(4),
-                    sentiment_active_days: activeS,
-                  };
-                  return cols.map((c) => enriched[c] ?? "").join(",");
-                }).join("\n");
-                const b = new Blob([h + csv], { type: "text/csv" }); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `backtest_${days}d.csv`; a.click();
+                const csv = sortedResults.map((r) => cols.map((c) => r[c] ?? "").join(",")).join("\n");
+                const b = new Blob([h + csv], { type: "text/csv" });
+                const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `backtest_${days}d.csv`; a.click();
               }} />
             </div>
-            {FILTER_GROUPS.map((g) => (
+            {filterGroups.map((g) => (
               <div key={g.label} style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: s.muted, minWidth: 55, textAlign: "right", paddingRight: 4 }}>{g.label}</span>
                 {g.tags.map((t) => <Chip key={t} label={t} active={resFilters.has(t)} onClick={() => toggleResFilter(t)} />)}
@@ -573,7 +506,7 @@ export default function Backtest() {
             )}
           </div>
           <div style={{ maxHeight: 500, overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: s.mono, fontSize: 11, minWidth: 900 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: s.mono, fontSize: 11, minWidth: 980 }}>
               <thead><tr style={{ borderBottom: `1px solid ${s.border}` }}>
                 <STh col="model" l="Model" al="left" sort={resSort} onSort={handleResSort} />
                 <STh col="ticker" l="Ticker" sort={resSort} onSort={handleResSort} />
@@ -585,18 +518,19 @@ export default function Backtest() {
                 <STh col="max_drawdown" l="DD" sort={resSort} onSort={handleResSort} />
                 <STh col="buy_hold_return" l="B&H" sort={resSort} onSort={handleResSort} />
                 <STh col="win_trades" l="W/L" sort={resSort} onSort={handleResSort} />
+                {gateActive && <STh col="coverage" l="Cov." sort={resSort} onSort={handleResSort} />}
+                {turnoverActive && <STh col="turnover_count" l="Turn." sort={resSort} onSort={handleResSort} />}
                 <th style={rTh}>Sent</th>
                 <th style={rTh}>Beat?</th>
               </tr></thead>
               <tbody>{sortedResults.map((r, i) => {
-                if (r.error) return <tr key={i} style={{ borderBottom: `1px solid ${s.border}`, opacity: 0.4 }}><td style={{ padding: "4px 8px" }} colSpan={12}>{String(r.model)} — {String(r.error)}</td></tr>;
+                if (r.error) return <tr key={i} style={{ borderBottom: `1px solid ${s.border}`, opacity: 0.4 }}><td style={{ padding: "4px 8px" }} colSpan={14}>{String(r.model)} — {String(r.error)}</td></tr>;
                 const ret = (r.total_return as number) ?? 0; const bh = (r.buy_hold_return as number) ?? 0; const beat = ret > bh;
-                // Mean per-day sentiment fed into this row's model. Non-zero
-                // only for "+ News" variants. Per-day data is in r.days[].
-                const days = (r.days as { sentiment_score?: number }[] | undefined) ?? [];
-                const sentiments = days.map((d) => d.sentiment_score ?? 0);
+                const days_ = (r.days as { sentiment_score?: number }[] | undefined) ?? [];
+                const sentiments = days_.map((d) => d.sentiment_score ?? 0);
                 const meanSent = sentiments.length ? sentiments.reduce((a, b) => a + b, 0) / sentiments.length : 0;
                 const activeDays = sentiments.filter((x) => x !== 0).length;
+                const cov = (r.coverage as number) ?? 1;
                 return (
                   <tr key={i} style={{ borderBottom: `1px solid ${s.border}` }} onMouseEnter={(e) => { e.currentTarget.style.background = s.hover; }} onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}>
                     <td style={{ padding: "4px 8px", color: s.text, whiteSpace: "nowrap" }}>{String(r.model)}</td>
@@ -609,41 +543,16 @@ export default function Backtest() {
                     <td style={{ padding: "4px 8px", textAlign: "center", color: s.red }}>{pct((r.max_drawdown as number) * 100)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center", color: bh >= 0 ? s.green : s.red }}>{pct(bh * 100)}</td>
                     <td style={{ padding: "4px 8px", textAlign: "center" }}>{String(r.win_trades)}/{String(r.loss_trades)}</td>
-                    <td
-                      title={`mean per-day sentiment · active days: ${activeDays}/${sentiments.length}`}
-                      style={{
-                        padding: "4px 8px",
-                        textAlign: "center",
-                        color: meanSent > 0 ? s.green : meanSent < 0 ? s.red : s.muted,
-                      }}
-                    >
+                    {gateActive && <td style={{ padding: "4px 8px", textAlign: "center", color: s.muted }}>{(cov * 100).toFixed(0)}%</td>}
+                    {turnoverActive && <td style={{ padding: "4px 8px", textAlign: "center", color: s.muted }}>{String(r.turnover_count ?? "—")}</td>}
+                    <td title={`mean per-day sentiment · active days: ${activeDays}/${sentiments.length}`}
+                      style={{ padding: "4px 8px", textAlign: "center", color: meanSent > 0 ? s.green : meanSent < 0 ? s.red : s.muted }}>
                       {activeDays === 0 ? "—" : (meanSent >= 0 ? "+" : "") + meanSent.toFixed(2)}
                     </td>
                     <td style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: beat ? s.green : s.red }}>{beat ? "✓" : "✗"}</td>
                   </tr>);
               })}</tbody>
             </table>
-          </div>
-        </Panel>
-      )}
-
-      {/* News */}
-      {Object.keys(newsData).length > 0 && (
-        <Panel title="News Headlines">
-          <div style={{ padding: "8px 12px", borderBottom: `1px solid ${s.border}`, display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: s.muted }}>Ticker:</span>
-            <select value={newsTicker} onChange={(e) => setNewsTicker(e.target.value)} style={{ ...selSt, fontSize: 11 }}>
-              <option value="all">All</option>
-              {Object.keys(newsData).map((t) => <option key={t} value={t}>{t} ({newsData[t].length})</option>)}
-            </select>
-          </div>
-          <div style={{ padding: 12, maxHeight: 200, overflowY: "auto" }}>
-            {Object.entries(filteredNews).map(([tk, hl]) => (
-              <div key={tk}>
-                {Object.keys(filteredNews).length > 1 && <div style={{ fontSize: 11, fontWeight: 700, color: s.accent, marginTop: 4, marginBottom: 2 }}>{tk}</div>}
-                {hl.map((h, i) => <div key={i} style={{ fontSize: 11, color: s.text, padding: "3px 0", borderBottom: `1px solid ${s.border}` }}>{h}</div>)}
-              </div>
-            ))}
           </div>
         </Panel>
       )}
@@ -655,7 +564,7 @@ export default function Backtest() {
 function SelRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (<div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
     <span style={{ fontSize: 12, color: s.muted, minWidth: 55, paddingTop: 4 }}>{label}</span>
-    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>{children}</div>
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1, alignItems: "center" }}>{children}</div>
   </div>);
 }
 function Pills({ values, selected, onSelect }: { values: string[]; selected: string; onSelect: (v: string) => void }) {
@@ -690,30 +599,19 @@ function STh({ col, l, al, sort, onSort }: { col: string; l: string; al?: string
   return (<th onClick={() => onSort(col)} style={{ ...rTh, textAlign: (al ?? "center") as "left" | "center", cursor: "pointer", userSelect: "none", color: a ? s.text : s.muted }}>
     {l}{a && <span style={{ marginLeft: 3, opacity: 0.6 }}>{sort.asc ? "↑" : "↓"}</span>}</th>);
 }
-function ProgressPanel({
-  p,
-  tick,
-}: {
-  p: Awaited<ReturnType<typeof api.backtestProgress>> | undefined;
-  tick: number;
-}) {
-  // `tick` is read so the linter sees it as used and the component
-  // re-renders on each second-level tick. The actual value is irrelevant.
+function ProgressPanel({ p, tick }: { p: Record<string, unknown> | undefined; tick: number }) {
   void tick;
-  const total = p?.total_units ?? 0;
-  const done = p?.completed_units ?? 0;
+  const total = (p?.total_units as number) ?? 0;
+  const done = (p?.completed_units as number) ?? 0;
   const fraction = total > 0 ? done / total : 0;
-  const elapsed = p?.started_at ? Math.max(0, Math.floor((Date.now() - new Date(p.started_at).getTime()) / 1000)) : 0;
-  const m = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
+  const startedAt = p?.started_at as string | undefined;
+  const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)) : 0;
+  const m = Math.floor(elapsed / 60); const sec = elapsed % 60;
   const elapsedStr = m > 0 ? `${m}m ${sec}s` : `${sec}s`;
-  // Rough ETA based on per-unit average so far
   const etaStr = (() => {
     if (done < 1 || elapsed < 1 || total <= done) return "—";
-    const perUnit = elapsed / done;
-    const remaining = Math.round(perUnit * (total - done));
-    const mm = Math.floor(remaining / 60);
-    const ss = remaining % 60;
+    const perUnit = elapsed / done; const remaining = Math.round(perUnit * (total - done));
+    const mm = Math.floor(remaining / 60); const ss = remaining % 60;
     return mm > 0 ? `~${mm}m ${ss}s` : `~${ss}s`;
   })();
   return (
@@ -722,28 +620,23 @@ function ProgressPanel({
         <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
           <span style={{ color: s.muted }}>Ticker:</span>
           <strong style={{ color: s.text, fontFamily: s.mono }}>
-            {p?.ticker ?? "—"} ({p?.ticker_idx ?? 0}/{p?.ticker_total ?? 0})
+            {String(p?.ticker ?? "—")} ({(p?.ticker_idx as number) ?? 0}/{(p?.ticker_total as number) ?? 0})
           </strong>
           <span style={{ color: s.muted }}>Period:</span>
           <strong style={{ color: s.text, fontFamily: s.mono }}>
-            {p?.period ?? "—"} ({p?.period_idx ?? 0}/{p?.period_total ?? 0})
+            {String(p?.period ?? "—")} ({(p?.period_idx as number) ?? 0}/{(p?.period_total as number) ?? 0})
           </strong>
           <span style={{ color: s.muted, marginLeft: "auto" }}>
             Elapsed: <span style={{ color: s.text }}>{elapsedStr}</span>
             {" · ETA: "}<span style={{ color: s.text }}>{etaStr}</span>
-            {" · Rows: "}<span style={{ color: s.accent }}>{p?.results_so_far ?? 0}</span>
+            {" · Rows: "}<span style={{ color: s.accent }}>{(p?.results_so_far as number) ?? 0}</span>
           </span>
         </div>
         <div style={{ height: 8, borderRadius: 4, background: s.hover, overflow: "hidden", border: `1px solid ${s.border}` }}>
-          <div style={{
-            width: `${fraction * 100}%`,
-            height: "100%",
-            background: s.accent,
-            transition: "width 0.3s ease",
-          }} />
+          <div style={{ width: `${fraction * 100}%`, height: "100%", background: s.accent, transition: "width 0.3s ease" }} />
         </div>
         <div style={{ fontSize: 10, color: s.muted, fontStyle: "italic" }}>
-          Backend stage: <strong>{p?.stage ?? "preparing"}</strong>
+          Backend stage: <strong>{String(p?.stage ?? "preparing")}</strong>
         </div>
       </div>
     </Panel>
@@ -752,26 +645,18 @@ function ProgressPanel({
 
 function fmtRel(iso: string): string {
   try {
-    const d = new Date(iso);
-    const ms = Date.now() - d.getTime();
+    const d = new Date(iso); const ms = Date.now() - d.getTime();
     if (isNaN(ms)) return iso;
-    const sec = Math.floor(ms / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
+    const sec = Math.floor(ms / 1000); if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60); if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60); if (hr < 24) return `${hr}h ago`;
     return `${Math.floor(hr / 24)}d ago`;
   } catch { return iso; }
 }
-
 function fmtShortDate(iso: string | undefined): string {
   if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch { return iso; }
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
 const selSt: React.CSSProperties = { padding: "6px 10px", borderRadius: 6, fontSize: 13, fontWeight: 600, background: s.surface, color: s.text, border: `1px solid ${s.border}`, cursor: "pointer" };
-const thSt: React.CSSProperties = { padding: "5px 6px", fontSize: 10, fontWeight: 500, color: s.muted, borderBottom: `1px solid ${s.border}`, textAlign: "center", position: "sticky", top: 0, background: s.surface };
 const rTh: React.CSSProperties = { padding: "5px 8px", fontSize: 10, fontWeight: 500, color: s.muted, borderBottom: `1px solid ${s.border}`, textAlign: "center", position: "sticky", top: 0, background: s.surface };

@@ -2,12 +2,15 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, NavLink, Outlet } from "react-router-dom";
-import Dashboard from "./pages/Dashboard";
-import Predict from "./pages/Predict";
-import Backtest from "./pages/Backtest";
-import Training from "./pages/Training";
-import Analysis from "./pages/Analysis";
-import Settings from "./pages/Settings";
+import Dashboard from "./pages/dashboard";
+import Predict from "./pages/predict";
+import Backtest from "./pages/backtest";
+import OOS from "./pages/oos";
+import OOSCompare from "./pages/ooscompare";
+import Training from "./pages/training";
+import Analysis from "./pages/analysis";
+import Settings from "./pages/settings";
+import Help from "./pages/help";
 import { s } from "./components/ui";
 import "./app.css";
 
@@ -19,9 +22,12 @@ const tabs = [
   { to: "/dashboard", label: "Dashboard", icon: "📊" },
   { to: "/predict", label: "Predict", icon: "🎯" },
   { to: "/backtest", label: "Backtest", icon: "📈" },
+  { to: "/oos", label: "OOS", icon: "🎲" },
+  { to: "/oos-compare", label: "OOS Compare", icon: "⚖️" },
   { to: "/training", label: "Training", icon: "🧠" },
   { to: "/analysis", label: "Analysis", icon: "📝" },
   { to: "/settings", label: "Settings", icon: "⚙" },
+  { to: "/help", label: "Help", icon: "❓" },
 ];
 
 function Layout() {
@@ -70,9 +76,12 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/predict" element={<Predict />} />
             <Route path="/backtest" element={<Backtest />} />
+            <Route path="/oos" element={<OOS />} />
+            <Route path="/oos-compare" element={<OOSCompare />} />
             <Route path="/training" element={<Training />} />
             <Route path="/analysis" element={<Analysis />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/help" element={<Help />} />
           </Route>
         </Routes>
       </BrowserRouter>

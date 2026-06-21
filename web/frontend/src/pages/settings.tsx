@@ -37,7 +37,8 @@ export default function Settings() {
         default_backtest_days: 20,
         knn_k: 5,
         knn_enhanced_k: 5,
-        lstm_preset: "standard",
+        lstm_preferred_preset: "standard",
+        lstm_fallback: true,
         log_mode: "gui",
       };
       return api.updateSettings(defaults);
@@ -144,7 +145,7 @@ export default function Settings() {
       <Panel title="LSTM Neural Network">
         <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 20 }}>
           <Field label="Preferred Model" help="Which trained model to use for predictions. Higher = better but slower to train">
-            <Select value={form.lstm_preset} onChange={(v) => update("lstm_preset", v)}
+            <Select value={form.lstm_preferred_preset} onChange={(v) => update("lstm_preferred_preset", v)}
               options={[
                 { value: "cluster", label: "Cluster (best)" },
                 { value: "standard", label: "Standard" },

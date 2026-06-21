@@ -5,9 +5,12 @@ const tabs = [
   { to: "/dashboard", label: "Dashboard", icon: "📊" },
   { to: "/predict", label: "Predict", icon: "🎯" },
   { to: "/backtest", label: "Backtest", icon: "📈" },
+  { to: "/oos", label: "OOS", icon: "🎲" },
+  { to: "/oos-compare", label: "OOS Compare", icon: "⚖️" },
   { to: "/training", label: "Training", icon: "🧠" },
   { to: "/analysis", label: "Analysis", icon: "📝" },
   { to: "/settings", label: "Settings", icon: "⚙" },
+  { to: "/help", label: "Help", icon: "❓" },
 ];
 
 export default function Layout() {

@@ -2,9 +2,9 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { OHLCVRow, TickerInfo } from "../lib/api";
-import PriceChart from "../components/PriceChart";
-import DataTable from "../components/DataTable";
-import type { Column } from "../components/DataTable";
+import PriceChart from "../components/priceChart";
+import DataTable from "../components/datatable";
+import type { Column } from "../components/datatable";
 import { s, Panel, Btn, usd, pct } from "../components/ui";
 
 const PERIODS = ["1mo", "1y", "2y", "5y", "max", "custom"] as const;
@@ -20,6 +20,14 @@ export default function Dashboard() {
     queryKey: ["tickers"],
     queryFn: api.getTickers,
   });
+  const { data: meta } = useQuery({ queryKey: ["meta"], queryFn: api.getMeta, staleTime: 60_000 });
+  // Asset classes from the registry, in config order. Falls back to deriving
+  // classes from whatever asset_types the tickers carry until meta loads.
+  const assetClasses = useMemo(
+    () =>
+      (meta?.asset_classes ?? []).map((ac) => ({ key: ac.key, label: ac.label })),
+    [meta],
+  );
 
   const { data: tickerData, isLoading, error } = useQuery({
     queryKey: ["tickerData", ticker, period],
@@ -95,7 +103,7 @@ export default function Dashboard() {
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Controls */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <TickerSelect tickers={tickers ?? []} value={ticker} onChange={setTicker} />
+        <TickerSelect tickers={tickers ?? []} assetClasses={assetClasses} value={ticker} onChange={setTicker} />
         <PeriodTabs value={period} onChange={setPeriod} />
         {period === "custom" && (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -119,7 +127,7 @@ export default function Dashboard() {
       )}
 
       {/* News refresh — bulk-pull historical headlines for "+ News" backtests */}
-      <NewsRefreshPanel currentTicker={ticker} tickers={tickers ?? []} />
+      <NewsRefreshPanel currentTicker={ticker} tickers={tickers ?? []} assetClasses={assetClasses} />
 
 
       {/* Stats */}
@@ -160,16 +168,33 @@ export default function Dashboard() {
 /* Local helper components                                             */
 /* ------------------------------------------------------------------ */
 
-function TickerSelect({ tickers, value, onChange }: { tickers: TickerInfo[]; value: string; onChange: (v: string) => void }) {
-  const stocks = tickers.filter((t) => t.asset_type === "stock");
-  const crypto = tickers.filter((t) => t.asset_type === "crypto");
+function TickerSelect({
+  tickers, assetClasses, value, onChange,
+}: {
+  tickers: TickerInfo[];
+  assetClasses: { key: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  // One optgroup per asset class from the registry (Stocks / Crypto /
+  // Commodities / Indices / FX). Before meta loads, fall back to a flat list.
+  const classes = assetClasses.length
+    ? assetClasses
+    : [...new Set(tickers.map((t) => t.asset_type))].map((k) => ({ key: k, label: k }));
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} style={{
       padding: "8px 12px", borderRadius: 6, fontSize: 14, fontWeight: 600,
       background: s.surface, color: s.text, border: `1px solid ${s.border}`, cursor: "pointer", minWidth: 140,
     }}>
-      {stocks.length > 0 && <optgroup label="Stocks">{stocks.map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}</optgroup>}
-      {crypto.length > 0 && <optgroup label="Crypto">{crypto.map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}</optgroup>}
+      {classes.map((cls) => {
+        const syms = tickers.filter((t) => t.asset_type === cls.key);
+        if (!syms.length) return null;
+        return (
+          <optgroup key={cls.key} label={cls.label}>
+            {syms.map((t) => <option key={t.ticker} value={t.ticker}>{t.ticker}</option>)}
+          </optgroup>
+        );
+      })}
     </select>
   );
 }
@@ -238,29 +263,33 @@ function StatsCards({ rows }: { rows: OHLCVRow[] }) {
 // News refresh panel — equivalent to the CLI's `refresh.py --news-source ...`.
 // ----------------------------------------------------------------------
 
-type NewsScope = "this" | "stocks" | "crypto" | "all";
-
+// Scope is "this" (current ticker), "all", or an asset-class key from the
+// registry (stock / crypto / commodity / index / fx).
 function NewsRefreshPanel({
   currentTicker,
   tickers,
+  assetClasses,
 }: {
   currentTicker: string;
   tickers: TickerInfo[];
+  assetClasses: { key: string; label: string }[];
 }) {
-  const [scope, setScope] = useState<NewsScope>("this");
+  const [scope, setScope] = useState<string>("this");
   const [method, setMethod] = useState<"vader" | "finbert" | "naive">("vader");
   const [sources, setSources] = useState<Set<"yahoo" | "gdelt">>(new Set(["yahoo"]));
   const [historyDays, setHistoryDays] = useState("30");
 
-  const stockTickers = tickers.filter((t) => t.asset_type === "stock").map((t) => t.ticker);
-  const cryptoTickers = tickers.filter((t) => t.asset_type === "crypto").map((t) => t.ticker);
+  // Only show class chips that actually have tickers present.
+  const presentClasses = useMemo(
+    () => assetClasses.filter((ac) => tickers.some((t) => t.asset_type === ac.key)),
+    [assetClasses, tickers],
+  );
 
   const resolvedTickers = useMemo(() => {
     if (scope === "this") return [currentTicker];
-    if (scope === "stocks") return stockTickers;
-    if (scope === "crypto") return cryptoTickers;
-    return [...stockTickers, ...cryptoTickers];
-  }, [scope, currentTicker, stockTickers, cryptoTickers]);
+    if (scope === "all") return tickers.map((t) => t.ticker);
+    return tickers.filter((t) => t.asset_type === scope).map((t) => t.ticker);
+  }, [scope, currentTicker, tickers]);
 
   const mut = useMutation({
     mutationFn: () =>
@@ -285,14 +314,11 @@ function NewsRefreshPanel({
       <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, color: s.muted, minWidth: 60 }}>Scope</span>
-          {(["this", "stocks", "crypto", "all"] as const).map((sc) => (
-            <NewsChip
-              key={sc}
-              label={sc === "this" ? currentTicker : sc === "all" ? "All" : sc[0].toUpperCase() + sc.slice(1)}
-              active={scope === sc}
-              onClick={() => setScope(sc)}
-            />
+          <NewsChip label={currentTicker} active={scope === "this"} onClick={() => setScope("this")} />
+          {presentClasses.map((ac) => (
+            <NewsChip key={ac.key} label={ac.label} active={scope === ac.key} onClick={() => setScope(ac.key)} />
           ))}
+          <NewsChip label="All" active={scope === "all"} onClick={() => setScope("all")} />
           <span style={{ fontSize: 10, color: s.muted }}>
             ({resolvedTickers.length} ticker{resolvedTickers.length !== 1 ? "s" : ""})
           </span>
