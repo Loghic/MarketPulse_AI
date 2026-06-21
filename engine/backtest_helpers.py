@@ -215,6 +215,7 @@ def run_single_backtest(
     news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
     sentiment_method: str | None = None,
     models: list[str] | None = None,
+    include_baselines: bool = True,
 ):
     """
     Run backtest for one ticker × one period. Returns list of BacktestResult.
@@ -338,6 +339,15 @@ def run_single_backtest(
                 f"Train: uv run python train.py --ticker {ticker} --period {period}"
             )
 
+    # Naive baselines (Phase 1.2): the bar real models must clear.
+    # They ignore sentiment_score so we only emit a plain (non-News)
+    # variant for each — no "+ News" sibling.
+    if include_baselines:
+        from engine.baseline_models import default_baseline_variants
+
+        for baseline_model, label in default_baseline_variants():
+            variants.append((baseline_model, label, False, None))
+
     # Forecasting models (Prophet, Chronos-2, …): one plain variant each,
     # plus "+ News" when news exists. Flows through the same SL-duplication
     # and Backtester.run loop below, unchanged.
@@ -412,7 +422,17 @@ def _family_key(name: str) -> str:
 
 
 def _model_family(name: str) -> str:
-    for fam in ("k-NN", "LinReg", "LSTM", "Prophet", "Chronos-2", "Chronos", "TiRex", "Kronos"):
+    for fam in (
+        "k-NN",
+        "LinReg",
+        "LSTM",
+        "Prophet",
+        "Chronos-2",
+        "Chronos",
+        "TiRex",
+        "Kronos",
+        "Baseline",
+    ):
         if name.startswith(fam):
             return "Chronos-2" if fam == "Chronos" else fam
     return "Other"

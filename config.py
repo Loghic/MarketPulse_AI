@@ -279,5 +279,7 @@ MODEL_FAMILY_LABELS: dict[str, str] = {
     "prophet": "Prophet",
     "chronos": "Chronos-2",
     "kronos": "Kronos",
+    # Phase-1.2 naive baselines — every row has the "Baseline" prefix.
+    "baseline": "Baseline",
 }
 MODEL_FAMILIES = list(MODEL_FAMILY_LABELS)  # --models choices: ["knn", "linreg", ...]

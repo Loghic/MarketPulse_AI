@@ -117,6 +117,7 @@ def run_ticker_comparison(
     news_half_life_days: float = DEFAULT_NEWS_HALF_LIFE_DAYS,
     sentiment_method: str | None = None,
     models=None,
+    include_baselines: bool = True,
 ):
     """Run compare-periods for one ticker, save CSV, return best combo."""
 
@@ -144,6 +145,7 @@ def run_ticker_comparison(
             news_half_life_days=news_half_life_days,
             sentiment_method=sentiment_method,
             models=models,
+            include_baselines=include_baselines,
         )
         if not results:
             filtered = filter_by_period(df, period)
@@ -329,6 +331,14 @@ def main():
         default=None,
         help="Only run these model families (default: all). e.g. --models knn lstm chronos",
     )
+    parser.add_argument(
+        "--no-baselines",
+        action="store_true",
+        help=(
+            "Skip the naive baselines (AlwaysLong, PreviousDay, 5/20-Day "
+            "Momentum, Random). Default: baselines included."
+        ),
+    )
     args = parser.parse_args()
 
     tickers = resolve_scope(args, default=ALL_TICKERS)
@@ -391,6 +401,7 @@ def main():
             news_half_life_days=args.news_half_life_days,
             sentiment_method=args.sentiment_method,
             models=args.models,
+            include_baselines=not args.no_baselines,
         )
         if best:
             best_per_ticker.append(best)

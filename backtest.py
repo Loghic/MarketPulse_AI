@@ -65,6 +65,7 @@ def run_backtest(
     no_refresh=False,
     timing=False,
     models=None,
+    include_baselines: bool = True,
 ):
     """Standard single-period backtest mode."""
     api = StockAppAPI()
@@ -113,7 +114,15 @@ def run_backtest(
             print(f"  Sentiment: {sl} ({sentiment_score:+.2f})")
 
         results = run_single_backtest(
-            api, backtester, ticker, df, period, n_days, full, models=models
+            api,
+            backtester,
+            ticker,
+            df,
+            period,
+            n_days,
+            full,
+            models=models,
+            include_baselines=include_baselines,
         )
         if not results:
             continue
@@ -174,6 +183,7 @@ def run_compare_periods(
     timing=False,
     periods=None,
     models=None,
+    include_baselines: bool = True,
 ):
     """Run backtest across all periods, find optimal model+period."""
     periods = periods or list(ALL_PERIODS)
@@ -205,7 +215,15 @@ def run_compare_periods(
         period_results = {}
         for period in periods:
             results = run_single_backtest(
-                api, backtester, ticker, df, period, n_days, full=False, models=models
+                api,
+                backtester,
+                ticker,
+                df,
+                period,
+                n_days,
+                full=False,
+                models=models,
+                include_baselines=include_baselines,
             )
             if results:
                 period_results[period] = results
@@ -474,6 +492,14 @@ def main():
         default=None,
         help="Only run these model families (default: all). e.g. --models knn lstm chronos",
     )
+    parser.add_argument(
+        "--no-baselines",
+        action="store_true",
+        help=(
+            "Skip the naive baselines (AlwaysLong, PreviousDay, 5/20-Day "
+            "Momentum, Random). Default: baselines included."
+        ),
+    )
     parser.add_argument("--output", type=str, default=None, help="Export to CSV or JSON")
     parser.add_argument(
         "--fees",
@@ -511,6 +537,7 @@ def main():
             args.timing,
             periods=args.periods,
             models=args.models,
+            include_baselines=not args.no_baselines,
         )
     else:
         run_backtest(
@@ -525,6 +552,7 @@ def main():
             args.no_refresh,
             args.timing,
             models=args.models,
+            include_baselines=not args.no_baselines,
         )
 
 
