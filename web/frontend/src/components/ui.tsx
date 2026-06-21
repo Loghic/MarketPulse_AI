@@ -2,6 +2,8 @@
  * ui.tsx – Shared UI primitives reused across all pages.
  */
 
+import { Link } from "react-router-dom";
+
 export const s = {
   surface: "#111827",
   border: "#1e293b",
@@ -99,6 +101,39 @@ export function LoadingBox({ height = 350 }: { height?: number }) {
     >
       Loading...
     </div>
+  );
+}
+
+/**
+ * HelpLink — a small "?" that deep-links into the Help tab at a specific
+ * concept section. ``to`` is "<docSlug>/<sectionSlug>", e.g. "strategy/stop-loss".
+ * ``title`` becomes the hover tooltip (a one-line plain-language summary), so
+ * the user gets a quick answer on hover and the full explanation on click.
+ */
+export function HelpLink({ to, title }: { to: string; title: string }) {
+  return (
+    <Link
+      to={`/help#${to}`}
+      title={title}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 14,
+        height: 14,
+        borderRadius: "50%",
+        border: `1px solid ${s.border}`,
+        color: s.muted,
+        fontSize: 9,
+        fontWeight: 700,
+        textDecoration: "none",
+        cursor: "help",
+        lineHeight: 1,
+      }}
+    >
+      ?
+    </Link>
   );
 }
 

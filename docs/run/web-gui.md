@@ -19,3 +19,9 @@ chmod +x web/dev.sh
 
 See [docs/web.md](../web.md) for the full API surface and per-page
 documentation.
+
+End-user concept docs (what stop-loss / OOS / baselines / the metrics mean)
+live as markdown in [`web/docs/`](../../web/docs/) and render inside the app
+under the **Help** tab (served by `GET /api/docs`). Those are written for
+someone with no trading/ML background; this `docs/` tree is the developer
+companion.

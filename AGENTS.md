@@ -39,30 +39,39 @@ web/                        → Web GUI (FastAPI + React)
     app.py                  → FastAPI main (CORS, logging, Swagger at /docs)
     schemas.py              → Pydantic request/response models
     routes/
-      data.py               → GET tickers, GET OHLCV (limit=0=all), POST refresh
-      predict.py            → POST /run (unified per-model config), /cached, /historical
-      backtest.py           → POST backtest (delegates to engine)
+      meta.py               → GET /api/meta — config-driven options (model families w/ availability, asset classes, benchmarks, periods, SL/confidence sweeps, defaults). Single source so the frontend never hardcodes lists.
+      data.py               → GET tickers (asset_type via config.asset_type_of), GET OHLCV, POST refresh / refresh-news
+      predict.py            → POST /run (unified per-model config), /cached, /historical, /info (availability-gated variants incl. Prophet/Chronos/Kronos)
+      backtest.py           → POST backtest (+ models/include_baselines/min_confidence/turnover_fees/hold_days/sl_levels/sl_sweep), /progress, /runs
+      oos.py                → POST /api/oos (harness run + persist), /progress, /runs, /runs/{id}
       train.py              → GET models inventory, POST start training
       settings.py           → GET/PUT/PATCH persistent user settings
       analysis.py           → POST news-comparison (for academic paper)
+      docs.py               → GET /api/docs + /api/docs/{slug} — serves web/docs/*.md to the Help tab
+  docs/                     → ★ END-USER concept glossary (markdown): getting-started, models, strategy, metrics, oos. Plain-language, no architecture/CLI. Rendered by the Help tab. (Separate from the repo-root docs/ dev tree.)
   frontend/
     package.json            → React 19 + Vite + TS + TanStack Query
     vite.config.ts          → Dev proxy /api → backend:8000
     src/
-      main.tsx              → Entry + router + layout (6 tabs)
+      main.tsx              → ★ Entry + router + layout (8 tabs). The REAL entry (App.tsx + components/layout.tsx are a dead duplicate). Imports use on-disk lowercase filenames (avoid TS1261 casing errors).
       app.css               → Dark theme, no spinbox arrows
-      lib/api.ts            → Typed fetch client for all endpoints
+      lib/api.ts            → Typed fetch client for all endpoints (incl. getMeta, oos*, backtest progress/runs)
       components/
         ui.tsx              → Panel, Btn, LoadingBox, pct(), usd()
-        PriceChart.tsx      → Reusable zoomable SVG chart (line/candle, pan bar)
-        DataTable.tsx       → Reusable sortable/filterable/paginated table
+        priceChart.tsx      → Reusable zoomable SVG chart (line/candle, pan bar)
+        datatable.tsx       → Reusable sortable/filterable/paginated table
       pages/
-        Dashboard.tsx       → ★ Complete: chart, stats, OHLCV table
-        Predict.tsx         → ★ Complete: builder, consensus, caching, historical
-        Settings.tsx        → ★ Complete: persistent prefs, dev section
-        Backtest.tsx        → Stub (backend ready)
-        Training.tsx        → Stub (backend ready)
-        Analysis.tsx        → Stub (backend ready)
+        dashboard.tsx       → ★ chart, stats, OHLCV table; ticker dropdown + news scope grouped by all asset classes (meta)
+        predict.tsx         → ★ builder; variants from /api/predict/info (gated); tickers grouped by all classes
+        backtest.tsx        → ★ family picker (meta) + baselines, min-conf/turnover/hold/SL-sweep knobs, progress, persisted runs
+        oos.tsx             → ★ OOS harness: config + live progress + aggregate + per-ticker table
+        ooscompare.tsx      → ★ diff two saved OOS runs (aggregate + per-ticker)
+        help.tsx            → ★ searchable Help/glossary; dep-free markdown renderer; deep-links via #docSlug/sectionSlug
+        settings.tsx        → ★ persistent prefs, dev section
+        training.tsx        → Stub (backend ready)
+        analysis.tsx        → Complete: results browser, news-vs-no-news, compare runs
+
+  Concept-help system: `web/docs/*.md` (end-user glossary) ← `GET /api/docs` ← `pages/help.tsx`. Feature tabs deep-link into it via `components/ui.tsx:HelpLink` (a "?" → `/help#<docSlug>/<sectionSlug>`, e.g. `strategy/stop-loss`); the heading slugs the renderer generates (GitHub-style) must match those link targets.
 
 interface/
   api.py                    → StockAppAPI facade — single entry point
@@ -263,18 +272,25 @@ React (localhost:5173)  →  Vite proxy /api  →  FastAPI (localhost:8000)  →
 **Run:** `./web/dev.sh` or manually: `uvicorn web.backend.app:app --reload` + `cd web/frontend && npm run dev`
 
 **Pages (status):**
-- Dashboard ✓ — zoomable chart (line/candle, pan bar), stats, OHLCV table (Δ% sort, export CSV), custom period
-- Predict ✓ — unified builder (per-model period+news), 9 variants incl. LSTM, quick presets, auto consensus, JSON caching, historical predictions
-- Settings ✓ — persistent JSON, k/fee/SL sliders+text, LSTM preference with fallback, collapsible dev section
-- Backtest, Training, Analysis — stubs (backend endpoints ready)
+- Dashboard ✓ — chart, stats, OHLCV table; ticker dropdown + news-refresh scope grouped by all asset classes (via `/api/meta`)
+- Predict ✓ — unified builder, variants from `/api/predict/info` (availability-gated, incl. Prophet/Chronos/Kronos), tickers grouped by all classes
+- Backtest ✓ — family picker (meta) + baselines toggle, min-confidence / turnover-fees / hold-days / SL-sweep knobs, live progress, persisted-run picker, Coverage/Turnover result columns
+- OOS ✓ — harness config + live progress + aggregate (beat-B&H, selection-inflation gap, gate-aware Brier/ECE) + per-ticker table
+- OOS Compare ✓ — diff two saved OOS runs (aggregate side-by-side + per-ticker return diff)
+- Settings ✓ — persistent JSON (fixed `lstm_preferred_preset`), dev section
+- Analysis ✓ — results browser, news-vs-no-news, compare runs
+- Help ✓ — searchable concept glossary (markdown from `/api/docs`); feature tabs "?" deep-link into it
+- Training — stub (backend endpoints ready)
 
 **Backend routes:**
-- `routes/data.py` — ticker list, OHLCV (from DB, limit=0 = no limit), refresh
-- `routes/predict.py` — `POST /run` (unified per-model config), `/cached`, `/historical`. Cache: `predictions/{ticker}/{date}.json`
-- `routes/backtest.py` — delegates to `engine/backtester.py`
+- `routes/meta.py` — `GET /api/meta`: config-driven model families (availability-gated via `api.lstm_available`/`forecast_available`), asset classes, benchmarks, periods, sweeps, defaults
+- `routes/data.py` — ticker list (asset_type from `config.asset_type_of`), OHLCV, refresh, refresh-news
+- `routes/predict.py` — `POST /run`, `/cached`, `/historical`, `/info` (gated variants). Cache: `predictions/{ticker}/{date}.json`
+- `routes/backtest.py` — delegates to `engine/backtester.py`; plumbs models/include_baselines/min_confidence/turnover_fees/hold_days/sl_levels/sl_sweep; `/progress` + `/runs`
+- `routes/oos.py` — wraps `scripts.oos_harness`; `POST /api/oos` (run + persist CSV tree + JSON cache under `oos_runs/`), `/progress`, `/runs`, `/runs/{id}`
 - `routes/train.py` — background LSTM training, model inventory from `models/`
 - `routes/settings.py` — GET/PUT/PATCH `data/settings.json`
-- `routes/analysis.py` — News vs No-News paired comparison
+- `routes/analysis.py` — News vs No-News paired comparison + results-dir browser
 
 **Reusable components:** `PriceChart` (zoomable SVG), `DataTable` (generic sort/filter/paginate/export), `ui.tsx` (Panel, Btn, pct, usd)
 

@@ -629,3 +629,245 @@ class TestPredictCacheByTicker:
         assert "cached_at" in data
         # ISO-ish timestamp with seconds
         assert "T" in data["cached_at"]
+
+
+# ------------------------------------------------------------------
+# Meta — config-driven options for the frontend
+# ------------------------------------------------------------------
+
+
+class TestMeta:
+    def test_meta_shape(self, client):
+        r = client.get("/api/meta")
+        assert r.status_code == 200
+        data = r.json()
+        for key in (
+            "model_families",
+            "asset_classes",
+            "benchmarks",
+            "periods",
+            "sentiment_methods",
+            "sl_sweep",
+            "confidence_sweep",
+            "defaults",
+        ):
+            assert key in data
+
+    def test_model_families_include_all_and_gating(self, client):
+        data = client.get("/api/meta").json()
+        keys = {f["key"] for f in data["model_families"]}
+        # Every config family is reported.
+        assert {"knn", "linreg", "lstm", "prophet", "chronos", "kronos", "baseline"} <= keys
+        for f in data["model_families"]:
+            assert isinstance(f["available"], bool)
+            assert isinstance(f["predict"], bool)
+        # k-NN / LinReg are always available + predict-capable.
+        by_key = {f["key"]: f for f in data["model_families"]}
+        assert by_key["knn"]["available"] and by_key["knn"]["predict"]
+        # Baselines are backtest-only.
+        assert by_key["baseline"]["predict"] is False
+
+    def test_asset_classes_include_new_classes(self, client):
+        data = client.get("/api/meta").json()
+        keys = {ac["key"] for ac in data["asset_classes"]}
+        # The new (post-2026) classes must surface, not just stock/crypto.
+        assert {"stock", "crypto", "commodity", "index", "fx"} <= keys
+
+    def test_sl_and_confidence_sweeps(self, client):
+        data = client.get("/api/meta").json()
+        assert data["sl_sweep"] == [0.0, 5.0, 10.0, 15.0]
+        assert data["confidence_sweep"][0] == 0.0
+
+
+# ------------------------------------------------------------------
+# Tickers carry registry asset_type (commodities/indices/fx)
+# ------------------------------------------------------------------
+
+
+class TestTickerAssetTypes:
+    def test_tickers_use_registry_classes(self, client):
+        rows = client.get("/api/data/tickers").json()
+        types = {row["asset_type"] for row in rows}
+        # The "-USD"→crypto heuristic is gone; registry classes appear.
+        assert "stock" in types
+        # At least one of the new ETF-proxy classes should be tagged.
+        assert types & {"commodity", "index", "fx"}
+
+
+# ------------------------------------------------------------------
+# Backtest — new Phase 1.3 / 2.1 / 2.2 args
+# ------------------------------------------------------------------
+
+
+class TestBacktestNewArgs:
+    @pytest.fixture(autouse=True)
+    def _redirect_persistence(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from web.backend.routes import backtest as _bt
+
+        monkeypatch.setattr(_bt, "CACHE_DIR", Path(str(tmp_path / "backtests")))
+        monkeypatch.setattr(_bt, "RESULTS_DIR", Path(str(tmp_path / "results")))
+        yield
+
+    @staticmethod
+    def _body(**overrides) -> dict:
+        body = {
+            "tickers": ["TEST"],
+            "days": 5,
+            "period": "1y",
+            "fee_pct": 0.0,
+            "buy_hold": False,
+            "refresh_data": False,
+            "include_baselines": True,
+        }
+        body.update(overrides)
+        return body
+
+    def test_result_carries_new_fields(self, refreshed_client):
+        r = refreshed_client.post("/api/backtest", json=self._body())
+        assert r.status_code == 200
+        result = r.json()["results"][0]
+        for key in (
+            "min_confidence",
+            "coverage",
+            "turnover_fees",
+            "hold_days",
+            "turnover_count",
+            "fees_paid",
+        ):
+            assert key in result
+
+    def test_min_confidence_gate(self, refreshed_client):
+        r = refreshed_client.post("/api/backtest", json=self._body(min_confidence=0.6))
+        assert r.status_code == 200
+        for res in r.json()["results"]:
+            assert res["min_confidence"] == 0.6
+            assert 0.0 <= res["coverage"] <= 1.0
+
+    def test_turnover_fees_flag(self, refreshed_client):
+        r = refreshed_client.post(
+            "/api/backtest", json=self._body(fee_pct=0.05, turnover_fees=True, hold_days=3)
+        )
+        assert r.status_code == 200
+        res = r.json()["results"][0]
+        assert res["turnover_fees"] is True
+        assert res["hold_days"] == 3
+
+    def test_sl_sweep_produces_multiple_levels(self, refreshed_client):
+        r = refreshed_client.post("/api/backtest", json=self._body(sl_sweep=True))
+        assert r.status_code == 200
+        levels = {res["stop_loss_pct"] for res in r.json()["results"]}
+        # The sweep includes the no-SL baseline (0) plus non-zero levels.
+        assert 0.0 in levels
+        assert len(levels) > 1
+
+    def test_models_filter(self, refreshed_client):
+        r = refreshed_client.post(
+            "/api/backtest", json=self._body(models=["knn"], include_baselines=False)
+        )
+        assert r.status_code == 200
+        names = [res["model"] for res in r.json()["results"]]
+        assert names  # got something
+        assert all(n.startswith("k-NN") for n in names)
+
+
+# ------------------------------------------------------------------
+# OOS harness endpoints
+# ------------------------------------------------------------------
+
+
+class TestOOS:
+    @pytest.fixture(autouse=True)
+    def _redirect_persistence(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from web.backend.routes import oos as _oos
+
+        monkeypatch.setattr(_oos, "CACHE_DIR", Path(str(tmp_path / "oos_runs")))
+        monkeypatch.setattr(_oos, "RESULTS_DIR", Path(str(tmp_path / "results")))
+        yield
+
+    @staticmethod
+    def _body(**overrides) -> dict:
+        # baseline-only candidates keep the run instant (no LSTM/forecast load)
+        body = {
+            "tickers": ["AAPL"],
+            "days": 50,
+            "periods": ["max"],
+            "fee_pct": 0.0,
+            "buy_hold": True,
+            "refresh_data": False,
+            "models": ["baseline"],
+            "include_baselines": True,
+        }
+        body.update(overrides)
+        return body
+
+    def test_oos_run_shape(self, refreshed_client):
+        # AAPL resolves to the mocked 400-row series → enough for 2 disjoint windows.
+        r = refreshed_client.post("/api/oos", json=self._body())
+        assert r.status_code == 200
+        data = r.json()
+        assert "rows" in data and "summary" in data
+        assert data["run_id"]
+        assert data["summary"]["tickers"] == len(data["rows"])
+        if data["rows"]:
+            row = data["rows"][0]
+            for key in ("winner_model", "oos_return", "beats_bh_oos", "oos_coverage"):
+                assert key in row
+
+    def test_oos_persisted_and_listed(self, refreshed_client):
+        run = refreshed_client.post("/api/oos", json=self._body()).json()
+        run_id = run["run_id"]
+        runs = refreshed_client.get("/api/oos/runs").json()
+        assert any(x["run_id"] == run_id for x in runs)
+        loaded = refreshed_client.get(f"/api/oos/runs/{run_id}").json()
+        assert loaded["run_id"] == run_id
+        assert loaded["response"]["summary"]["tickers"] == run["summary"]["tickers"]
+
+    def test_oos_progress_endpoint(self, refreshed_client):
+        r = refreshed_client.get("/api/oos/progress")
+        assert r.status_code == 200
+        assert "running" in r.json()
+
+    def test_oos_gate_columns(self, refreshed_client):
+        r = refreshed_client.post("/api/oos", json=self._body(min_confidence=0.55))
+        assert r.status_code == 200
+        data = r.json()
+        assert data["summary"]["min_confidence"] == 0.55
+
+
+# ------------------------------------------------------------------
+# Concept docs (Help tab)
+# ------------------------------------------------------------------
+
+
+class TestDocs:
+    def test_list_docs(self, client):
+        r = client.get("/api/docs")
+        assert r.status_code == 200
+        docs = r.json()
+        slugs = {d["slug"] for d in docs}
+        # The core glossary pages must be present and titled.
+        assert {"getting-started", "models", "strategy", "metrics", "oos"} <= slugs
+        for d in docs:
+            assert d["title"]
+
+    def test_get_doc_markdown(self, client):
+        r = client.get("/api/docs/strategy")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["slug"] == "strategy"
+        assert "# Strategy" in data["markdown"]
+        # A section the Backtest tab deep-links into must exist.
+        assert "## Stop-loss" in data["markdown"]
+
+    def test_unknown_doc_404(self, client):
+        r = client.get("/api/docs/does-not-exist")
+        assert r.status_code == 404
+
+    def test_no_path_traversal(self, client):
+        # A traversal-style slug must not escape the docs dir.
+        r = client.get("/api/docs/..%2f..%2fconfig")
+        assert r.status_code in (404, 400)
