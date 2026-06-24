@@ -372,6 +372,7 @@ marketpulse-ai/
 │   ├── residual_hybrid.py   # ResidualHybrid(base, learner): P̂ = base + learned residual
 │   ├── forecast_significance.py # Diebold–Mariano + Wilcoxon (+ FDR) for forecasts
 │   ├── residual_diagnostics.py # Ljung–Box/ACF/runs/VR — is the base residual structured?
+│   ├── macro_data.py        # Macro exog (VIX/DXY/Gold/SP500 log-rets + FRED DGS1), leakage-safe lag-1 align
 │   ├── regression_metrics.py# Point-forecast metrics: RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2
 │   ├── forecast_backtester.py# Walk-forward point-forecast harness (no trading; leakage-guarded)
 │   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks, elapsed_seconds)

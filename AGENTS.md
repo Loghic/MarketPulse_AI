@@ -571,10 +571,18 @@ Implemented so far (R0–R2 foundation):
   gain `ΔU2 = U2_base − U2_hybrid`. Tests: `tests/test_residual_diagnostics.py`
   (white noise → not structured, AR(1) → structured + positive ACF1, χ² known
   critical values, VR≈1 for a random walk, cross-tab pairing).
-- **Not yet (next R-phase sessions):** macro features (R4), multi-horizon /
-  asset-class / regime slices (R7), robustness/seed-sweeps (R8), and wiring
-  DM/Wilcoxon + the residual cross-tab into the harness output (both read the
-  per-step CSVs).
+- **Macro features (R4.1/R4.2):** `engine/macro_data.py` — `fetch_macro()` pulls
+  VIX/DXY(UUP fallback)/Gold(GLD)/SP500 as **log-returns** (yfinance) + DGS1 as a
+  **level** from FRED's public CSV (no key); each series fetched defensively
+  (drop+log on failure), cached via `MacroCache` (`macro_series` table). The
+  leakage-critical `align_macro(ticker_dates, macro_df, lag=1)` is **pure**:
+  reindex onto the ticker calendar → forward-fill macro gaps → lag (value for `t`
+  is known at `t−1`). Unit-tested no-lookahead. Tests:
+  `tests/test_macro_data.py`.
+- **Not yet (next R-phase sessions):** wire macro/sentiment into the models
+  (R4.3 pos/neg split + R4.4 feature-matrix/Prophet regressors + ablation),
+  multi-horizon / asset-class / regime slices (R7), robustness/seed-sweeps (R8),
+  and wiring DM/Wilcoxon + the residual cross-tab into the harness output.
 
 ### Per-model timing & period selection
 

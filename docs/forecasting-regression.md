@@ -275,10 +275,29 @@ the hybrid's skill gain `ΔU2 = U2_base − U2_hybrid`. The thesis: gain appears
 the clean negative — residuals are white noise (Ljung–Box non-significant), so
 `ΔU2 ≈ 0` and the hybrid sits on the base, which sits on the random walk.
 
+## Macro / exogenous features
+
+`engine/macro_data.py` adds market-wide inputs alongside a ticker's own history:
+VIX, the dollar index (DXY, UUP fallback), Gold, and the S&P 500 as **log-
+returns** (via yfinance), plus the 1-Year Treasury yield (DGS1) as a **level**
+from FRED's public CSV endpoint (no API key). Each series is fetched defensively
+— a failure drops that column and logs, never crashing — and cached to SQLite
+(`MacroCache`, `macro_series` table).
+
+The correctness-critical piece is `align_macro(ticker_dates, macro_df, lag=1)`:
+it reindexes the macro panel onto the ticker's trading calendar, **forward-fills**
+the macro's own holidays/gaps, then **lags by one day** so the value attached to
+date `t` is the one known at `t − 1`. With the default `lag=1`, the feature row
+that predicts `t+1` uses only macro information available at `t` — never the
+future (the R0.2 leakage rule, unit-tested with a no-lookahead spy). The first
+row is NaN (no prior macro yet).
+
 ## What's next (not yet implemented)
 
-- **Macro / exogenous features** (R4) — VIX/DXY/Gold/SP500 + FRED rates, lag-1
-  safe, into the feature matrix and Prophet regressors.
+- **Wire macro/sentiment into the models** (R4.3/R4.4) — the pos/neg sentiment
+  split and flowing macro columns into the LSTM/XGBoost feature matrix *and*
+  Prophet regressors, then the price-only vs +tech vs +macro vs +sentiment
+  ablation. (Fetch + leakage-safe alignment are done above.)
 - **Multi-horizon / asset-class / regime slices** (R7) and **robustness** (R8 —
   seed sweeps, lookback/refit sensitivity, level-vs-log-return).
 - Wiring the DM/Wilcoxon comparison and the residual cross-tab into the harness
