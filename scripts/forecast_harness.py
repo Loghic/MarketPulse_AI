@@ -90,6 +90,27 @@ def build_forecasters(season: int = 5) -> list:
     return models
 
 
+def _build_macro_prophet(df, macro_panel):
+    """Prophet with lag-1-aligned macro regressors for this ticker, or None.
+
+    Macro is aligned onto the ticker's dates and added via Prophet
+    add_regressor; the forecast-date regressor value is carried forward from the
+    last in-window macro (= macro at t, known at t-1) — leakage-safe.
+    """
+    try:
+        from engine.macro_data import align_macro
+        from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
+
+        if not _PROPHET_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else range(len(df))
+        aligned = align_macro(list(dates), macro_panel, lag=1)
+        return ProphetModel(macro_df=aligned)
+    except Exception as e:  # noqa: BLE001
+        log.debug("macro Prophet unavailable: %s", e)
+        return None
+
+
 def _build_macro_xgb(df, macro_panel):
     """XGBoost with lag-1-aligned macro features for this ticker, or None.
 
@@ -397,20 +418,26 @@ def main() -> int:
     if args.hybrid:
         labels += f", Prophet+LSTM-res (hybrid, {args.hybrid_fit})"
     if args.macro:
-        # Only claim the macro variant if xgboost is actually importable; the
-        # ablation can't run without it.
+        # Only claim each macro variant if its lib is importable.
         try:
             from engine.xgboost_model import _XGBOOST_AVAILABLE
         except Exception:  # noqa: BLE001
             _XGBOOST_AVAILABLE = False
+        try:
+            from engine.prophet_model import _PROPHET_AVAILABLE
+        except Exception:  # noqa: BLE001
+            _PROPHET_AVAILABLE = False
         if _XGBOOST_AVAILABLE:
             labels += ", XGBoost + macro"
         else:
             log.warning(
-                "--macro requested but xgboost is not installed; the XGBoost + macro "
-                "variant (and plain XGBoost) will be skipped. Install with: "
-                "uv pip install -e '.[forecast]'"
+                "--macro: xgboost not installed; XGBoost + macro (and plain XGBoost) "
+                "skipped. Install with: uv pip install -e '.[forecast]'"
             )
+        if _PROPHET_AVAILABLE:
+            labels += ", Prophet + macro"
+        else:
+            log.warning("--macro: prophet not installed; Prophet + macro skipped.")
 
     print("=" * 92)
     print(
@@ -474,6 +501,9 @@ def main() -> int:
             mac = _build_macro_xgb(df, macro_panel)
             if mac is not None:
                 ticker_models.append((mac, "XGBoost + macro"))
+            mac_p = _build_macro_prophet(df, macro_panel)
+            if mac_p is not None:
+                ticker_models.append((mac_p, "Prophet + macro"))
 
         ticker_runs: list[ForecastRun] = []
         for model, _label in ticker_models:

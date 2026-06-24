@@ -18,6 +18,7 @@ import logging
 from contextlib import contextmanager
 from statistics import NormalDist
 
+import numpy as np
 import pandas as pd
 
 from engine.forecast_base import ForecastModel, ForecastResult
@@ -76,6 +77,7 @@ class ProphetModel(ForecastModel):
         yearly_seasonality: bool | str = "auto",
         daily_seasonality: bool | str = False,
         growth: str = "linear",
+        macro_df=None,
     ):
         if not _PROPHET_AVAILABLE:
             raise RuntimeError(
@@ -92,6 +94,17 @@ class ProphetModel(ForecastModel):
         )
         # z-score for the requested central interval, e.g. 0.80 -> ~1.2816.
         self._z = NormalDist().inv_cdf((1.0 + interval_width) / 2.0)
+        # Optional macro regressors (R3.3). MUST be lag-1-aligned (align_macro):
+        # the row for date d holds info known at d-1, so attaching macro[d] to
+        # Prophet's forecast for d is leakage-safe. Indexed by date string.
+        if macro_df is not None and not macro_df.empty:
+            self._macro = macro_df.copy()
+            self._macro.index = self._macro.index.astype(str)
+            self._macro_cols = list(macro_df.columns)
+            self.name = "Prophet + macro"
+        else:
+            self._macro = None
+            self._macro_cols = []
 
     def fit_in_sample(self, df):
         """Prophet's in-sample fitted close series (yhat on the training dates).
@@ -100,8 +113,6 @@ class ProphetModel(ForecastModel):
         series is too short, or the fit errors — so the residual hybrid never
         breaks. Aligned to ``df`` rows (length == len(df)).
         """
-        import numpy as np
-
         n = len(df)
         if not _PROPHET_AVAILABLE or n < MIN_ROWS or "close" not in df.columns:
             return super().fit_in_sample(df)
@@ -141,10 +152,37 @@ class ProphetModel(ForecastModel):
 
         last_close = float(hist["y"].iloc[-1])
 
+        # Optional macro regressors (lag-1 aligned). Attach the macro row for
+        # each training date; for the forecast row carry forward the last
+        # in-window macro values (= macro at t, known at t-1 → leakage-safe).
+        use_macro = self._macro is not None
+        macro_cols: list[str] = []
+        last_macro: dict[str, float] = {}
+        if use_macro:
+            key = hist["ds"].dt.strftime("%Y-%m-%d")
+            ok = True
+            for col in self._macro_cols:
+                vals = key.map(self._macro[col]).to_numpy(dtype=float)
+                if not np.isfinite(vals).all():
+                    ok = False  # a gap in macro over the training window → skip macro
+                    break
+                hist[col] = vals
+                last_macro[col] = float(vals[-1])
+            macro_cols = self._macro_cols if ok else []
+            use_macro = ok
+
         model = Prophet(**self._kwargs)
+        for col in macro_cols:
+            model.add_regressor(col)
         with _quiet_stan():
             model.fit(hist)
             future = model.make_future_dataframe(periods=horizon, freq="D")
+            for col in macro_cols:
+                # Map known training-date macro onto the future frame; the new
+                # (forecast) rows get the carried-forward last value.
+                key_f = future["ds"].dt.strftime("%Y-%m-%d")
+                future[col] = key_f.map(self._macro[col]).astype(float)
+                future[col] = future[col].fillna(last_macro[col])
             fc = model.predict(future).iloc[-1]
 
         yhat = float(fc["yhat"])
