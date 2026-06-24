@@ -562,9 +562,19 @@ Implemented so far (R0–R2 foundation):
   works without it. Tests: `tests/test_forecast_significance.py` (DM symmetry
   `DM(a,b)=−DM(b,a)`, identical→0, near-identical not-sig, Student-t known
   values, grid/FDR winner-only).
-- **Not yet (next R-phase sessions):** macro features (R4), residual diagnostics
-  (R6 — Ljung–Box on base residuals), and wiring DM/Wilcoxon into the harness
-  output (reads the per-step CSVs).
+- **Residual diagnostics (R6):** `engine/residual_diagnostics.py` — pure
+  numpy/stdlib: `acf`, `ljung_box` (Q-test for white noise; χ² sf via scipy or a
+  numpy upper-incomplete-gamma fallback), `runs_test`, `variance_ratio`, bundled
+  by `diagnose(residuals) -> ResidualDiagnostics` (`.structured` = Ljung–Box
+  rejects white noise at 5%). `structure_vs_gain(cases)` builds the paper's
+  central cross-tab: base-residual autocorrelation (Ljung–Box / |ACF1|) vs hybrid
+  gain `ΔU2 = U2_base − U2_hybrid`. Tests: `tests/test_residual_diagnostics.py`
+  (white noise → not structured, AR(1) → structured + positive ACF1, χ² known
+  critical values, VR≈1 for a random walk, cross-tab pairing).
+- **Not yet (next R-phase sessions):** macro features (R4), multi-horizon /
+  asset-class / regime slices (R7), robustness/seed-sweeps (R8), and wiring
+  DM/Wilcoxon + the residual cross-tab into the harness output (both read the
+  per-step CSVs).
 
 ### Per-model timing & period selection
 

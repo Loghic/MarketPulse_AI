@@ -249,12 +249,39 @@ walk, and the hybrid is not DM-significant vs its base — which turns "they all
 look like 1.000" into the defensible claim "indistinguishable from a random
 walk".
 
+## Why the hybrid can't beat the random walk (residual diagnostics)
+
+`engine/residual_diagnostics.py` answers the paper's title question directly:
+does the base model's residual contain *learnable structure*? The hybrid can
+only beat the base if it does — if the residual is white noise, there's nothing
+for the residual learner to grab and the hybrid reduces to the base.
+
+On a residual series `res_t = y_true_t − base_pred_t` it computes:
+
+- **ACF** — sample autocorrelation; `acf1` (lag 1) is a quick structure scalar.
+- **Ljung–Box Q-test** (`ljung_box`) — the headline: jointly tests "white noise
+  up to lag h". p < 0.05 ⇒ the residual is autocorrelated (structured); p large
+  ⇒ indistinguishable from white noise. `diagnose(...).structured` is this flag.
+- **Runs test** and **Lo–MacKinlay variance ratio** — companion randomness /
+  mean-reversion checks.
+
+All pure numpy (the χ² p-value uses scipy when present, else a numpy
+upper-incomplete-gamma fallback).
+
+`structure_vs_gain(cases)` builds the paper's **central cross-tab**: per ticker,
+the base residual's autocorrelation strength (Ljung–Box stat / |ACF1|) against
+the hybrid's skill gain `ΔU2 = U2_base − U2_hybrid`. The thesis: gain appears
+**iff** the residual is structured. On daily equity levels the expected result is
+the clean negative — residuals are white noise (Ljung–Box non-significant), so
+`ΔU2 ≈ 0` and the hybrid sits on the base, which sits on the random walk.
+
 ## What's next (not yet implemented)
 
-- **Macro / exogenous features** and **residual diagnostics** (Ljung–Box etc. —
-  does the base residual actually contain learnable structure, and does its
-  presence predict where the hybrid wins?).
-- Wiring the DM/Wilcoxon comparison into the harness output (it currently reads
-  the per-step CSVs the harness already writes).
+- **Macro / exogenous features** (R4) — VIX/DXY/Gold/SP500 + FRED rates, lag-1
+  safe, into the feature matrix and Prophet regressors.
+- **Multi-horizon / asset-class / regime slices** (R7) and **robustness** (R8 —
+  seed sweeps, lookback/refit sensitivity, level-vs-log-return).
+- Wiring the DM/Wilcoxon comparison and the residual cross-tab into the harness
+  output (both currently consume the per-step CSVs the harness already writes).
 
 See the forecasting plan for the full R0–R8 roadmap.
