@@ -292,12 +292,20 @@ that predicts `t+1` uses only macro information available at `t` — never the
 future (the R0.2 leakage rule, unit-tested with a no-lookahead spy). The first
 row is NaN (no prior macro yet).
 
-Macro is wired into **XGBoost**: pass `--macro` to the harness and it adds an
-**`XGBoost + macro`** variant beside plain `XGBoost` — the price-only vs +macro
-ablation. Per ticker the macro panel is aligned (`align_macro`, lag-1) onto that
-ticker's dates and each feature window ending at `t` gets `macro[t]` appended;
-because the panel is lag-1, that's leakage-safe. (`XGBoostForecaster(macro_df=…)`
-does the append; missing-macro rows are dropped from training.)
+Macro is wired into **XGBoost** and **Prophet**: pass `--macro` to the harness
+and it adds **`XGBoost + macro`** and **`Prophet + macro`** variants beside their
+plain counterparts — the price-only vs +macro ablation. Per ticker the macro
+panel is aligned (`align_macro`, lag-1) onto that ticker's dates.
+
+- **XGBoost** (`XGBoostForecaster(macro_df=…)`): each feature window ending at
+  `t` gets `macro[t]` appended; missing-macro rows are dropped from training.
+- **Prophet** (`ProphetModel(macro_df=…)`, R3.3 multivariate Prophet): each macro
+  column is added via `add_regressor`; the regressor value for the forecast date
+  is **carried forward from the last in-window macro** (= macro at `t`, known at
+  `t−1`). If macro has a gap over the training window, Prophet falls back to
+  univariate for that call rather than erroring.
+
+Both are leakage-safe because the panel is lag-1 aligned.
 
 ```bash
 uv run python scripts/forecast_harness.py --stocks --days 100 --macro --no-refresh
@@ -309,9 +317,10 @@ below 1 on daily levels — but the ablation has to be *run* for the paper to sa
 
 ## What's next (not yet implemented)
 
-- **Sentiment pos/neg split + Prophet regressors** (R4.3 + rest of R4.4) — two
-  separate sentiment signals, and flowing macro/sentiment into the LSTM and into
-  Prophet via `add_regressor` (currently only XGBoost consumes macro).
+- **Macro into the LSTM regressor + hybrid residual learner** (rest of R4.4) —
+  XGBoost and Prophet consume macro; the LSTM-reg (pretrained checkpoint) and the
+  hybrid's residual learner don't yet.
+- **Sentiment pos/neg split** (R4.3) — two separate sentiment signals as inputs.
 - **Multi-horizon / asset-class / regime slices** (R7) and **robustness** (R8 —
   seed sweeps, lookback/refit sensitivity, level-vs-log-return).
 - Wiring the DM/Wilcoxon comparison and the residual cross-tab into the harness
