@@ -254,7 +254,7 @@ The LSTM regressor (a separate Δ-predicting network — *not* the directional c
 uv run python scripts/train_lstm_regressor.py --stocks --days 100 --horizon 1
 ```
 
-This is the foundation of the residual-hybrid research track (Prophet+LSTM hybrid + Diebold–Mariano / Wilcoxon tests come next). See [docs/forecasting-regression.md](docs/forecasting-regression.md).
+A **residual hybrid** (`P̂ = base + learned residual`, e.g. Prophet + an LSTM residual learner) composes any base forecaster with any residual learner — the paper's central artifact; if the base's residuals are white noise the hybrid cleanly reduces to the base. It's opt-in (`--hybrid`, the slowest model) with a `--hybrid-fit` cadence (`pretrained` frozen weights / `refit_k` / `per_step`); pretrain the residual learner leakage-safely with `scripts/train_hybrid_residual.py`. **Diebold–Mariano** and **Wilcoxon** forecast-comparison tests (`engine/forecast_significance.py`, FDR-corrected) answer "is the difference vs the random walk statistically real?". See [docs/forecasting-regression.md](docs/forecasting-regression.md).
 
 ### Stop-loss (single or sweep)
 
@@ -368,6 +368,9 @@ marketpulse-ai/
 │   ├── arima_model.py       # ARIMA point-forecaster (optional statsmodels)
 │   ├── xgboost_model.py     # XGBoost point-forecaster on the feature matrix (optional xgboost)
 │   ├── lstm_regressor.py    # LSTM point-forecaster (Δ-target, per-ticker weights; optional torch)
+│   ├── residual_learners.py # Residual learners (Zero, per-call LSTM) for the hybrid
+│   ├── residual_hybrid.py   # ResidualHybrid(base, learner): P̂ = base + learned residual
+│   ├── forecast_significance.py # Diebold–Mariano + Wilcoxon (+ FDR) for forecasts
 │   ├── regression_metrics.py# Point-forecast metrics: RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2
 │   ├── forecast_backtester.py# Walk-forward point-forecast harness (no trading; leakage-guarded)
 │   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks, elapsed_seconds)

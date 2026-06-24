@@ -107,7 +107,7 @@ disallow_untyped_defs = false
 # Skip ai_model entirely (torch Optional patterns mypy can't handle)
 [[tool.mypy.overrides]]
 module = ["engine.ai_model", "engine.chronos_model", "engine.kronos_model",
-          "engine.lstm_regressor"]
+          "engine.lstm_regressor", "engine.residual_learners"]
 ignore_errors = true
 
 # Ignore missing stubs for third-party libraries
@@ -115,5 +115,5 @@ ignore_errors = true
 module = ["yfinance.*", "sklearn.*", "torch.*", "nltk.*", "tqdm.*",
           "pandas", "numpy", "numpy.*", "fastapi.*", "pydantic.*",
            "prophet.*", "chronos.*",
-           "statsmodels.*", "pmdarima.*", "xgboost.*"]
+           "statsmodels.*", "pmdarima.*", "xgboost.*", "scipy.*"]
 ignore_missing_imports = true

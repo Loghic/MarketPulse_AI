@@ -511,19 +511,60 @@ Implemented so far (R0–R2 foundation):
   **trims the last `--days+--horizon` rows before fitting** so the harness eval
   window is unseen (loaded weights are OOS-valid only when trained with the same
   `--days/--horizon` used to score).
+- **Residual hybrid (R3, the paper's central artifact):**
+  `engine/residual_hybrid.py` `ResidualHybrid(base, residual_learner)` is a
+  `ForecastModel`: `forecast(df,h)` = base OOS point + `residual_learner` trained
+  on the base's **in-sample residuals** (`res_t = close_t − fitted_t`). Composable
+  — any `ForecastModel` base × any `fit(residuals)/predict()->float` learner
+  (Prophet+LSTM, ARIMA+LSTM, …). **Leakage rule (R0.2), unit-tested:** learner
+  sees residuals up to `t` only, base forecast for `t+h` uses no data past `t`; a
+  zero/short learner makes hybrid ≡ base (safe fallback). Needs the new
+  `ForecastModel.fit_in_sample(df) -> np.ndarray` hook (default = random-walk
+  fitted = shift-by-1; **overridden** in Prophet via in-sample `predict` and
+  ARIMA via `fittedvalues`, both falling back to the RW default on error).
+  Residual learners live in `engine/residual_learners.py`: `ZeroResidualLearner`
+  (identity/fallback) and `LSTMResidualLearner` (small univariate LSTM,
+  early-stopped; predicts 0 without torch; has `save`/`load`/`set_window`/
+  `is_trained` for the frozen path). `hybrid_residual_path(ticker)` =
+  `models/{ticker}_hybrid_res.pt`.
+  **Fit cadence** (`ResidualHybrid(fit_mode=…)`): `per_step` (refit every call),
+  `refit_k` (refit every K calls, `set_window` between), `pretrained` (frozen
+  weights, predict-only — fastest). Pretrained weights come from
+  `scripts/train_hybrid_residual.py` (trims the last `--days+--horizon` rows
+  before fitting the base + residuals, like the LSTM-reg trainer;
+  `--preset {quick,standard,cluster}` reuses `REG_TRAINING_PRESETS`, default
+  standard). **Opt-in** in
+  the harness via `--hybrid` (off by default — slowest model), with
+  `--hybrid-fit {pretrained,refit_k,per_step}` (default pretrained) +
+  `--hybrid-refit-k`; built per-ticker so pretrained mode loads its weights.
 - `scripts/forecast_harness.py` — CLI entrypoint (regression analogue of
   `oos_harness.py`). `build_forecasters()` = naive always + optional ARIMA /
-  XGBoost / Prophet when their lib imports; the per-ticker LSTM-reg is added
-  inside the ticker loop (disable with `--no-lstm`). Persists tidy per-step CSV +
+  XGBoost / Prophet + the Prophet+LSTM residual hybrid when their libs import;
+  the per-ticker LSTM-reg is added inside the ticker loop (disable with
+  `--no-lstm`). Persists tidy per-step CSV +
   `_fc_summary.csv` under `results/fc_<scope>_<days>d_h<h>_<ts>/`; console table
   ranked by U2/MASE. `--days/--horizon/--refit-k/--min-train` + scope flags.
 - New optional deps (statsmodels, xgboost, scipy, pmdarima) added to the
   `[forecast]` extra. Tests: `tests/test_regression_metrics.py`,
   `test_naive_forecasters.py`, `test_forecast_backtester.py` (all pure, run
   without the optional libs).
-- **Not yet (next R-phase sessions):** residual hybrid (R3, needs
-  `fit_in_sample` on the base + a residual LSTM regressor), macro features (R4),
-  DM + Wilcoxon forecast-comparison stats (R5), residual diagnostics (R6).
+- **Forecast-comparison stats (R5):** `engine/forecast_significance.py` — the
+  regression analogue of `significance.py` (which is directional only). On
+  per-step errors: `dm_test` = Diebold–Mariano on the loss differential
+  `g(e₁)−g(e₂)` (squared/abs), **pure numpy** — Newey–West HAC var (`h−1` lags) +
+  Harvey–Leybourne–Newbold correction + Student-t p (scipy `t` if present, else a
+  numpy `betainc`/CF fallback). Sign: `stat<0` ⇒ model 1 better. `wilcoxon_loss_
+  test` = signed-rank (scipy if present, else numpy normal-approx w/ tie
+  correction). `compare_to_reference(cases)` runs DM+Wilcoxon for each
+  model-vs-reference and applies `significance.benjamini_hochberg` FDR across the
+  grid; a row is `dm_significant` only if it survives FDR **and** `mean_diff<0`
+  (genuinely beats, not merely differs). scipy gated behind `[forecast]`; module
+  works without it. Tests: `tests/test_forecast_significance.py` (DM symmetry
+  `DM(a,b)=−DM(b,a)`, identical→0, near-identical not-sig, Student-t known
+  values, grid/FDR winner-only).
+- **Not yet (next R-phase sessions):** macro features (R4), residual diagnostics
+  (R6 — Ljung–Box on base residuals), and wiring DM/Wilcoxon into the harness
+  output (reads the per-step CSVs).
 
 ### Per-model timing & period selection
 

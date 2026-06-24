@@ -69,6 +69,15 @@ directional `baseline_models.py`:
   the Phase-R3 hybrid will reuse.
 - **Prophet / Chronos-2 / Kronos** — the existing forecasting models, reused
   here for their point forecast.
+- **Residual hybrid** (`engine/residual_hybrid.py`, needs Prophet + torch) — the
+  paper's central artifact: `P̂ = P̂^base + r̂es`. A base model (Prophet by
+  default) captures trend/seasonality, and a residual learner (an LSTM fit on the
+  base's in-sample residuals) predicts what the base missed. If the residuals are
+  white noise the learner predicts ~0 and the hybrid reduces to the base — which
+  is exactly the "*when* does residual learning help" question. It's fully
+  composable: `ResidualHybrid(base, residual_learner)` takes any `ForecastModel`
+  base and any `fit/predict` learner, so Prophet+LSTM, ARIMA+LSTM, Prophet+XGB …
+  are just different arguments.
 
 Install the optional libraries with the `[forecast]` extra:
 
@@ -162,15 +171,90 @@ the training data. Weights land in `models/{ticker}_reg.pt`; the harness picks
 them up automatically (disable with `--no-lstm`). Without torch, or for tickers
 with no weights, LSTM-reg simply doesn't appear in the run.
 
+## The residual hybrid (Prophet + LSTM)
+
+The hybrid is the paper's central artifact:
+
+```
+P̂_{t+1} = P̂^base_{t+1} + r̂es_{t+1}
+res_t    = close_t − fitted^base_t        (the base's in-sample residuals)
+r̂es      = a learner trained on residuals up to t
+```
+
+`ResidualHybrid(base, residual_learner)` (`engine/residual_hybrid.py`) is a
+`ForecastModel`, so it runs in the harness like any other forecaster. Per step it
+takes the base's genuine OOS forecast for `t+h`, computes the base's in-sample
+residuals via `base.fit_in_sample(df)` (Prophet's in-sample `predict`, ARIMA's
+`fittedvalues`, or the random-walk default for anything else), trains the
+residual learner on those residuals **up to `t` only**, and adds the predicted
+next residual. The leakage rule is enforced and unit-tested: the learner never
+sees `res_{t+h}`, and the base forecast for `t+h` used no data past `t`.
+
+Composability is the point — swap the base and you get Prophet+LSTM,
+ARIMA+LSTM, Prophet+XGB, … for free. If torch is missing or the residuals are
+too short, the learner predicts 0 and the hybrid cleanly reduces to the base
+model. That reduction is itself the experiment: **residual learning only helps
+when the base's residuals carry structure** — on a near-random-walk daily series
+they're close to white noise, so expect the hybrid's U2 to sit right on the
+base's.
+
+**Enabling it + the fit cadence.** The hybrid is the slowest model, so it's
+**off by default** — pass `--hybrid`. How often the residual learner retrains
+across the walk-forward is set by `--hybrid-fit`:
+
+- `pretrained` (default) — load **frozen** weights trained once on pre-eval
+  residuals; predict-only each step. Fastest. Train them first:
+  ```bash
+  uv run python scripts/train_hybrid_residual.py --stocks --days 100 --horizon 1 --preset standard
+  uv run python scripts/forecast_harness.py --stocks --days 100 --horizon 1 \
+      --hybrid --hybrid-fit pretrained --no-refresh
+  ```
+  Like the LSTM-reg trainer, this trims the last `--days + --horizon` rows before
+  fitting, so the eval window is unseen — use the **same** `--days`/`--horizon`
+  to train and score. `--preset {quick,standard,cluster}` sets the residual
+  learner's effort tier (the same tiers as the LSTM regressor; default
+  `standard`). Weights go to `models/{ticker}_hybrid_res.pt`. If they're missing,
+  the hybrid still runs but its learner predicts 0 (≈ base).
+- `refit_k` — retrain every `--hybrid-refit-k` steps, reuse frozen weights in
+  between (partial speedup, somewhat adaptive).
+- `per_step` — retrain every step (slowest, most adaptive; the original
+  behaviour).
+
+All three are leakage-safe: the learner only ever sees residuals from the window
+ending at `t`, and pretrained weights came from pre-eval residuals only.
+
+## Is the difference real? (Diebold–Mariano + Wilcoxon)
+
+A U2 of 0.998 vs 1.000 looks like a win but is almost always noise. `engine/
+forecast_significance.py` makes that judgment formal, on the per-step errors:
+
+- **Diebold–Mariano** (`dm_test`) — the standard forecast-comparison test, on
+  the loss differential `d_t = g(e₁) − g(e₂)` (squared or absolute loss). Pure
+  numpy: Newey–West HAC variance (`h−1` lags for an `h`-step forecast) + the
+  Harvey–Leybourne–Newbold small-sample correction, compared to a Student-`t`.
+  Sign convention: **`stat < 0` ⇒ model 1 beats model 2.** So test the hybrid by
+  passing `(hybrid_errors, rw_errors)` — a significant *negative* stat is a real
+  win.
+- **Wilcoxon signed-rank** (`wilcoxon_loss_test`) — non-parametric companion on
+  the paired losses (uses `scipy.stats.wilcoxon` when installed, else a numpy
+  normal approximation).
+- **Grid + FDR** (`compare_to_reference`) — compares many models against a
+  reference and applies Benjamini–Hochberg FDR across the whole grid (reusing
+  `significance.benjamini_hochberg`), so a single cell can't be cherry-picked off
+  a 200-cell table. A row is flagged a winner only if it survives FDR *and* has a
+  negative mean loss differential.
+
+The expected result on daily levels: no model is DM-significant vs the random
+walk, and the hybrid is not DM-significant vs its base — which turns "they all
+look like 1.000" into the defensible claim "indistinguishable from a random
+walk".
+
 ## What's next (not yet implemented)
 
-- **Residual hybrid** — `P̂ = P̂_base + r̂es`, the paper's central artifact
-  (`ResidualHybrid(base, residual_learner)` so Prophet+LSTM / Prophet+Chronos /
-  ARIMA+XGBoost are all free). Needs a `fit_in_sample` hook on the base model and
-  a residual-LSTM regressor.
-- **Forecast-comparison statistics** — Diebold–Mariano and Wilcoxon signed-rank
-  on paired per-step losses, FDR-corrected across the model × ticker × horizon
-  grid (the regression analogue of `engine/significance.py`).
-- **Macro / exogenous features** and **residual diagnostics** (Ljung–Box etc.).
+- **Macro / exogenous features** and **residual diagnostics** (Ljung–Box etc. —
+  does the base residual actually contain learnable structure, and does its
+  presence predict where the hybrid wins?).
+- Wiring the DM/Wilcoxon comparison into the harness output (it currently reads
+  the per-step CSVs the harness already writes).
 
 See the forecasting plan for the full R0–R8 roadmap.

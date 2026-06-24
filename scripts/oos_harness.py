@@ -42,6 +42,18 @@ with three files:
     _oos_per_ticker.csv   — one row per ticker (winner + OOS metrics)
     _oos_summary.csv      — one-line aggregate stats
     _oos_console.txt      — text copy of the printed summary table
+
+
+Some useful comperisons:
+# A — realistic costs, no gate (isolates fees/position effect)
+uv run python scripts/oos_harness.py --stocks --days 100 \
+    --models lstm linreg knn baseline --turnover-fees --position-mode \
+    --fees 0.03 --buy-hold --no-refresh --sentiment-method finbert
+
+# B — same + confidence gate at 0.60 (isolates the gate effect)
+uv run python scripts/oos_harness.py --stocks --days 100 \
+    --models lstm linreg knn baseline --turnover-fees --position-mode \
+    --min-confidence 0.60 --fees 0.03 --buy-hold --no-refresh --sentiment-method finbert
 """
 
 from __future__ import annotations
