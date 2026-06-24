@@ -9,6 +9,8 @@ k-NN / LinReg references and a suite of naive + news-aware baselines — with
 VADER/FinBERT sentiment. Walk-forward backtesting with realistic fees (turnover /
 position-based), stop-loss sweeps, a confidence gate, and an **out-of-sample
 harness** + significance tests so results are honest, not selection-inflated.
+A separate **point-forecast track** scores predicted price *levels* against a
+random-walk baseline (Theil U2 / MASE) with ARIMA / XGBoost / naive forecasters.
 Modular: clean separation of data layer, model engine, CLI, and a React web UI.
 
 > **Disclaimer:** This is an educational/research project. Predictions are not financial advice.
@@ -235,6 +237,25 @@ uv run python backtest.py --tickers NVDA --compare-periods --periods 1y 2y --mod
 - `--significance` — binomial p + Wilson CI on accuracy, bootstrap CI on return, with Benjamini-Hochberg FDR — is the result distinguishable from a coin flip?
 - For the **honest** read, use the out-of-sample harness rather than `--compare-periods`' best-of: `scripts/oos_harness.py` picks a winner on one window and scores it on a disjoint one. See [docs/run/research.md](docs/run/research.md).
 
+### Point-forecast track (predicting values, not direction)
+
+A separate evaluation path scores predicted **price levels** instead of UP/DOWN trades — no fees, positions, or P&L. The headline is **scale-free skill vs a random walk** (Theil U2 < 1 ⇔ beats RW; MASE), because on a price level absolute RMSE/MAPE flatter every model.
+
+```bash
+# Rank every available forecaster by skill vs a random walk
+uv run python scripts/forecast_harness.py --stocks --days 100 --horizon 1 --no-refresh
+```
+
+Forecasters: **Random Walk** (the reference), **RW + Drift**, **Seasonal Naive**, plus **ARIMA** (`statsmodels`) and **XGBoost** (`xgboost`) from the `[forecast]` extra, an **LSTM regressor** (per-ticker, `torch`), and the existing Prophet/Chronos/Kronos point forecasts. Output lands in `results/fc_<scope>_<days>d_h<h>_<ts>/`.
+
+The LSTM regressor (a separate Δ-predicting network — *not* the directional classifier) needs pre-trained per-ticker weights; train them leakage-safely first (same `--days`/`--horizon` you score with):
+
+```bash
+uv run python scripts/train_lstm_regressor.py --stocks --days 100 --horizon 1
+```
+
+This is the foundation of the residual-hybrid research track (Prophet+LSTM hybrid + Diebold–Mariano / Wilcoxon tests come next). See [docs/forecasting-regression.md](docs/forecasting-regression.md).
+
 ### Stop-loss (single or sweep)
 
 `--stop-loss 2` means: if the position drops 2% intraday, exit immediately at the stop-loss price instead of holding until close (uses real High/Low). A single value runs each model twice (no-SL baseline + SL). Pass several (`--stop-loss 0 5 10 15`) or `--sl-sweep` to compare levels side by side.
@@ -343,6 +364,12 @@ marketpulse-ai/
 │   ├── prophet_model.py     # Prophet (fits per call, CPU)
 │   ├── chronos_model.py     # Chronos-2 (zero-shot foundation model, loads once)
 │   ├── kronos_model.py      # Kronos (OHLCV candlestick foundation model, sibling clone)
+│   ├── naive_forecasters.py # Regression baselines: Random Walk / RW+Drift / Seasonal Naive (U2 reference)
+│   ├── arima_model.py       # ARIMA point-forecaster (optional statsmodels)
+│   ├── xgboost_model.py     # XGBoost point-forecaster on the feature matrix (optional xgboost)
+│   ├── lstm_regressor.py    # LSTM point-forecaster (Δ-target, per-ticker weights; optional torch)
+│   ├── regression_metrics.py# Point-forecast metrics: RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2
+│   ├── forecast_backtester.py# Walk-forward point-forecast harness (no trading; leakage-guarded)
 │   ├── backtester.py        # Walk-forward engine (P/L, fees, SL, DD, Sharpe, B&H, streaks, elapsed_seconds)
 │   ├── backtest_helpers.py  # Shared helpers (display, export, benchmarks, model variants, timing)
 │   ├── utils.py             # Common helpers shared across layers
@@ -360,6 +387,7 @@ marketpulse-ai/
     ├── knn.md, linear-regression.md, lstm.md
     ├── features.md, sentiment.md
     ├── forecasting.md       # Prophet, Chronos-2, Kronos + the ForecastModel interface
+    ├── forecasting-regression.md # Point-forecast track: U2/MASE, RW/ARIMA/XGBoost, forecast harness
     ├── backtesting.md       # Methodology, fees, stop-loss, B&H, streaks, timing
     └── api.md               # Architecture, DB schema, model contract
 ```
@@ -384,7 +412,7 @@ uv run python -m pytest tests/test_backtester.py -v
 uv run python -m pytest tests/test_backtester.py::TestFees -v
 ```
 
-Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L, fees, stop-loss + sweep, turnover, hold-days, position mode, FLAT no-trade, risk metrics, streaks, yearly), baselines (naive + news-aware), confidence calibration + gating, statistical significance, the OOS harness, shared CLI arg groups, news pipeline, web API (data / meta / predict / backtest / oos / docs / settings / analysis), CSV export, logger, config.
+Test coverage: models (k-NN, LinReg, LSTM), feature engineering, backtester (P/L, fees, stop-loss + sweep, turnover, hold-days, position mode, FLAT no-trade, risk metrics, streaks, yearly), baselines (naive + news-aware), confidence calibration + gating, statistical significance, the OOS harness, the point-forecast track (regression metrics + MASE/U2 invariants, naive forecasters, walk-forward forecast harness with leakage guarantee), shared CLI arg groups, news pipeline, web API (data / meta / predict / backtest / oos / docs / settings / analysis), CSV export, logger, config.
 
 ## CI / CD
 
@@ -448,7 +476,7 @@ See [plan.md](plan.md) for the research roadmap and backlog.
 
 ## Tech Stack
 
-**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · transformers + PyTorch (FinBERT + LSTM, optional `ai` extra) · NumPy · tqdm · SQLite · Prophet · Chronos-2 (chronos-forecasting) · Kronos (sibling clone)
+**Engine:** Python 3.12 · pandas · yfinance · scikit-learn · NLTK (VADER) · transformers + PyTorch (FinBERT + LSTM, optional `ai` extra) · NumPy · tqdm · SQLite · Prophet · Chronos-2 (chronos-forecasting) · Kronos (sibling clone) · statsmodels (ARIMA) · XGBoost · SciPy — forecasting stats (all optional `forecast` extra)
 
 **News sources:** Yahoo Finance · GDELT 2.0 Doc API (free, no key, multi-year history)
 

@@ -459,6 +459,72 @@ Convention: `print()` for user-facing tables/reports. `log.*` for operational me
 - Wired into **backtests only** via `config.FORECAST_MODELS` → `run_single_backtest()`. `main.py` report + web GUI not yet. TiRex parked (not on PyPI, macOS-experimental, non-standard NX-AI license).
 - `print_summary_table` groups results by model family and ranks by return within group; `print_next_day_forecast` guards against models with zero valid days.
 
+### Regression / point-forecast track (R-phase) — separate from trading
+
+A parallel evaluation path that scores predicted **price levels**, not UP/DOWN
+trades. It is kept deliberately separate from `backtester.py` (no positions /
+fees / SL) per `plan.md` (forecasting plan, R1.2). See that file for the full
+R0–R8 roadmap (residual Prophet+LSTM hybrid, DM/Wilcoxon, residual diagnostics).
+Implemented so far (R0–R2 foundation):
+- `engine/regression_metrics.py` — **pure** (numpy/stdlib). Absolute: `rmse`,
+  `mae`, `mape`, `smape`. **Scale-free skill (the headline):** `mase`, `rmsse`
+  (in-sample naive scaling), `theil_u2` = RMSE(model)/RMSE(random-walk). **U2 <
+  1 ⇔ beats RW**; the RW forecaster scores exactly 1.0. `compute_all()` bundles
+  them into `ForecastMetrics`. Rationale: on a price level the no-change RW
+  already gets a tiny RMSE/MAPE, so absolute errors flatter everything — report
+  U2/MASE first. Degenerate denominators return NaN (never inf), so medians
+  across tickers stay clean.
+- `engine/naive_forecasters.py` — the regression baselines (analogue of
+  `baseline_models.py`): `RandomWalkForecaster` (`P̂=P_t`, the U2 reference),
+  `RandomWalkDriftForecaster` (+ mean change), `SeasonalNaiveForecaster(m)`. All
+  subclass `ForecastModel` via `_raw_forecast`, so they plug into the harness
+  and get the value→direction adapter free. `default_naive_forecasters(season)`.
+- `engine/arima_model.py` (`ARIMAForecaster`, optional **statsmodels**;
+  `auto=True` uses pmdarima if present) and `engine/xgboost_model.py`
+  (`XGBoostForecaster`, optional **xgboost**) — both subclass `ForecastModel`,
+  gated by `_STATSMODELS_AVAILABLE` / `_XGBOOST_AVAILABLE`, raise a clear
+  RuntimeError on construction when absent so the harness skips them. XGBoost
+  trains on the **Δ target** (`close[t+h]−close[t]`) and adds it back to the last
+  close, so trees aren't capped by the training range on a trend (target is a
+  level either way — plan R0.1). Reuses `features.py`.
+- `engine/forecast_backtester.py` — lean walk-forward loop (`ForecastBacktester`).
+  Expanding window, **direct-h** horizons, refit-cadence `K` (cost knob only —
+  visible data is always ≤ t regardless of K), per step records `(date,
+  horizon, y_true, y_pred, y_naive=close[t])`. **Leakage guarantee:** the model
+  only ever receives `df.iloc[:t+1]`; the realised `close[t+h]` is never in that
+  slice (unit-tested with a spy). Scores via `compute_all` against the shared RW
+  reference. Returns `ForecastRun` (steps + `ForecastMetrics`).
+- `engine/lstm_regressor.py` (`LSTMRegressorForecaster`, optional **torch**) — a
+  **new** LSTM with a *linear* head predicting the next-close Δ (added back to
+  last close). **Distinct from `ai_model.py`**, which is a UP/DOWN classifier
+  whose sigmoid output has no magnitude info — so the saved `{ticker}_{period}_
+  {preset}.pt` classifiers are *not* reusable here. LSTM-reg is **per-ticker**:
+  it lazily loads pre-trained weights from `models/{ticker}_reg.pt` (`_reg`
+  suffix avoids collision) and skips the ticker if torch/weights are absent.
+  `train_regressor(preset=…)` builds + fits the net (chronological val split,
+  early stop, feature + Δ standardisation saved in the checkpoint). Presets
+  `quick/standard/cluster` (`REG_TRAINING_PRESETS`, mirroring the classifier's
+  tiers) set capacity+budget; explicit kwargs override. **No discrete period
+  files** — the training window is the `--max-train` knob (no per-ticker period
+  *selection*, by design, to avoid regression-track selection inflation). Will
+  double as the Phase-R3 residual learner. Trained via `scripts/train_lstm_regressor.py`, which
+  **trims the last `--days+--horizon` rows before fitting** so the harness eval
+  window is unseen (loaded weights are OOS-valid only when trained with the same
+  `--days/--horizon` used to score).
+- `scripts/forecast_harness.py` — CLI entrypoint (regression analogue of
+  `oos_harness.py`). `build_forecasters()` = naive always + optional ARIMA /
+  XGBoost / Prophet when their lib imports; the per-ticker LSTM-reg is added
+  inside the ticker loop (disable with `--no-lstm`). Persists tidy per-step CSV +
+  `_fc_summary.csv` under `results/fc_<scope>_<days>d_h<h>_<ts>/`; console table
+  ranked by U2/MASE. `--days/--horizon/--refit-k/--min-train` + scope flags.
+- New optional deps (statsmodels, xgboost, scipy, pmdarima) added to the
+  `[forecast]` extra. Tests: `tests/test_regression_metrics.py`,
+  `test_naive_forecasters.py`, `test_forecast_backtester.py` (all pure, run
+  without the optional libs).
+- **Not yet (next R-phase sessions):** residual hybrid (R3, needs
+  `fit_in_sample` on the base + a residual LSTM regressor), macro features (R4),
+  DM + Wilcoxon forecast-comparison stats (R5), residual diagnostics (R6).
+
 ### Per-model timing & period selection
 
 - `BacktestResult.elapsed_seconds` — `Backtester.run()` times each walk-forward run. `backtest.py --timing` prints a slowest-first per-model breakdown (`print_timing_table` in `backtest_helpers`) after the summary; `run_all.py` prints a time-by-model-family rollup (time / share / wins) at the end of a batch. Use these to drop a model that costs a lot and rarely wins.

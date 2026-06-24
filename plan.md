@@ -1,196 +1,309 @@
-# MarketPulse AI — Plan
+# MarketPulse AI — Forecasting Plan (Residual-Hybrid track)
 
-Working plan and research roadmap. Captured here so the top-level `README.md`
-can stay short (link to this file).
+Companion to `plan.md`. `plan.md` is the **directional** (UP/DOWN, trading-P&L)
+research track. **This file is the point-forecast / regression track** that the
+paper *"When Does Residual Learning Improve Financial Time-Series Forecasting:
+Evidence from Prophet–LSTM Hybrid Models"* actually needs.
 
-## Where we are (baseline finding)
-
-No directional edge at any horizon — accuracy is ~0.49–0.51 for 40 / 100 / 300-day
-holdouts. The daily long/short strategy trails buy-and-hold, and the gap *widens*
-with horizon (beat-B&H rate 27% → 19% → 2%) because daily round-trips compound fees
-(~4% / 6% / 30% drag) while B&H compounds the bull trend. Even cherry-picking the best
-model per ticker, only ~2/11 beat B&H over 300 days. LSTM is the only family with a
-positive median return / Sharpe at 300d; k-NN is consistently worst.
-
-**Organizing principle:** before chasing an edge, build the *measurement rigor* to
-detect one. Phase 1 makes every later result trustworthy; skipping it means every
-experiment in Phase 2 just produces selection-inflated, statistically-meaningless
-numbers (the same trap as the cherry-picked `_summary.csv`).
-
-The benchmark to beat is not just buy-and-hold — it's the **naive baselines** below.
+The two tracks share the data layer, the asset registry, the walk-forward
+discipline, the OOS harness mindset, and the multiple-comparison hygiene — but
+they have **different prediction targets and different metrics**, so they get
+separate engines and separate evaluation paths. Do **not** bolt regression onto
+the trading backtester; keep them parallel.
 
 ---
 
-## Phase 1 — Measurement rigor (do first)
+## North star
 
-### 1.1 Out-of-sample model-selection harness  [foundational] ✅ DONE
-- Pick the best model+period on window N; evaluate it *only* on the next disjoint
-  window N+1. Report OOS beat-B&H rate + median return.
-- Motivation: best-per-ticker is selection-inflated, and winners are unstable
-  (1 of 7 stable across the 40d/100d runs). Every result below is judged OOS,
-  never on in-sample best-per-ticker.
+Produce, score, and statistically compare the artifact in the paper:
 
-### 1.2 Naive-strategy benchmark suite ✅ DONE
-- Add trivial "models" so the ML must clear a real bar, not just B&H:
-  - **Always Long** — predict UP every day (define as hold-long, no daily churn, so
-    it isn't just paying fees; this is the "is the model better than blind optimism?" test).
-  - **Previous-Day Direction** — predict today = yesterday's realized direction.
-  - **5-Day Momentum** — UP if `close[t] > close[t-5]`, else DOWN.
-  - **Random Direction** — seeded coin flip (the floor + the null for significance).
-  - **Sign-Only Momentum** - predict UP if cumulative return over last N days > 0. (eg. N = 20, 50 etc.)
-- Implementation: each is a `predict()` that ignores the trained model; slot into the
-  backtester as variants so they get identical metrics and are directly comparable.
-  Consider a `--baselines` flag (or always include them).
-- Pass bar for any real model: **beat Previous-Day-Direction and Always-Long**, not
-  just B&H.
+```
+P̂_{t+1} = P̂_{t+1}^{base} + r̂es_{t+1}
+res_t   = P_t − P̂_t^{base}            (base = Prophet for now)
+r̂es     = residual learner (LSTM-regressor for now)
+```
 
-### 1.3 Confidence calibration + gating  [highest-value lever]  ✅ DONE
-> Implemented: `engine/calibration.py` (reliability bins, Brier, ECE, gating
-> metrics), `Backtester(min_confidence=θ)` in-engine gate, `--min-confidence`
-> on `backtest.py`/`run_all.py`, `--confidence-sweep` printer, and
-> `--min-confidence` on `scripts/oos_harness.py` (same θ on both windows — the
-> out-of-sample "does gating survive?" test). See *Phase-1.3/1.4* in AGENTS.md.
-- First read the existing confidence-calibration output: are high-confidence days
-actually more accurate? If calibration is flat, gating only shrinks exposure.
-- Add `--min-confidence θ`: days below θ are flat (0 P&L, no fee, excluded from
-accuracy). Sweep θ ∈ {0.55, 0.60, 0.65, 0.70}.
-- Track: accuracy on traded days, coverage (% days traded), return, fees saved.
-- Pass bar: traded-day accuracy materially > 0.5 AND return improves vs θ=0.
-- Implementation note: the gate lives in `engine/backtester.py` (per-day loop) plus a
-flag in `backtest.py` / `run_all.py`.
-- Reliability diagram
-- Brier score
-- Expected Calibration Error (ECE)
+The paper's title is a **conditional** ("*When* does it improve"). So the
+deliverable is not "hybrid wins" — it's a **map of the regimes/assets/horizons
+where the residual step adds real, out-of-sample, statistically-significant skill
+over (a) the base model alone and (b) a random walk**, plus the residual
+diagnostics that explain *why*.
 
-### 1.4 Statistical significance testing  ✅ DONE
-> Implemented: `engine/significance.py` (exact binomial test, Wilson CI,
-> bootstrap CI on returns, permutation test, Benjamini-Hochberg FDR),
-> `--significance` printer on `backtest.py`. Tests only *traded* days and
-> applies FDR across the models in one report (no grid p-hacking).
-- Currently reported: accuracy, returns, Sharpe, Sortino. Add:
-  - **Binomial test** on directional accuracy (H0: p = 0.5) → p-value.
-  - **Wilson score CI** on accuracy (honest interval, not ±point estimate).
-  - **Bootstrap CI** on returns / Sharpe (returns are fat-tailed — resample daily P&L).
-  - **Permutation test** vs Random Direction (shuffle predicted directions for the null).
-- **Critical caveat:** across hundreds of model×period×ticker combos, raw p-values are
-  selection-inflated. Either correct for multiple comparisons (Benjamini-Hochberg FDR)
-  or formally test only the single OOS-selected config from 1.1. Don't p-hack the grid.
+### Extensibility (explicit design requirement)
 
+`base` and `residual learner` must be **composable**, because the paper roadmap is
+Prophet+LSTM now, then Prophet+Chronos, Prophet+Kronos, etc. Build **one**
+`ResidualHybrid(base, residual_learner)` (Phase R3) so the combination matrix is
+free:
+
+| base ↓ / residual learner → | LSTM-reg | XGBoost | (future) |
+|---|---|---|---|
+| **Prophet** | paper v1 | ablation | |
+| **Chronos-2** | later | later | |
+| **Kronos** | later | later | |
+| **ARIMA** | classic Zhang-2003 hybrid (good sanity baseline) | | |
+
+Any model exposing a point forecast (`ForecastResult.point`, already in
+`engine/forecast_base.py`) can be a `base`; any regressor can be the residual
+learner.
 
 ---
 
-## Phase 2 — Strategy experiments (once Phase 1 can trust the numbers)
+## Phase R0 — Evaluation contract (do first; cheap, prevents rework)
 
-### 2.1 Turnover / fee realism  ✅ DONE
-> Implemented: `Backtester(turnover_fees=True)` charges the round-trip fee only
-> on position changes; `hold_days=N` holds a position N days before re-reading
-> the signal. `--turnover-fees` / `--hold-days` on `backtest.py` / `run_all.py` /
-> `oos_harness.py`. `BacktestResult.turnover_count` / `fees_paid` report the drag.
-- Daily round-trips dominate cost (~30% over 300d). Test trading only on signal
-  *changes* (hold through same-direction days) or longer holding periods. Report
-  turnover-adjusted returns.
+Decide and write down, before any code, because each choice silently changes every
+later number:
 
-### 2.2 Stop-loss sweep  ✅ DONE
-> Implemented: `--stop-loss` accepts a list (e.g. `0 5 10 15`) and `--sl-sweep`
-> uses `config.SL_SWEEP`; each model runs once per level (0 = no-SL baseline),
-> on `backtest.py` / `run_all.py`. Levels share fee/gate/turnover settings.
-- `--stop-loss ∈ {0, 5, 10, 15}` on 100d + 300d. Expect wide/off best for daily holds
-  (a 10%+ intraday trigger is rare for large-caps); most informative on volatile names
-  (TSLA, NVDA, crypto). Won't fix a missing edge — it's a risk knob.
-
-### 2.3 LSTM focus
-- Only family with positive median return / Sharpe. Tune lookback / features / epochs;
-  try LSTM-only confidence gating. Spend tuning effort here, not on k-NN.
-
-### 2.4 k-NN k-sweep  [low priority]
-- k ∈ {3, 5, 7, 9, 11}. Only meaningful under the OOS harness (1.1); high overfitting
-  risk and k-NN is the worst family. Don't expect much.
-
-### 2.5 Reframe the success metric
-- Beating B&H absolute return in a bull market via daily flips is very hard. Also track
-  risk-adjusted (Sharpe / Sortino) and drawdown vs B&H, and define a clear, falsifiable
-  success bar up front.
-
-## Falsification criteria
-
-The project will consider daily-direction prediction unsuporrted if:
-
-- OOS accuracy remains statistically indistinguishable from 50%.
-- confidence gating fails to produce a profitable subset.
-- No model consistently beats the naive baselines.
-- No strategy beats buy-and-hold on a risk-adjusted basis after fees.
-
-If all four hold after Phase 2, future work shifts toward:
-- regression forecasting
-- portfolio construction
-- volatility/risk prediction
-ratther than next-day direction prediction.
+- **R0.1 Target space.** Forecast the **price level** (matches the paper and
+  Prophet's trend/seasonality decomposition). Add **log-return space** as a
+  robustness variant in R8, *not* as the primary — but commit to level now.
+- **R0.2 Leakage rule for residuals** (the single most important correctness
+  decision):
+  - *Training* the residual learner: use the base model's **in-sample fitted**
+    residuals on the training window (standard, Zhang 2003).
+  - *Prediction* at test time: the base forecast `P̂^{base}_{t+1}` must be a genuine
+    out-of-sample forecast, and the residual learner may use **only residuals up to
+    `t`**. No residual at `t+1` is ever visible at prediction time.
+  - Any exogenous regressor fed to Prophet for `t+1` must be known at `t` (lag-1) —
+    Prophet's `add_regressor` does **not** forecast regressors, so future values
+    would be leakage. See R4.
+- **R0.3 Walk-forward + refit cadence.** Prophet already refits per day in the
+  directional engine, but a full hybrid (Prophet refit + LSTM retrain) per day is
+  infeasible. Use **expanding window, refit every `K` trading days** (start `K=21`,
+  ~monthly), predicting the in-between steps from the frozen fit. Expose `K` as a
+  config knob and sweep it in R8. Log `elapsed_seconds` per refit (engine already
+  supports this).
+- **R0.4 Multi-horizon convention.** Use **direct-h** (a separate model/forecast per
+  horizon) for `h ∈ {1, 5, 10, 20}`. Prophet forecasts h-ahead natively; the residual
+  learner gets a per-horizon target. Avoid recursive multi-step (error compounding
+  muddies the "does residual help" signal).
+- **R0.5 Split discipline.** Reuse the OOS philosophy from `plan.md` §1.1: any
+  hyperparameter / model selection happens on a window strictly disjoint from the
+  reported evaluation window.
 
 ---
 
-## Phase 3 — Engineering / infrastructure (supporting, lower priority than research)
+## Phase R1 — Regression evaluation path  [foundational]
 
-### 3.1 Experiment tracking & reproducibility
-- Biggest infra gap. Keep it proportionate — **not** Weights & Biases (cloud/collab
-  overkill for a solo project). Options, cheapest first:
-  - A custom SQLite `experiments` table: one row per run with `run_id`, `git_sha`,
-    `timestamp`, `config_json`, scope/days/fee, and the headline metrics. Sits next to
-    the existing `results/` CSVs (the dir-naming already encodes half of this).
-  - Local MLflow (`mlflow.log_params/metrics`) if a browsable UI is wanted.
-- Reproducibility: pin seeds (numpy / torch / random), and record git SHA (+ dirty flag),
-  the resolved config, and the data date-range with every run.
+A point-forecast scoring path parallel to the trading backtester.
 
-### 3.2 Model registry
-- Collapse the manual 4-step add (file → `api._get_model` → `backtest_helpers` variants
-  → `main.py`) into a decorator:
+- **R1.1 `engine/regression_metrics.py`** — pure (numpy + stdlib), mirroring the
+  style of `engine/calibration.py`:
+  - Absolute: `rmse`, `mae`, `mape`, `smape`.
+  - **Scale-free skill (the anti-level-trap core — these are the headline metrics):**
+    - **MASE** = `mean(|e_t|) / MAE_naive_insample`, naive = one-step random walk.
+    - **RMSSE** = `sqrt(mean(e_t²) / MSE_naive_insample)` (the M5 metric).
+    - **Theil's U2** = `RMSE(model) / RMSE(random-walk)`. **U2 < 1 ⇔ beats RW.**
+  - Rationale to put in the paper: on a persistent price level, the no-change RW
+    forecast already gets a tiny RMSE/MAPE, so **absolute** errors flatter every
+    model and are nearly uninformative. Report skill *relative to RW* or the results
+    are not interpretable. **This is the biggest methodological risk in the draft —
+    make it a first-class result, not a footnote.**
+- **R1.2 `engine/forecast_backtester.py`** — a lean walk-forward loop that, per step,
+  records `(date, horizon, y_true, y_pred, model_name, ticker)` and nothing trade-
+  related. Do **not** reuse `backtester.py` (it's saturated with position/fee/SL
+  logic irrelevant here). Honour R0.3 refit cadence and R0.4 horizons.
+- **R1.3 Persist per-step predictions.** Surface `ForecastResult.point` end-to-end
+  (the README/AGENTS already flag this as "a later step") into a tidy CSV:
+  `results/fc_<scope>_h<h>_<ts>/{TICKER}.csv` with columns above + per-model summary.
+- **R1.4 Console + summary table** grouped by model family, ranked by **MASE / U2**
+  (not RMSE).
+- **Tests:** `tests/test_regression_metrics.py` — hand-computed MASE/RMSSE/U2 on a
+  toy series; RW must score U2 = 1.0 and MASE ≈ 1.0 by construction.
+- **Pass bar:** every model reports MASE + Theil U2 against RW on the same OOS window.
+
+---
+
+## Phase R2 — Regression benchmarks (the bar the hybrid must clear)
+
+The paper names Random Walk, ARIMA, Prophet, LSTM, XGBoost. Prophet/LSTM exist but
+as direction emitters; the rest don't exist at all.
+
+- **R2.1 `engine/naive_forecasters.py`** — `RandomWalk` (`P̂_{t+1}=P_t`),
+  `RandomWalkDrift` (+ mean historical change), `SeasonalNaive` (weekly/`m`-step).
+  These are the regression analogue of `baseline_models.py`. RW is the *reference*
+  for U2/MASE, so it must exist as an explicit forecaster, distinct from the trading
+  `PreviousDay` baseline.
+- **R2.2 `engine/arima_model.py`** — ARIMA via `statsmodels` (or `pmdarima.auto_arima`
+  for order selection on the selection window only). Refit on R0.3 cadence.
+- **R2.3 `engine/xgboost_model.py`** — `XGBRegressor` on the tabular feature matrix
+  (the paper lists XGBoost as *both* a feature consumer and a benchmark). Targets the
+  level (or Δ — decide in R0.1). Reuses `features.py` + R4 macro features.
+- **R2.4** All four subclass the regression forecaster contract (point-forecast +
+  `fit/predict`), so `forecast_backtester` picks them up like `FORECAST_MODELS`
+  picks up Prophet/Chronos/Kronos today.
+- **Pass bar for *any* model, hybrid included:** Theil U2 < 1 (beats RW) **and**
+  DM-significant vs RW (R5). The paper's interesting comparison is hybrid vs
+  **base-alone** and vs **plain LSTM / plain XGBoost**, not vs RW (which is the floor).
+
+---
+
+## Phase R3 — The residual hybrid (paper's central artifact)
+
+- **R3.1 `engine/lstm_regressor.py`** (or a regression head on `ai_model.py`) — LSTM
+  that predicts a continuous target `r̂es_{t+1}` from a window of past residuals
+  (+ optionally features/macro). Today's `ai_model.py` is a classifier; do **not**
+  overload it — a clean regressor is less risky. Reuse the StandardScaler + early-
+  stopping plumbing.
+- **R3.2 `engine/residual_hybrid.py`** — the composition:
   ```python
-  @register_model("chronos")
-  class Chronos2Model: ...
+  class ResidualHybrid:
+      def __init__(self, base: ForecastModel, residual_learner): ...
+      def fit(self, df):
+          base_fit   = self.base.fit_in_sample(df)        # fitted P̂^base on train
+          residuals  = df.close - base_fit                 # R0.2 training residuals
+          self.residual_learner.fit(residuals, exog=...)   # learns structure base missed
+      def forecast(self, df, h) -> ForecastResult:
+          p_base = self.base.forecast(df, h).point          # genuine OOS base forecast
+          r_hat  = self.residual_learner.predict(...)        # residuals up to t only
+          return ForecastResult(point=p_base + r_hat)
   ```
-  populating a central `MODEL_REGISTRY` that `api` and `backtest_helpers` read.
-- Unify with the existing `config.FORECAST_MODELS` + `ForecastModel` pattern rather than
-  adding a parallel mechanism. Best done the next time a model is added. Nice DX,
-  low research payoff.
+  This is what makes Prophet+Kronos / Prophet+Chronos free later — swap `base`.
+- **R3.3 Multivariate Prophet** — extend `prophet_model.py` with `add_regressor` for
+  OHLC-in-level + macro (R4) + technicals + the two sentiment signals (R0.2 lag rule
+  applies). Keep univariate Prophet as a separate registered model so the
+  multivariate uplift is measurable.
+- **R3.4 Residual-construction utility** with the R0.2 leakage rule unit-tested
+  (a `forecast_backtester` spy that asserts the residual learner never sees
+  `res_{t+1}` and the base forecast for `t+1` used no data past `t`).
+- **Tests:** `tests/test_residual_hybrid.py` — identity check (zero residual learner →
+  hybrid ≡ base), additive-reconstruction check, and the disjoint/leakage guarantee.
+- **Pass bar:** hybrid Theil U2 < base-alone Theil U2, **DM-significant**, OOS.
 
 ---
 
-## Phase 4 — Bigger features (after an edge is demonstrated)
+## Phase R4 — Macro & exogenous features
 
-### 4.1 Multi-asset portfolio backtesting
-- Current backtests are single-ticker × period. Portfolio-level allocation, rebalancing,
-  and portfolio risk are valuable — but premature until individual signals beat the naive
-  baselines (1.2). Allocating across coin-flip signals isn't meaningful. Revisit once
-  Phase 1 shows something real.
+Currently `features.py` is per-ticker only; the registry holds only tradeable
+tickers (GLD/VOO/QQQM/FXE). The paper wants macro exogenous inputs.
 
+- **R4.1 `engine/macro_data.py`** — fetch VIX (`^VIX`), DXY (`DX-Y.NYB`, fallback ETF
+  `UUP`), Gold (`GLD`/`GC=F`), SP500 (`^GSPC`/`SPY`) in **log-returns**, and DGS1
+  (1-Year Treasury, **FRED** — not yfinance) as a level/yield. Cache to SQLite next to
+  prices.
+- **R4.2 Calendar alignment** — reindex onto each ticker's trading calendar,
+  **forward-fill** gaps (FRED is business-day with holidays/missing), then **lag by 1
+  day** so only information available at `t` predicts `t+1` (R0.2). Unit-test the
+  no-lookahead alignment.
+- **R4.3 Sentiment pos/neg split** — surface positive and negative scores separately
+  (paper specifies two signals), not just one signed score; the news pipeline already
+  produces per-day scores.
+- **R4.4 Wiring** — macro/sentiment columns flow into the LSTM/XGBoost feature matrix
+  *and* into Prophet as regressors (R3.3).
+- **Pass bar:** an **ablation** (price-only vs +tech vs +macro vs +sentiment) reported
+  honestly. "Macro doesn't help" is a fine, publishable result if that's what the data
+  says.
 
 ---
 
-## Ideas & research backlog (unscheduled)
+## Phase R5 — Forecast-comparison statistics
 
-Captured for later — not yet implemented.
+`engine/significance.py` is entirely directional (binomial / Wilson / permutation).
+Forecast accuracy needs different tests.
 
-### Richer signals (features.py / ALL_FEATURES)
-- **Volatility momentum** — momentum measured on volatility / vol-adjusted momentum.
-- **Cross-asset features** — feed correlated assets in as inputs (e.g. gold↔USD,
-  BTC↔BNB, index↔constituent), not just the ticker's own history. (Now that commodities/
-  indices/FX exist in the registry, the cross-asset inputs are available locally.)
+- **R5.1 Diebold–Mariano** — on the loss differential `d_t = g(e¹_t) − g(e²_t)`,
+  `g ∈ {squared, abs}`. Implementable in pure numpy: DM stat = `d̄ / sqrt(HAC-var(d̄))`
+  with Newey–West (`h−1` lags for h-step). Apply the **Harvey–Leybourne–Newbold**
+  small-sample correction and compare to `t_{T−1}`. This is *the* standard test for
+  the paper's tables.
+- **R5.2 Wilcoxon signed-rank** — on paired per-step losses (non-parametric companion
+  to DM). **Dependency decision:** either add `scipy` (`scipy.stats.wilcoxon`) as a
+  real dep now that you're doing forecasting stats, or implement the normal
+  approximation with tie correction in numpy to keep the "no-scipy" property. DM is
+  trivially numpy; Wilcoxon is the only thing pulling toward scipy. Recommend: numpy DM
+  + scipy Wilcoxon, and gate scipy behind the `[forecast]` extra.
+- **R5.3 Multiple comparisons** — reuse the existing Benjamini–Hochberg FDR across the
+  model × ticker × horizon grid (the same anti-p-hacking rule as `plan.md` §1.4). Don't
+  read a single raw DM p-value off a 200-cell grid.
+- **Tests:** `tests/test_forecast_significance.py` — DM symmetry (`DM(a,b) = −DM(b,a)`),
+  DM≈0 for identical forecasts, a known worked example, HLN correction sign.
+- **Pass bar:** hybrid vs each benchmark via DM **and** Wilcoxon, FDR-corrected, on the
+  OOS window only.
 
-### Reddit sentiment (new provider behind `get_provider()`)
-- Add Reddit alongside yahoo/gdelt, scored with the existing VADER/FinBERT pipeline.
-- **Pushshift caveat:** the open Pushshift API is gone — Reddit restricted it to approved
-  moderators in 2023–24. For live posts use the official Reddit API via PRAW (free app
-  key); for historical backfill use Arctic Shift (the Pushshift successor — monthly Reddit
-  dumps via Academic Torrents).
+---
 
-### Specific-price (regression) prediction + intraday
-- Predict an actual price level, not just UP/DOWN. The forecasting models already compute
-  a point value (`ForecastResult.point`) that we currently collapse to a direction —
-  surface it and score with regression metrics (MAE / RMSE / MAPE) instead of accuracy.
-- Explore minute / intraday bars. **Caveat:** yfinance only serves ~7 days of 1-minute
-  data (~60 days for coarser intraday intervals), so minute-level backtests have a short
-  lookback — a dedicated intraday data source is needed for real history.
-- Investigate whether news improves specific-price prediction. News can stay **daily**
-  even when prices are intraday — daily sentiment as a slow-moving feature is fine.
+## Phase R6 — Residual diagnostics (the empirical heart of "*When*")
+
+This is what literally answers the title — does the Prophet residual contain learnable
+structure, and does its presence predict where the hybrid wins?
+
+- **R6.1 `engine/residual_diagnostics.py`** — ACF/PACF of base residuals, **Ljung–Box**
+  Q-test (residual autocorrelation), variance-ratio / runs test. Per ticker, per regime
+  (R7), per horizon.
+- **R6.2 The key cross-tab** — plot/tabulate **residual autocorrelation strength** (e.g.
+  Ljung–Box statistic, or |ACF(1)|) against **hybrid skill gain** (`ΔU2 = U2_base −
+  U2_hybrid`). The paper's thesis: residual learning helps **iff** the base model's
+  residual is structured (autocorrelated), and adds nothing when residuals are white
+  noise (efficient/random-walk-like series).
+- **Pass bar:** a monotone-ish relationship (more residual structure → more hybrid gain),
+  or a clean negative result ("residuals are white noise everywhere → hybrid ≈ base").
+  Either way it's the paper's central figure.
+
+---
+
+## Phase R7 — Multi-horizon, regime, asset-class analysis (maps to Results §5.x)
+
+Reuse the existing scope/registry machinery; these are evaluation slices, not new
+engines.
+
+- **R7.1 Horizons** `h ∈ {1,5,10,20}` (R0.4 direct-h). Expect skill to decay with `h`.
+- **R7.2 Asset class** — Currencies (FXE), Indices (VOO/QQQM), Crypto, Commodities
+  (GLD). Hypothesis: more hybrid gain on less-efficient classes (crypto/commodities).
+- **R7.3 Regime split** — bull / bear / high-vol / low-vol (VIX terciles or realized-vol
+  quantiles). Hypothesis: residual structure (hence hybrid gain) concentrates in
+  high-vol / trending regimes.
+- **Pass bar:** results reported per slice, with the R6 residual-structure overlay so
+  the "when" is *explained*, not just tabulated.
+
+---
+
+## Phase R8 — Robustness (maps to Robustness §7)
+
+- Lookback windows (LSTM sequence length), refit cadence `K` (R0.3), hyperparameters
+  (LSTM units/depth, XGBoost depth/lr, ARIMA order policy), asset subsets, and the
+  **level-space vs log-return-space** variant from R0.1.
+- Seed sweep (numpy/torch) — report mean±std of headline metrics, not a single lucky run.
+- **Reproducibility statement** for the paper: pinned seeds, public git SHA, resolved
+  config, data date-range, compute cost (`elapsed_seconds` already logged). This is
+  `plan.md` §3.1 — share it with the directional track.
+
+---
+
+## Paper ↔ code map
+
+| Paper section | Provided by |
+|---|---|
+| §3.2 Data Preprocessing | R4 (macro), R0.2 (lags), existing `features.py` |
+| §3.3 Prophet Model | R3.3 multivariate Prophet |
+| §3.4 Residual Construction | R0.2 rule + R3.4 utility |
+| §3.5 LSTM Residual Predictor | R3.1 `lstm_regressor` |
+| §3.6 Hybrid Model | R3.2 `ResidualHybrid` |
+| §3.7 Benchmark Models (RW/ARIMA/Prophet/LSTM/XGBoost) | R2 + R3.1/R3.3 |
+| §4.1 Walk-Forward Validation | R0.3 + R1.2 |
+| §4.2 Evaluation Metrics (RMSE/MAE/MAPE **+ MASE/U2**) | R1.1 |
+| §4.3 Statistical Testing (DM, Wilcoxon) | R5 |
+| §5.1 Forecast Accuracy | R1 |
+| §5.2 Residual Predictability | R6 |
+| §5.3 Asset-Class Analysis | R7.2 |
+| §5.4 Regime Analysis | R7.3 |
+| §7 Robustness Checks | R8 |
+
+---
+
+## Falsification criteria (this track)
+
+Residual learning is considered **unsupported** for daily financial price forecasting if,
+out-of-sample and FDR-corrected:
+
+1. The hybrid's Theil U2 ≥ 1 (does not beat a random walk), **or**
+2. The hybrid does not beat **base-alone** by a DM-significant margin, **or**
+3. Any apparent gain is in-sample only (vanishes under the R0.3/R0.5 disjoint windows), **or**
+4. Base residuals are white noise across all assets/regimes (Ljung–Box non-significant
+   everywhere), so there is no structure for the residual learner to exploit.
+
+A clean negative or **strongly conditional** result ("helps only when residual
+autocorrelation is present, i.e. crypto/commodities in high-vol regimes") is the
+publishable finding and is more credible than a fragile positive.
 
 ---
 
@@ -198,48 +311,113 @@ Captured for later — not yet implemented.
 
 | Priority | Items |
 |---|---|
-| **Done** | 1.1 OOS harness · 1.2 naive benchmarks · 1.3 confidence calibration + gating · 1.4 significance testing |
-| **Done (Phase 2)** | 2.1 turnover/fees · 2.2 SL sweep |
-| **Next** | 2.3 LSTM focus · 2.5 reframe metric |
-| **Later** | 2.4 k-NN sweep · 3.1 experiment tracking · 3.2 model registry |
-| **After an edge** | 4.1 multi-asset portfolio · backlog (signals, Reddit, regression/intraday) |
+| **First (unblockers)** | R0 contract · R1 regression metrics + forecast backtester · R2.1 RandomWalk |
+| **Core paper artifact** | R3 residual hybrid · R3.3 multivariate Prophet · R5 DM/Wilcoxon |
+| **Benchmarks** | R2.2 ARIMA · R2.3 XGBoost |
+| **Empirics / "when"** | R6 residual diagnostics · R4 macro + ablation |
+| **Slices** | R7 horizon/regime/asset-class |
+| **Robustness** | R8 |
+| **Later (paper v2)** | Prophet+Chronos, Prophet+Kronos via the R3.2 composition |
 
-## Roadmap
+## Build order checklist
 
-- [x] k-NN model — naive + enhanced (+ time-weighted variants)
-- [x] Linear Regression — naive + enhanced (+ time-weighted variants)
-- [x] LSTM neural network (presets, early stopping, save/load)
-- [x] Shared feature engineering (RSI, MACD, volume, volatility)
-- [x] VADER sentiment + naive fallback
-- [x] **FinBERT sentiment (ProsusAI/finbert, finance-specific transformer)**
-- [x] **Pluggable news sources — Yahoo Finance + GDELT 2.0 (free, historical, no key)**
-- [x] **Look-ahead-safe per-day news in backtests (no future-news leakage)**
-- [x] **Exponential time-decay weighting + configurable news lookback window**
-- [x] Walk-forward backtesting (P/L, profit factor, streaks)
-- [x] Trading fees + stop-loss + buy-and-hold benchmark
-- [x] Risk metrics (max drawdown, Sharpe, Sortino, yearly rolling performance)
-- [x] **Data sanity guards (drop close ≤ 0; skip > 50% single-day moves)**
-- [x] Batch runner with organized output (`run_all.py`)
-- [x] **`scripts/news_impact.py` — quantifies news-vs-no-news across a run_all tree**
-- [x] **`scripts/clean_prices.py` — one-off DB cleanup tool**
-- [x] Centralized logging (cli/gui modes) + progress bars (tqdm)
-- [x] Centralized config, CLI filtering, CSV/JSON export
-- [x] **Data-driven asset registry — commodities/indices/FX via ETF proxies (GLD, VOO, QQQM, FXE) + BNB; combinable `--commodities`/`--indices`/`--fx` scope flags via shared `cli_helpers.py`**
-- [x] Documentation (`docs/` + `AGENTS.md` + `docs/run.md` runbook)
-- [x] Pytest suite (~140 tests: models, backtester, news pipeline, web API, persistence)
-- [x] CI pipeline (GitHub Actions: ruff + mypy + pytest, Codecov coverage)
-- [x] Pre-commit hooks (ruff auto-fix + format + mypy on every commit)
-- [x] Web GUI scaffold (FastAPI + React + TypeScript, 6 pages, typed API client)
-- [x] Web GUI: Dashboard (zoomable chart, OHLCV table, stats, custom period, export CSV)
-- [x] Web GUI: Predict (per-ticker backend cache with timestamp, optional chart, 9 model variants, consensus, historical)
-- [x] **Web GUI: Backtest (grouped ticker picker, multi-period, news/SL/B&H knobs, live progress bar, persisted runs + cached redisplay)**
-- [x] **Web GUI: Training (LSTM model inventory with timestamps + active-preset marker, one-click training)**
-- [x] **Web GUI: Analysis (results-dir browser, news-vs-no-news leaderboards, cross-run comparison)**
-- [x] Web GUI: Settings (persistent JSON, k-NN k, fees, SL, LSTM preference, developer section)
-- [x] **Time-series forecasting models — Prophet, Chronos-2, Kronos, wired into backtests**
-- [x] **Per-model timing (`--timing`, time-by-family rollup) + configurable `--periods` + `--models` family filter**
-- [ ] DRY model-family names: `run_all.py:_family()` and `backtest_helpers._model_family()` still hardcode the family prefixes (incl. the legacy "Chronos" alias, "TiRex", "Other"). Fold them onto `config.MODEL_FAMILY_LABELS` — the single source the `--models` filter already uses.
-- [ ] TiRex forecasting model (parked — macOS-experimental, non-standard license)
-- [ ] Forecasting models in `main.py` report + web GUI Predict/Backtest tabs
-- [ ] Authentication (API key for public deploy)
-- [ ] Multi-asset portfolio backtests (current is single-ticker × period)
+- [ ] R0 — write the evaluation contract (target space, leakage rule, refit cadence, horizons)
+- [ ] R1.1 — `regression_metrics.py` (RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2) + tests
+- [ ] R2.1 — `naive_forecasters.py` (RandomWalk reference)
+- [ ] R1.2/R1.3 — `forecast_backtester.py` + persist per-step predictions
+- [ ] R3.1 — `lstm_regressor.py` (regression head)
+- [ ] R3.2/R3.4 — `residual_hybrid.py` + leakage-safe residual construction + tests
+- [ ] R3.3 — multivariate Prophet (`add_regressor`)
+- [ ] R5.1/R5.2 — Diebold–Mariano + Wilcoxon + FDR + tests
+- [ ] R2.2 — ARIMA benchmark
+- [ ] R2.3 — XGBoost benchmark
+- [ ] R4 — `macro_data.py` (VIX/DXY/Gold/SP500/DGS1) + lag-safe alignment + pos/neg sentiment
+- [ ] R6 — `residual_diagnostics.py` (ACF/PACF/Ljung–Box) + the structure-vs-gain cross-tab
+- [ ] R7 — horizon/regime/asset-class slicing
+- [ ] R8 — robustness sweeps + reproducibility statement
+
+---
+
+# Track B — Engineering & non-paper backlog (carried over)
+
+These are the still-open items from the original `plan.md` and roadmap that are **not**
+tied to the residual-hybrid paper, kept here so they don't get dropped while the paper is
+the focus. They run in parallel and at lower priority than the Phase-R unblockers — **except**
+the cross-track DX items (B1), which are worth doing early because they cut friction for the
+many new models R2/R3 add.
+
+Legend: ⤳ = also accelerates the paper track (do once, benefit both).
+
+## B1 — Cross-track DX & reproducibility (highest non-paper value)
+
+- **⤳ Model registry** (was `plan.md` §3.2) — collapse the manual 4-step add
+  (`file → api._get_model → backtest_helpers variants → main.py`) into a
+  `@register_model("name")` decorator populating a central `MODEL_REGISTRY` that `api`
+  and `backtest_helpers` read. Unify with the existing `config.FORECAST_MODELS` +
+  `ForecastModel` pattern rather than adding a parallel mechanism. **Do this early** —
+  R2/R3 register RandomWalk, ARIMA, XGBoost, LSTM-regressor, and the hybrid; the
+  decorator pays for itself immediately.
+- **⤳ Experiment tracking & reproducibility** (was `plan.md` §3.1) — a SQLite
+  `experiments` table: one row per run with `run_id`, `git_sha` (+ dirty flag),
+  `timestamp`, `config_json`, scope/days/fee, data date-range, and headline metrics.
+  Pin seeds (numpy / torch / random). **This is the same deliverable as R8's
+  reproducibility statement** — build it once and both tracks use it. Keep it
+  proportionate (no Weights & Biases; local MLflow only if a browsable UI is wanted).
+- **DRY model-family names** (roadmap open) — `run_all.py:_family()` and
+  `backtest_helpers._model_family()` still hardcode family prefixes (incl. the legacy
+  "Chronos" alias, "TiRex", "Other"). Fold onto `config.MODEL_FAMILY_LABELS`, the single
+  source the `--models` filter already uses. Cheap; do alongside the registry.
+
+## B2 — Directional-track research (independent of paper)
+
+- **LSTM focus** (was `plan.md` §2.3) — the only family with positive median
+  return/Sharpe at 300d. Tune lookback / features / epochs; try LSTM-only confidence
+  gating. Spend tuning effort here, not on k-NN. *(Note: the directional LSTM is separate
+  from the paper's R3.1 LSTM-regressor — different target, but feature/lookback findings
+  may transfer.)*
+- **Reframe the success metric** (was `plan.md` §2.5) — beating B&H absolute return in a
+  bull market via daily flips is very hard. Track risk-adjusted (Sharpe/Sortino) and
+  drawdown vs B&H; define a falsifiable bar up front.
+- **k-NN k-sweep** (was `plan.md` §2.4, low priority) — `k ∈ {3,5,7,9,11}`, only under the
+  OOS harness. High overfit risk, worst family — don't expect much.
+
+## B3 — Product / GUI / deploy (roadmap open)
+
+- **⤳ Forecasting models in `main.py` report + web GUI Predict/Backtest tabs** — currently
+  backtest-only. Surfacing them (and eventually the hybrid + its point forecast) in the
+  Predict tab and `main.py` makes the paper's models demoable, not just scriptable.
+- **TiRex forecasting model** — parked (not on PyPI, macOS-experimental, non-standard
+  NX-AI license). Revisit only if a clean install path appears.
+- **Authentication** — API key for any public deploy of the web GUI.
+
+## B4 — Features & data backlog (unscheduled)
+
+- **⤳ Cross-asset features** — feed correlated assets as inputs (gold↔USD, BTC↔BNB,
+  index↔constituent), not just the ticker's own history. **Overlaps R4** — the macro
+  ingestion (VIX/DXY/Gold/SP500/DGS1) is the first cross-asset feed; generalise the same
+  alignment/lag plumbing rather than building a second path.
+- **Volatility momentum** — momentum measured on volatility / vol-adjusted momentum
+  (`features.py` / `ALL_FEATURES`).
+- **Reddit sentiment** — new provider behind `get_provider()` alongside yahoo/gdelt,
+  scored with the existing VADER/FinBERT pipeline. Pushshift is gone — use the official
+  Reddit API via PRAW for live posts, Arctic Shift for historical backfill.
+- **Intraday bars** — minute/intraday exploration. Caveat: yfinance serves only ~7 days of
+  1-minute (~60 days coarser intraday), so a dedicated intraday source is needed for real
+  history. *(The "specific-price regression" half of this old backlog item has graduated
+  into the Phase-R forecasting track — only intraday remains backlog.)*
+
+## B5 — After an edge / after the paper
+
+- **Multi-asset portfolio backtesting** (was `plan.md` §4.1) — current backtests are
+  single-ticker × period. Portfolio allocation, rebalancing, and portfolio risk are
+  valuable but premature until individual signals beat the naive baselines / a hybrid
+  beats RW. Allocating across coin-flip signals isn't meaningful.
+
+## Track B priority
+
+| Priority | Items |
+|---|---|
+| **Early (unblocks paper too)** | B1 model registry · B1 experiment tracking/seeds · B1 DRY family names |
+| **Parallel** | B2 LSTM focus · B2 reframe metric · B3 forecasting models in GUI |
+| **Later** | B2 k-NN sweep · B3 auth · B4 cross-asset/vol-momentum/Reddit |
+| **After an edge** | B5 multi-asset portfolio · B4 intraday |

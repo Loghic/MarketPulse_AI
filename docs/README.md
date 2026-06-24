@@ -26,6 +26,7 @@ Technical documentation for MarketPulse AI. Start here if you're new to the code
 
 - **[Backtesting](backtesting.md)** — Walk-forward methodology, trading fees (incl. turnover / position-based), stop-loss + sweep, confidence gate, buy-and-hold benchmark, profit factor, max drawdown, Sharpe / Sortino, streaks, yearly performance, news sentiment, data sanity guards, per-model timing, CSV export.
 - **[Research workflow](run/research.md)** — The out-of-sample harness (selection-inflation gap, beat-B&H rate, calibration/significance), news-vs-no-news impact, confidence-sweep + significance flags. The honest-results tooling.
+- **[Regression / point-forecast track](forecasting-regression.md)** — The *value*-prediction path (separate from trading): scale-free skill vs a random walk (Theil U2 / MASE), regression baselines (Random Walk / Drift / Seasonal Naive), ARIMA + XGBoost forecasters, the walk-forward forecast harness (`scripts/forecast_harness.py`), and what's next (Prophet+LSTM residual hybrid, DM/Wilcoxon tests).
 
 ## Architecture
 
