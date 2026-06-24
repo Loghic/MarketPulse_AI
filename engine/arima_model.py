@@ -99,6 +99,36 @@ class ARIMAForecaster(ForecastModel):
             log.debug("auto_arima failed (%s); using fixed order %s.", e, self.order)
             return self.order
 
+    def fit_in_sample(self, df):
+        """ARIMA's in-sample one-step fitted close series (``fittedvalues``).
+
+        Falls back to the random-walk default if statsmodels is unavailable, the
+        series is too short, or the fit errors. Aligned to ``df`` rows.
+        """
+        n = len(df)
+        if not _STATSMODELS_AVAILABLE or "close" not in df.columns or n < MIN_ROWS:
+            return super().fit_in_sample(df)
+        y = np.asarray(df["close"], dtype=float).ravel()
+        if not np.isfinite(y).all():
+            return super().fit_in_sample(df)
+        ctx = y if self.max_context is None else y[-self.max_context :]
+        order = self._select_order(ctx)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fitted_ctx = np.asarray(_SM_ARIMA(ctx, order=order).fit().fittedvalues, dtype=float)
+        except Exception:  # noqa: BLE001
+            return super().fit_in_sample(df)
+        if fitted_ctx.shape[0] != ctx.shape[0] or not np.isfinite(fitted_ctx).all():
+            return super().fit_in_sample(df)
+        # If we capped the context, pad the front with the RW default so the
+        # returned array still aligns to all df rows.
+        if fitted_ctx.shape[0] == n:
+            return fitted_ctx
+        out = super().fit_in_sample(df)
+        out[-fitted_ctx.shape[0] :] = fitted_ctx
+        return out
+
     def _raw_forecast(self, df: pd.DataFrame, horizon: int = 1) -> ForecastResult | None:
         if "close" not in df.columns or len(df) < MIN_ROWS:
             return None

@@ -84,7 +84,51 @@ def build_forecasters(season: int = 5) -> list:
     except Exception as e:  # noqa: BLE001
         log.debug("Prophet unavailable: %s", e)
 
+    # NB: the residual hybrid (Prophet + LSTM-res) is the slowest model and is
+    # opt-in via --hybrid (added per-ticker in main, since the pretrained mode
+    # loads per-ticker weights), so it's intentionally NOT in this shared list.
     return models
+
+
+def _build_hybrid(ticker: str, args):
+    """Construct the per-ticker Prophet + LSTM-res hybrid, or None if unavailable.
+
+    In ``pretrained`` mode the residual learner loads
+    ``models/{ticker}_hybrid_res.pt`` (train it with
+    scripts/train_hybrid_residual.py); if those weights are missing the hybrid
+    still runs but its learner predicts 0 → it falls back to the Prophet base.
+    """
+    try:
+        from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
+        from engine.residual_hybrid import ResidualHybrid
+        from engine.residual_learners import (
+            _TORCH_AVAILABLE,
+            LSTMResidualLearner,
+            hybrid_residual_path,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("Hybrid imports unavailable: %s", e)
+        return None
+
+    if not _PROPHET_AVAILABLE or not _TORCH_AVAILABLE:
+        log.warning("--hybrid needs Prophet + torch; skipping the hybrid.")
+        return None
+
+    learner = LSTMResidualLearner()
+    if args.hybrid_fit == "pretrained":
+        loaded = learner.load(hybrid_residual_path(ticker, "models"))
+        if not loaded:
+            log.warning(
+                "%s: no pretrained hybrid residual weights "
+                "(run scripts/train_hybrid_residual.py); hybrid will track the base.",
+                ticker,
+            )
+    return ResidualHybrid(
+        ProphetModel(),
+        learner,
+        fit_mode=args.hybrid_fit,
+        refit_k=args.hybrid_refit_k,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -286,6 +330,28 @@ def main() -> int:
             "Train weights first with scripts/train_lstm_regressor.py."
         ),
     )
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help=(
+            "Add the residual hybrid (Prophet base + LSTM residual learner). "
+            "Off by default — it's the slowest model. Needs Prophet + torch."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-fit",
+        choices=["pretrained", "refit_k", "per_step"],
+        default="pretrained",
+        help=(
+            "Hybrid residual-learner fit cadence. 'pretrained' loads frozen "
+            "weights from scripts/train_hybrid_residual.py (fastest); 'refit_k' "
+            "retrains every --hybrid-refit-k steps; 'per_step' retrains every "
+            "step (slowest, most adaptive)."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-refit-k", type=int, default=21, help="Refit cadence for --hybrid-fit refit_k."
+    )
     parser.add_argument("--dir", type=str, default="results", help="Root output directory.")
     args = parser.parse_args()
 
@@ -297,6 +363,8 @@ def main() -> int:
     labels = ", ".join(label for _, label in forecasters)
     if not args.no_lstm:
         labels += ", LSTM-reg (per-ticker, when weights exist)"
+    if args.hybrid:
+        labels += f", Prophet+LSTM-res (hybrid, {args.hybrid_fit})"
 
     print("=" * 92)
     print(
@@ -336,6 +404,11 @@ def main() -> int:
             from engine.lstm_regressor import LSTMRegressorForecaster
 
             ticker_models.append((LSTMRegressorForecaster(ticker), "LSTM-reg"))
+
+        if args.hybrid:
+            hyb = _build_hybrid(ticker, args)
+            if hyb is not None:
+                ticker_models.append((hyb, "Prophet + LSTM-res"))
 
         ticker_runs: list[ForecastRun] = []
         for model, _label in ticker_models:

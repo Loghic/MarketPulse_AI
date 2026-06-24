@@ -93,6 +93,39 @@ class ProphetModel(ForecastModel):
         # z-score for the requested central interval, e.g. 0.80 -> ~1.2816.
         self._z = NormalDist().inv_cdf((1.0 + interval_width) / 2.0)
 
+    def fit_in_sample(self, df):
+        """Prophet's in-sample fitted close series (yhat on the training dates).
+
+        Falls back to the random-walk default if Prophet is unavailable, the
+        series is too short, or the fit errors — so the residual hybrid never
+        breaks. Aligned to ``df`` rows (length == len(df)).
+        """
+        import numpy as np
+
+        n = len(df)
+        if not _PROPHET_AVAILABLE or n < MIN_ROWS or "close" not in df.columns:
+            return super().fit_in_sample(df)
+        try:
+            hist = pd.DataFrame(
+                {
+                    "ds": pd.to_datetime(df["date"]) if "date" in df.columns else range(n),
+                    "y": pd.to_numeric(df["close"], errors="coerce"),
+                }
+            )
+            fit_hist = hist.dropna()
+            if len(fit_hist) < MIN_ROWS:
+                return super().fit_in_sample(df)
+            model = Prophet(**self._kwargs)
+            with _quiet_stan():
+                model.fit(fit_hist)
+                # Predict on the original (full) ds so the result aligns row-for-row.
+                yhat = model.predict(hist[["ds"]])["yhat"].to_numpy(dtype=float)
+            if yhat.shape[0] != n or not np.isfinite(yhat).all():
+                return super().fit_in_sample(df)
+            return yhat
+        except Exception:  # noqa: BLE001 — fall back to RW residuals, never crash
+            return super().fit_in_sample(df)
+
     def _raw_forecast(self, df: pd.DataFrame, horizon: int = 1) -> ForecastResult | None:
         if len(df) < MIN_ROWS or "close" not in df.columns:
             return None

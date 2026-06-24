@@ -189,6 +189,25 @@ class ForecastModel(ABC):
     # Public API
     # ------------------------------------------------------------------
 
+    def fit_in_sample(self, df: pd.DataFrame) -> np.ndarray:
+        """In-sample fitted close series, aligned to ``df`` rows (length == len(df)).
+
+        Used by the residual hybrid (plan R3): ``res_t = close_t − fitted_t`` is
+        the structure the base model *missed*, which the residual learner then
+        tries to predict. The default is the **random-walk fitted series** —
+        ``fitted_t = close_{t-1}`` (and ``close_0`` for the first row) — which is
+        what a no-change base would have produced. Models that can report their
+        own fit (Prophet's in-sample ``predict``, ARIMA's ``fittedvalues``)
+        override this; everything else inherits the RW default. Never raises.
+        """
+        closes = np.asarray(df["close"], dtype=float).ravel()
+        if closes.size == 0:
+            return closes
+        fitted = np.empty_like(closes)
+        fitted[0] = closes[0]
+        fitted[1:] = closes[:-1]
+        return fitted
+
     def forecast(self, df: pd.DataFrame, horizon: int = 1) -> ForecastResult | None:
         """
         Return the raw value forecast (with direction/confidence filled in), or
