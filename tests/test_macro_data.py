@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine.macro_data import MacroCache, _to_log_returns, align_macro
+from engine.macro_data import MacroCache, _normalize_index, _to_log_returns, align_macro
 
 
 def _macro(dates: list[str], **cols: list[float]) -> pd.DataFrame:
@@ -78,6 +78,26 @@ class TestLogReturns:
     def test_drops_nonpositive(self):
         lr = _to_log_returns(pd.Series([100.0, 0.0, 110.0]))
         assert np.isfinite(lr.dropna()).all()
+
+
+class TestIndexNormalization:
+    def test_tz_aware_and_naive_combine(self):
+        # yfinance returns tz-aware (UTC) indexes; FRED parses tz-naive. After
+        # _normalize_index both are tz-naive day-resolution and combine without
+        # the "Cannot join tz-naive with tz-aware" error.
+        idx = pd.to_datetime(["2026-01-01", "2026-01-02"])
+        aware = pd.Series([0.1, 0.2], index=idx.tz_localize("UTC"))
+        naive = pd.Series([4.5, 4.6], index=idx)
+        a = _normalize_index(aware)
+        n = _normalize_index(naive)
+        assert a.index.tz is None and n.index.tz is None
+        combined = pd.DataFrame({"vix": a, "dgs1": n})  # must not raise
+        assert combined.shape == (2, 2)
+
+    def test_normalizes_to_midnight(self):
+        s = pd.Series([1.0], index=pd.to_datetime(["2026-01-01 14:30:00"]))
+        out = _normalize_index(s)
+        assert out.index[0] == pd.Timestamp("2026-01-01")
 
 
 class TestMacroCache:

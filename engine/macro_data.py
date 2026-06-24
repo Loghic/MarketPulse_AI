@@ -113,6 +113,22 @@ def align_macro(
 # ----------------------------------------------------------------------
 
 
+def _normalize_index(s: pd.Series) -> pd.Series:
+    """Coerce a series' index to tz-naive, day-resolution datetimes.
+
+    yfinance returns tz-aware (often UTC) DatetimeIndexes while FRED parses
+    tz-naive; mixing the two in one DataFrame raises "Cannot join tz-naive with
+    tz-aware". Stripping the tz and flooring to the date makes every macro series
+    share one comparable daily index.
+    """
+    idx = pd.to_datetime(s.index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    s = s.copy()
+    s.index = idx.normalize()
+    return s
+
+
 def _to_log_returns(close: pd.Series) -> pd.Series:
     """Log-returns of a positive price series (NaN-safe, first row dropped)."""
     c = pd.to_numeric(close, errors="coerce")
@@ -129,8 +145,7 @@ def _fetch_yf_logret(symbol: str) -> pd.Series | None:
         if df is None or df.empty or "close" not in df.columns:
             return None
         s = _to_log_returns(df["close"])
-        s.index = pd.to_datetime(s.index)
-        return s.dropna()
+        return _normalize_index(s).dropna()
     except Exception as e:  # noqa: BLE001 — a bad macro series must not crash a run
         log.warning("macro: yfinance fetch failed for %s (%s).", symbol, e)
         return None
@@ -150,7 +165,7 @@ def _fetch_fred_level(series_id: str) -> pd.Series | None:
         val_col = df.columns[1]
         df[val_col] = pd.to_numeric(df[val_col], errors="coerce")  # "." → NaN
         s = pd.Series(df[val_col].values, index=pd.to_datetime(df[date_col]))
-        return s.dropna()
+        return _normalize_index(s).dropna()
     except Exception as e:  # noqa: BLE001
         log.warning("macro: FRED fetch failed for %s (%s).", series_id, e)
         return None
