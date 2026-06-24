@@ -90,6 +90,27 @@ def build_forecasters(season: int = 5) -> list:
     return models
 
 
+def _build_macro_xgb(df, macro_panel):
+    """XGBoost with lag-1-aligned macro features for this ticker, or None.
+
+    The macro panel is aligned onto the ticker's own dates (forward-filled +
+    lagged 1 day by align_macro), so appending macro[t] to a window ending at t
+    is leakage-safe. Returns None if xgboost is missing.
+    """
+    try:
+        from engine.macro_data import align_macro
+        from engine.xgboost_model import _XGBOOST_AVAILABLE, XGBoostForecaster
+
+        if not _XGBOOST_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else range(len(df))
+        aligned = align_macro(list(dates), macro_panel, lag=1)
+        return XGBoostForecaster(macro_df=aligned)
+    except Exception as e:  # noqa: BLE001
+        log.debug("macro XGBoost unavailable: %s", e)
+        return None
+
+
 def _build_hybrid(ticker: str, args):
     """Construct the per-ticker Prophet + LSTM-res hybrid, or None if unavailable.
 
@@ -320,6 +341,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--macro",
+        action="store_true",
+        help=(
+            "Add an 'XGBoost + macro' variant alongside plain XGBoost — the "
+            "price-only vs +macro ablation. Fetches VIX/DXY/Gold/SP500/DGS1 once, "
+            "lag-1 aligned per ticker (leakage-safe). Needs xgboost; cached macro "
+            "is reused with --no-refresh."
+        ),
+    )
+    parser.add_argument(
         "--no-refresh", action="store_true", help="Skip the data download (use cached prices)."
     )
     parser.add_argument(
@@ -365,6 +396,21 @@ def main() -> int:
         labels += ", LSTM-reg (per-ticker, when weights exist)"
     if args.hybrid:
         labels += f", Prophet+LSTM-res (hybrid, {args.hybrid_fit})"
+    if args.macro:
+        # Only claim the macro variant if xgboost is actually importable; the
+        # ablation can't run without it.
+        try:
+            from engine.xgboost_model import _XGBOOST_AVAILABLE
+        except Exception:  # noqa: BLE001
+            _XGBOOST_AVAILABLE = False
+        if _XGBOOST_AVAILABLE:
+            labels += ", XGBoost + macro"
+        else:
+            log.warning(
+                "--macro requested but xgboost is not installed; the XGBoost + macro "
+                "variant (and plain XGBoost) will be skipped. Install with: "
+                "uv pip install -e '.[forecast]'"
+            )
 
     print("=" * 92)
     print(
@@ -378,6 +424,20 @@ def main() -> int:
     api = StockAppAPI()
     if not args.no_refresh:
         api.refresh_tickers(list(tickers), verbose=False)
+
+    # Macro panel (fetched/cached once, aligned per ticker in the loop).
+    macro_panel = None
+    if args.macro:
+        from engine.macro_data import MacroCache, fetch_macro
+
+        cache = MacroCache()
+        macro_panel = cache.load() if args.no_refresh else None
+        if macro_panel is None or macro_panel.empty:
+            macro_panel = fetch_macro()
+            cache.save(macro_panel)
+        if macro_panel is None or macro_panel.empty:
+            log.warning("--macro: no macro series available; the macro variant will be skipped.")
+            macro_panel = None
 
     # 0 means "no cap" (full expanding window); otherwise the row cap.
     max_train = None if args.max_train == 0 else args.max_train
@@ -409,6 +469,11 @@ def main() -> int:
             hyb = _build_hybrid(ticker, args)
             if hyb is not None:
                 ticker_models.append((hyb, "Prophet + LSTM-res"))
+
+        if macro_panel is not None:
+            mac = _build_macro_xgb(df, macro_panel)
+            if mac is not None:
+                ticker_models.append((mac, "XGBoost + macro"))
 
         ticker_runs: list[ForecastRun] = []
         for model, _label in ticker_models:

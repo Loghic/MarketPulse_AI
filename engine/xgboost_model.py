@@ -24,6 +24,7 @@ raises a clear RuntimeError and the harness skips it.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -43,11 +44,22 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# Pin OpenMP thread pools to a single thread BEFORE xgboost imports its native
+# lib. On macOS + newer Pythons xgboost otherwise spins up a loky/OpenMP worker
+# pool that can crash the walk-forward loop ("leaked semaphore objects"). The
+# harness already parallelises at the ticker level, so single-threaded per-fit
+# is both safer and deterministic. setdefault so an explicit user override wins.
+for _omp_var in ("OMP_NUM_THREADS", "OMP_THREAD_LIMIT"):
+    os.environ.setdefault(_omp_var, "1")
+
 try:
     from xgboost import XGBRegressor
 
     _XGBOOST_AVAILABLE = True
-except ImportError:
+except Exception:  # noqa: BLE001
+    # Not just ImportError: an installed xgboost whose native lib can't load
+    # (e.g. missing OpenMP / libomp.dylib on macOS) raises XGBoostError here.
+    # Treat any failure as "unavailable" so the forecaster is cleanly skipped.
     _XGBOOST_AVAILABLE = False
 
 # Need enough rows to form a feature window AND a handful of training pairs.
@@ -64,6 +76,7 @@ class XGBoostForecaster(ForecastModel):
         *,
         features: list[str] | None = None,
         window_size: int = 10,
+        macro_df: pd.DataFrame | None = None,
         n_estimators: int = 200,
         max_depth: int = 4,
         learning_rate: float = 0.05,
@@ -79,6 +92,18 @@ class XGBoostForecaster(ForecastModel):
         self.features = list(features) if features else list(DEFAULT_FEATURES)
         validate_features(self.features)
         self.window_size = window_size
+        # Optional macro panel (from engine.macro_data). MUST already be
+        # lag-aligned (align_macro): the row for date t encodes info known at
+        # t-1, so appending macro[t] to a window ending at t is leakage-safe.
+        # Indexed by date string; we look it up positionally per window.
+        if macro_df is not None and not macro_df.empty:
+            self._macro = macro_df.copy()
+            self._macro.index = self._macro.index.astype(str)
+            self._macro_cols = list(macro_df.columns)
+        else:
+            self._macro = None
+            self._macro_cols = []
+        self.name = "XGBoost + macro" if self._macro is not None else "XGBoost"
         self._params = dict(
             n_estimators=n_estimators,
             max_depth=max_depth,
@@ -87,12 +112,32 @@ class XGBoostForecaster(ForecastModel):
             random_state=random_state,
             objective="reg:squarederror",
             n_jobs=1,  # deterministic + harness already parallel at ticker level
+            nthread=1,  # native OpenMP thread cap (belt-and-braces with n_jobs)
         )
+
+    def _macro_vec(self, feat_df: pd.DataFrame, t: int) -> np.ndarray | None:
+        """Aligned macro values for the day at positional index ``t``.
+
+        Returns an empty array when macro is disabled, the macro values when the
+        date is present and finite, or None to signal "skip this row" when the
+        date is missing / has NaN macro (e.g. the leading lag rows).
+        """
+        if self._macro is None:
+            return np.empty(0, dtype=float)
+        if "date" not in feat_df.columns:
+            return None
+        day = str(feat_df["date"].iloc[t])
+        if day not in self._macro.index:
+            return None
+        row = self._macro.loc[day, self._macro_cols].to_numpy(dtype=float)
+        if not np.isfinite(row).all():
+            return None
+        return row
 
     def _build_training_set(
         self, df: pd.DataFrame, horizon: int
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """(X, y) where X = feature window ending at t, y = close[t+h] - close[t]."""
+        """(X, y) where X = feature window ending at t (+ macro[t]), y = close[t+h] - close[t]."""
         feat_df = compute_feature_columns(df, self.features, self.window_size)
         closes = np.asarray(feat_df["close"], dtype=float)
         n = len(feat_df)
@@ -104,22 +149,36 @@ class XGBoostForecaster(ForecastModel):
             vec = build_feature_vector(feat_df, idx, self.features, self.window_size)
             if vec is None:
                 continue
+            macro = self._macro_vec(feat_df, t)
+            if macro is None:  # macro missing for this day → drop the pair
+                continue
             target = closes[t + horizon] - closes[t]
             if not np.isfinite(target):
                 continue
-            x_rows.append(vec)
+            x_rows.append(np.concatenate([vec, macro]) if macro.size else vec)
             y_rows.append(float(target))
         if len(x_rows) < _MIN_TRAIN_PAIRS:
             return None
         return np.asarray(x_rows), np.asarray(y_rows)
 
     def _latest_vector(self, df: pd.DataFrame) -> np.ndarray | None:
-        """Feature window ending at the last in-context day (the prediction input)."""
+        """Feature window ending at the last in-context day (+ macro[t]) — the input."""
         feat_df = compute_feature_columns(df, self.features, self.window_size)
         last_start = len(feat_df) - self.window_size
         if last_start < 0:
             return None
-        return build_feature_vector(feat_df, last_start, self.features, self.window_size)
+        vec = build_feature_vector(feat_df, last_start, self.features, self.window_size)
+        if vec is None:
+            return None
+        t = len(feat_df) - 1
+        macro = self._macro_vec(feat_df, t)
+        if macro is None:
+            # Macro is enabled but missing for the prediction day. The model was
+            # trained on (base+macro)-width rows, so a price-only vector would
+            # shape-mismatch — return None to skip this forecast rather than
+            # silently feed the wrong width.
+            return None if self._macro is not None else vec
+        return np.concatenate([vec, macro]) if macro.size else vec
 
     def _raw_forecast(self, df: pd.DataFrame, horizon: int = 1) -> ForecastResult | None:
         if "close" not in df.columns:

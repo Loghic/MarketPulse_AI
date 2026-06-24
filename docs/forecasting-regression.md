@@ -292,12 +292,26 @@ that predicts `t+1` uses only macro information available at `t` — never the
 future (the R0.2 leakage rule, unit-tested with a no-lookahead spy). The first
 row is NaN (no prior macro yet).
 
+Macro is wired into **XGBoost**: pass `--macro` to the harness and it adds an
+**`XGBoost + macro`** variant beside plain `XGBoost` — the price-only vs +macro
+ablation. Per ticker the macro panel is aligned (`align_macro`, lag-1) onto that
+ticker's dates and each feature window ending at `t` gets `macro[t]` appended;
+because the panel is lag-1, that's leakage-safe. (`XGBoostForecaster(macro_df=…)`
+does the append; missing-macro rows are dropped from training.)
+
+```bash
+uv run python scripts/forecast_harness.py --stocks --days 100 --macro --no-refresh
+```
+
+Expected, consistent with everything else: macro shouldn't pull XGBoost's U2
+below 1 on daily levels — but the ablation has to be *run* for the paper to say
+"macro doesn't help" rather than assume it.
+
 ## What's next (not yet implemented)
 
-- **Wire macro/sentiment into the models** (R4.3/R4.4) — the pos/neg sentiment
-  split and flowing macro columns into the LSTM/XGBoost feature matrix *and*
-  Prophet regressors, then the price-only vs +tech vs +macro vs +sentiment
-  ablation. (Fetch + leakage-safe alignment are done above.)
+- **Sentiment pos/neg split + Prophet regressors** (R4.3 + rest of R4.4) — two
+  separate sentiment signals, and flowing macro/sentiment into the LSTM and into
+  Prophet via `add_regressor` (currently only XGBoost consumes macro).
 - **Multi-horizon / asset-class / regime slices** (R7) and **robustness** (R8 —
   seed sweeps, lookback/refit sensitivity, level-vs-log-return).
 - Wiring the DM/Wilcoxon comparison and the residual cross-tab into the harness
