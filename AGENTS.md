@@ -537,11 +537,24 @@ Implemented so far (R0–R2 foundation):
   the harness via `--hybrid` (off by default — slowest model), with
   `--hybrid-fit {pretrained,refit_k,per_step}` (default pretrained) +
   `--hybrid-refit-k`; built per-ticker so pretrained mode loads its weights.
+- **`--target {level,log-return}` (R0.1, score-only):** `ForecastBacktester(target=…)`
+  — in log-return mode it converts each step's level forecast to `r̂=log(P̂/close[t])`
+  (close[t] = the recorded `y_naive`) and scores vs a **zero-return** reference
+  (RW still → U2 1.0); MASE scales on in-sample log-returns. Models untouched; U2
+  ranking identical to level (it divides out persistence) — the value is the
+  reviewer-expected "beat predict-no-move?" framing. Native return-target training
+  is a TODO (plan R0.1). New **`smallcap`** asset class (`--smallcap`: IWM, XLE/
+  XLF/XLU, XOM, FCX) — the less-efficient-corners test for the no-edge thesis.
 - `scripts/forecast_harness.py` — CLI entrypoint (regression analogue of
-  `oos_harness.py`). `build_forecasters()` = naive always + optional ARIMA /
-  XGBoost / Prophet + the Prophet+LSTM residual hybrid when their libs import;
-  the per-ticker LSTM-reg is added inside the ticker loop (disable with
-  `--no-lstm`). Persists tidy per-step CSV +
+  `oos_harness.py`). **`--models`** selector: `resolve_model_keys(spec)` (pure)
+  expands keys (`rw/rwdrift/seasonal/arima/xgboost/prophet/chronos/kronos`) and
+  groups (`paper` default = study + benchmarks; `benchmarks`; `foundation` =
+  Chronos-2+Kronos; `all`) into an ordered key list; `build_forecasters(keys)`
+  instantiates only those that are available (gracefully skips missing libs).
+  Chronos-2/Kronos run only via `all` or by name (slow). Per-ticker LSTM-reg
+  (`--no-lstm` to drop) + the Prophet+LSTM hybrid (`--hybrid`) are added in the
+  loop. `--macro` adds a `+macro` variant for *selected* macro-capable models
+  (xgboost/prophet) only. Persists tidy per-step CSV +
   `_fc_summary.csv` under `results/fc_<scope>_<days>d_h<h>_<ts>/`; console table
   ranked by U2/MASE. `--days/--horizon/--refit-k/--min-train` + scope flags.
 - New optional deps (statsmodels, xgboost, scipy, pmdarima) added to the

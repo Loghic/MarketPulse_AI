@@ -96,6 +96,40 @@ class TestWalkForward:
         with pytest.raises(ValueError):
             ForecastBacktester(n_days=50, min_train=60, max_train=30)
 
+    def test_bad_target_raises(self):
+        with pytest.raises(ValueError):
+            ForecastBacktester(n_days=50, target="returns")  # only level/log-return
+
+
+class TestLogReturnTarget:
+    def _lognormal_df(self, n: int, seed: int = 0) -> pd.DataFrame:
+        rng = np.random.default_rng(seed)
+        closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        dates = pd.date_range("2024-01-01", periods=n, freq="B").astype(str)
+        return pd.DataFrame({"date": dates, "close": closes})
+
+    def test_random_walk_u2_one_in_return_space(self):
+        # RW predicts P_t → implied return log(P_t/P_t)=0, which IS the zero-
+        # return naive reference, so U2 must be exactly 1.0 in return space too.
+        bt = ForecastBacktester(n_days=80, horizon=1, min_train=60, target="log-return")
+        run = bt.run(RandomWalkForecaster(), self._lognormal_df(200), "T")
+        assert run.metrics.theil_u2 == pytest.approx(1.0)
+
+    def test_level_and_return_modes_both_run(self):
+        df = self._lognormal_df(200)
+        lvl = ForecastBacktester(n_days=80, target="level", min_train=60).run(
+            RandomWalkForecaster(), df, "T"
+        )
+        ret = ForecastBacktester(n_days=80, target="log-return", min_train=60).run(
+            RandomWalkForecaster(), df, "T"
+        )
+        # Same step count; RW is U2=1.0 in both spaces.
+        assert lvl.metrics.n == ret.metrics.n
+        assert lvl.metrics.theil_u2 == pytest.approx(1.0)
+        assert ret.metrics.theil_u2 == pytest.approx(1.0)
+        # Return-space RMSE is on log-returns, so much smaller than level RMSE.
+        assert ret.metrics.rmse < lvl.metrics.rmse
+
     def test_dates_align_to_target(self):
         df = _df(120)
         bt = ForecastBacktester(n_days=30, horizon=1, min_train=60)

@@ -65,10 +65,23 @@ directional `baseline_models.py`:
   information and so can't be scored here. It is **per-ticker**: it loads
   pre-trained weights from `models/{ticker}_reg.pt` (the `_reg` suffix keeps it
   separate from the `{ticker}_{period}_{preset}.pt` classifiers). Train them
-  first — see below — or it skips that ticker. This is also the residual learner
-  the Phase-R3 hybrid will reuse.
-- **Prophet / Chronos-2 / Kronos** — the existing forecasting models, reused
-  here for their point forecast.
+  first — see below — or it skips that ticker (the harness prints a loud up-front
+  warning naming the tickers with no weights, so a missing model is never
+  silent). This is also the residual learner the Phase-R3 hybrid reuses.
+
+> **New asset class / first run:** pretrained weights are per ticker, so a new
+> class (e.g. `--smallcap`) has none yet. The harness warns up front and the
+> models fall back (hybrid → Prophet base; LSTM-reg → absent). Either train the
+> weights first (`train_lstm_regressor.py` / `train_hybrid_residual.py` with the
+> **same** `--days`/`--horizon`) or use `--hybrid-fit per_step` (no pretraining).
+> Drop `--no-refresh` on the first run of a new class so its prices download.
+
+- **Prophet** — the trend/seasonality base of the study (univariate, or
+  multivariate with `--macro`).
+- **Chronos-2 / Kronos** — Amazon's zero-shot foundation forecaster and the
+  OHLCV candlestick foundation model, reused here for their point forecast.
+  These are the slow `foundation` group — run them via `--models all` or
+  `--models chronos,kronos`, not in the default `paper` set.
 - **Residual hybrid** (`engine/residual_hybrid.py`, needs Prophet + torch) — the
   paper's central artifact: `P̂ = P̂^base + r̂es`. A base model (Prophet by
   default) captures trend/seasonality, and a residual learner (an LSTM fit on the
@@ -127,8 +140,43 @@ uv run python scripts/forecast_harness.py --crypto --days 100 --horizon 5
 ```
 
 Flags: the usual scope selectors (`--stocks`/`--crypto`/`--commodities`/
-`--indices`/`--fx`/`--all`/`--tickers`), `--days` (eval window), `--horizon`
-(direct-h), `--refit-k`, `--min-train`, `--no-refresh`.
+`--indices`/`--fx`/`--smallcap`/`--all`/`--tickers`), `--days` (eval window),
+`--horizon` (direct-h), `--models`, `--target {level,log-return}`, `--refit-k`,
+`--min-train`, `--no-refresh`.
+
+**`--models`** chooses which shared forecasters run — comma/space-separated keys
+(`rw`, `rwdrift`, `seasonal`, `arima`, `xgboost`, `prophet`, `chronos`, `kronos`)
+and/or named groups:
+
+- **`paper`** (default) — the Prophet/LSTM study plus its benchmarks (RW, RW+
+  Drift, Seasonal Naive, ARIMA, XGBoost, Prophet). The LSTM regressor and the
+  Prophet+LSTM hybrid join via their own flags (`--no-lstm` to drop the former,
+  `--hybrid` to add the latter).
+- **`benchmarks`** — the naive/classical reference set only.
+- **`foundation`** — Chronos-2 + Kronos (slow, zero-shot; not in `paper`).
+- **`all`** — every available shared model.
+
+`--macro` implies a `+ macro` variant for the *selected* macro-capable models
+(XGBoost, Prophet) — so `--models paper --macro` adds XGBoost+macro and
+Prophet+macro, but `--models rw --macro` adds nothing. A model whose library
+isn't installed is skipped (logged), never an error.
+
+The **`--smallcap`** class (IWM, XLE/XLF/XLU sector ETFs, XOM, FCX) is the
+"less-efficient corners" test: if even mega-caps show no edge, the honest check
+is whether small-caps / sector / commodity-sensitive names do. Same null is a
+stronger result; a DM-significant U2 < 1 there is an interesting, publishable
+exception.
+
+The **`--target log-return`** mode scores the implied return `r̂ = log(P̂/P_t)`
+against a **zero-return** (efficient-market) benchmark instead of the price
+level. This is score-only — models still forecast a level; only the metric space
+changes. It's the framing reviewers expect (does it beat "predict no move?"),
+and it removes the level-persistence that makes a price-level random walk look
+unbeatable. Note: the random walk maps to "predict 0 return", so it still scores
+**U2 = 1.0** — and because U2 already divides out level persistence, the *ranking*
+is identical to level mode. The value is interpretive clarity, not a different
+conclusion. (A *native* return-forecasting variant — models trained on `r`
+directly — is planned for a true level-vs-return comparison; see plan.md.)
 
 Output goes to `results/fc_<scope>_<days>d_h<h>_<timestamp>/`:
 

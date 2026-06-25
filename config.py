@@ -113,6 +113,32 @@ ASSET_CLASSES: list[AssetClass] = [
         benchmarks=["SPY"],
         news_names={"FXE": "euro dollar exchange rate"},
     ),
+    # Less-efficient corners: small-caps, sector ETFs, and commodity-sensitive
+    # names — where short-horizon predictability is *most* plausible. The point
+    # is to test the no-edge thesis where it's hardest to hold, not mega-caps.
+    # All are liquid with real volume so the volume-based features still work.
+    AssetClass(
+        key="smallcap",
+        label="Small-cap & Sector",
+        cli_flag="smallcap",
+        tickers=[
+            "IWM",  # Russell 2000 small-cap ETF
+            "XLE",  # Energy sector ETF
+            "XLF",  # Financials sector ETF
+            "XLU",  # Utilities sector ETF
+            "XOM",  # ExxonMobil (oil-sensitive single name)
+            "FCX",  # Freeport-McMoRan (copper-sensitive single name)
+        ],
+        benchmarks=["SPY"],
+        news_names={
+            "IWM": "Russell 2000 small cap stocks",
+            "XLE": "energy sector stocks oil",
+            "XLF": "financial sector banks stocks",
+            "XLU": "utilities sector stocks",
+            "XOM": "ExxonMobil oil",
+            "FCX": "Freeport-McMoRan copper",
+        },
+    ),
 ]
 
 # --- Derived lookups (keep the old flat names working) ------------

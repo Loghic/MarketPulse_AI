@@ -57,6 +57,16 @@ later number:
 - **R0.1 Target space.** Forecast the **price level** (matches the paper and
   Prophet's trend/seasonality decomposition). Add **log-return space** as a
   robustness variant in R8, *not* as the primary — but commit to level now.
+  - **DONE (score-only):** `forecast_harness.py --target log-return` scores the
+    *implied* return `r̂=log(P̂/P_t)` vs a zero-return benchmark, without changing
+    any model (level forecasts converted at scoring time). U2 ranking is
+    identical to level mode (U2 divides out level persistence); the value is the
+    reviewer-expected "beat predict-no-move?" framing.
+  - **TODO (native):** train the ML models (XGBoost, LSTM-reg) on `r` *directly*
+    so the optimisation objective is return-space, then compare native-return vs
+    score-only-converted. Only the native path can back a paper sentence that
+    says "the models forecast returns"; the comparison itself (does training in
+    return space change anything?) is a worthwhile robustness result.
 - **R0.2 Leakage rule for residuals** (the single most important correctness
   decision):
   - *Training* the residual learner: use the base model's **in-sample fitted**

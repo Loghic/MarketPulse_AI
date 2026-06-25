@@ -105,6 +105,7 @@ class ForecastBacktester:
         refit_k: int = 21,
         min_train: int = 60,
         max_train: int | None = 504,
+        target: str = "level",
     ) -> None:
         if n_days < 1:
             raise ValueError("n_days must be >= 1")
@@ -114,11 +115,21 @@ class ForecastBacktester:
             raise ValueError("refit_k must be >= 1")
         if max_train is not None and max_train < min_train:
             raise ValueError(f"max_train ({max_train}) must be >= min_train ({min_train})")
+        if target not in ("level", "log-return"):
+            raise ValueError(f"target must be 'level' or 'log-return', got {target!r}")
         self.n_days = n_days
         self.horizon = horizon
         self.refit_k = refit_k
         self.min_train = min_train
         self.max_train = max_train
+        # Scoring space. "level": score predicted price P̂ directly (RW ref =
+        # close[t]). "log-return": score the *implied* return r̂ = log(P̂/close[t])
+        # against the realised return, with the naive reference r=0 (the
+        # efficient-market benchmark). Models are untouched — they still forecast
+        # a level; only the metric space changes. U2 ranking is invariant to the
+        # choice (it divides out level persistence); the return framing just makes
+        # "did it beat predicting no move?" the explicit question reviewers expect.
+        self.target = target
 
     def run(self, model: PointForecaster, df: pd.DataFrame, ticker: str) -> ForecastRun | None:
         """Walk forward over the last ``n_days`` steps and score the forecasts.
@@ -189,5 +200,27 @@ class ForecastBacktester:
         y_true = np.array([s.y_true for s in run.steps])
         y_pred = np.array([s.y_pred for s in run.steps])
         y_naive = np.array([s.y_naive for s in run.steps])
-        run.metrics = compute_all(y_true, y_pred, insample=insample, y_naive=y_naive, season=1)
+
+        if self.target == "log-return":
+            # Convert level forecasts to returns: r = log(P / close[t]). The
+            # base price close[t] is exactly y_naive (the RW reference). The
+            # naive return forecast is 0 (predict "no move") — the efficient-
+            # market benchmark, so U2 = RMSE(model returns) / RMSE(zero), and
+            # MASE scales against the in-sample |log-returns|.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                r_true = np.log(y_true / y_naive)
+                r_pred = np.log(y_pred / y_naive)
+                ins = np.asarray(insample, dtype=float)
+                ins = ins[ins > 0]
+                # Pass the in-sample LOG-PRICE series: compute_all's one-step diff
+                # of it is the in-sample log-returns, so the MASE denominator
+                # becomes mean|return| — exactly the in-sample error of the naive
+                # "predict 0 return" forecast.
+                insample_logprice = np.log(ins) if ins.size > 1 else np.array([])
+            r_naive = np.zeros_like(r_true)
+            run.metrics = compute_all(
+                r_true, r_pred, insample=insample_logprice, y_naive=r_naive, season=1
+            )
+        else:
+            run.metrics = compute_all(y_true, y_pred, insample=insample, y_naive=y_naive, season=1)
         return run

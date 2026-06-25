@@ -51,42 +51,119 @@ log = get_logger("forecast_harness")
 # ----------------------------------------------------------------------
 
 
-def build_forecasters(season: int = 5) -> list:
-    """All available point-forecasters as (model, label) pairs.
+# ----------------------------------------------------------------------
+# Model selection: keys, named groups, and the registry
+# ----------------------------------------------------------------------
+#
+# --models accepts a comma/space-separated list of *keys* and/or *group* names.
+#   keys:   rw, rwdrift, seasonal, arima, xgboost, prophet, chronos, kronos
+#           (lstm-reg + the hybrid are added per-ticker in main, gated by their
+#            own flags — not part of this shared list).
+#   groups: paper       — the study + its benchmarks (default)
+#           benchmarks  — the naive/classical reference set
+#           foundation  — the zero-shot foundation models (Chronos-2, Kronos)
+#           all         — every available shared model
+# A model that isn't installed is silently skipped (logged), as before.
 
-    Optional models are appended only when their library imports — exactly the
-    graceful-skip behaviour the directional forecasting models already use.
+_GROUPS: dict[str, list[str]] = {
+    "benchmarks": ["rw", "rwdrift", "seasonal", "arima", "xgboost"],
+    # "paper" is the Prophet/LSTM study (Prophet here; LSTM-reg + hybrid join
+    # per-ticker in main) plus the benchmarks it's measured against.
+    "paper": ["rw", "rwdrift", "seasonal", "arima", "xgboost", "prophet"],
+    "foundation": ["chronos", "kronos"],
+    "all": ["rw", "rwdrift", "seasonal", "arima", "xgboost", "prophet", "chronos", "kronos"],
+}
+_ALL_KEYS: list[str] = _GROUPS["all"]
+
+
+def resolve_model_keys(spec: str | None) -> list[str]:
+    """Expand a --models spec (keys and/or group names) into an ordered key list.
+
+    ``None`` → the default 'paper' group. Unknown tokens raise ValueError. Order
+    follows ``_ALL_KEYS`` and de-dupes, so the table layout is stable regardless
+    of how the user listed things.
     """
-    models: list = [(m, label) for m, label in default_naive_forecasters(season=season)]
+    if spec is None or not spec.strip():
+        tokens = ["paper"]
+    else:
+        tokens = [t for t in spec.replace(",", " ").split() if t]
+    wanted: set[str] = set()
+    for tok in tokens:
+        low = tok.lower()
+        if low in _GROUPS:
+            wanted.update(_GROUPS[low])
+        elif low in _ALL_KEYS:
+            wanted.add(low)
+        else:
+            raise ValueError(
+                f"unknown --models token {tok!r}. Keys: {_ALL_KEYS}. Groups: {sorted(_GROUPS)}."
+            )
+    return [k for k in _ALL_KEYS if k in wanted]
 
-    try:
-        from engine.arima_model import _STATSMODELS_AVAILABLE, ARIMAForecaster
 
-        if _STATSMODELS_AVAILABLE:
-            models.append((ARIMAForecaster(), "ARIMA"))
-    except Exception as e:  # noqa: BLE001
-        log.debug("ARIMA unavailable: %s", e)
+def build_forecasters(keys: list[str], season: int = 5) -> list:
+    """Instantiate the selected shared forecasters as (model, label) pairs.
 
-    try:
-        from engine.xgboost_model import _XGBOOST_AVAILABLE, XGBoostForecaster
+    Only the requested keys are built, and only when their optional library
+    imports (graceful skip, logged) — so e.g. asking for chronos without it
+    installed yields nothing rather than an error.
+    """
+    models: list = []
+    # Naive forecasters come as a fixed (model, label) list; index by key.
+    naive_by_key = {}
+    for m, label in default_naive_forecasters(season=season):
+        if label == "Random Walk":
+            naive_by_key["rw"] = (m, label)
+        elif label == "Random Walk + Drift":
+            naive_by_key["rwdrift"] = (m, label)
+        elif label.startswith("Seasonal Naive"):
+            naive_by_key["seasonal"] = (m, label)
 
-        if _XGBOOST_AVAILABLE:
-            models.append((XGBoostForecaster(), "XGBoost"))
-    except Exception as e:  # noqa: BLE001
-        log.debug("XGBoost unavailable: %s", e)
+    for key in keys:
+        if key in naive_by_key:
+            models.append(naive_by_key[key])
+        elif key == "arima":
+            try:
+                from engine.arima_model import _STATSMODELS_AVAILABLE, ARIMAForecaster
 
-    # The existing forecasting models already expose forecast(df, horizon).
-    try:
-        from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
+                if _STATSMODELS_AVAILABLE:
+                    models.append((ARIMAForecaster(), "ARIMA"))
+            except Exception as e:  # noqa: BLE001
+                log.debug("ARIMA unavailable: %s", e)
+        elif key == "xgboost":
+            try:
+                from engine.xgboost_model import _XGBOOST_AVAILABLE, XGBoostForecaster
 
-        if _PROPHET_AVAILABLE:
-            models.append((ProphetModel(), "Prophet"))
-    except Exception as e:  # noqa: BLE001
-        log.debug("Prophet unavailable: %s", e)
+                if _XGBOOST_AVAILABLE:
+                    models.append((XGBoostForecaster(), "XGBoost"))
+            except Exception as e:  # noqa: BLE001
+                log.debug("XGBoost unavailable: %s", e)
+        elif key == "prophet":
+            try:
+                from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
 
-    # NB: the residual hybrid (Prophet + LSTM-res) is the slowest model and is
-    # opt-in via --hybrid (added per-ticker in main, since the pretrained mode
-    # loads per-ticker weights), so it's intentionally NOT in this shared list.
+                if _PROPHET_AVAILABLE:
+                    models.append((ProphetModel(), "Prophet"))
+            except Exception as e:  # noqa: BLE001
+                log.debug("Prophet unavailable: %s", e)
+        elif key == "chronos":
+            try:
+                from engine.chronos_model import _CHRONOS_AVAILABLE, Chronos2Model
+
+                if _CHRONOS_AVAILABLE:
+                    models.append((Chronos2Model(), "Chronos-2"))
+            except Exception as e:  # noqa: BLE001
+                log.debug("Chronos-2 unavailable: %s", e)
+        elif key == "kronos":
+            try:
+                from engine.kronos_model import _KRONOS_AVAILABLE, KronosModel
+
+                if _KRONOS_AVAILABLE:
+                    models.append((KronosModel(), "Kronos"))
+            except Exception as e:  # noqa: BLE001
+                log.debug("Kronos unavailable: %s", e)
+    # NB: lstm-reg + the residual hybrid are per-ticker (own flags) and added in
+    # main, so they're intentionally not built here.
     return models
 
 
@@ -160,11 +237,9 @@ def _build_hybrid(ticker: str, args):
     if args.hybrid_fit == "pretrained":
         loaded = learner.load(hybrid_residual_path(ticker, "models"))
         if not loaded:
-            log.warning(
-                "%s: no pretrained hybrid residual weights "
-                "(run scripts/train_hybrid_residual.py); hybrid will track the base.",
-                ticker,
-            )
+            # Per-ticker detail at debug; the run-level warning (in main, before
+            # the loop) is the loud one so it isn't lost in per-ticker noise.
+            log.debug("%s: no pretrained hybrid weights; hybrid tracks the base.", ticker)
     return ResidualHybrid(
         ProphetModel(),
         learner,
@@ -339,6 +414,29 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=100, help="Evaluation window length (steps).")
     parser.add_argument("--horizon", type=int, default=1, help="Direct-h forecast horizon.")
     parser.add_argument(
+        "--models",
+        type=str,
+        default="paper",
+        help=(
+            "Which forecasters to run: comma/space-separated keys "
+            "(rw, rwdrift, seasonal, arima, xgboost, prophet, chronos, kronos) "
+            "and/or groups (paper [default] = the Prophet/LSTM study + benchmarks; "
+            "benchmarks; foundation = Chronos-2 + Kronos; all). Chronos/Kronos run "
+            "only via 'all' or by naming them. (LSTM-reg / hybrid have their own "
+            "flags: --no-lstm, --hybrid.)"
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        choices=["level", "log-return"],
+        default="level",
+        help=(
+            "Scoring space. 'level' scores the predicted price; 'log-return' scores "
+            "the implied return r=log(P̂/P_t) vs a zero-return (efficient-market) "
+            "benchmark. Models are unchanged; only the metric space differs."
+        ),
+    )
+    parser.add_argument(
         "--refit-k",
         type=int,
         default=21,
@@ -411,38 +509,42 @@ def main() -> int:
     scope = scope_label(args)
     run_dir = build_run_dir(Path(args.dir), scope, args.days, args.horizon)
 
-    forecasters = build_forecasters()
+    try:
+        model_keys = resolve_model_keys(args.models)
+    except ValueError as e:
+        parser.error(str(e))
+    forecasters = build_forecasters(model_keys)
     labels = ", ".join(label for _, label in forecasters)
     if not args.no_lstm:
         labels += ", LSTM-reg (per-ticker, when weights exist)"
     if args.hybrid:
         labels += f", Prophet+LSTM-res (hybrid, {args.hybrid_fit})"
     if args.macro:
-        # Only claim each macro variant if its lib is importable.
-        try:
-            from engine.xgboost_model import _XGBOOST_AVAILABLE
-        except Exception:  # noqa: BLE001
-            _XGBOOST_AVAILABLE = False
-        try:
-            from engine.prophet_model import _PROPHET_AVAILABLE
-        except Exception:  # noqa: BLE001
-            _PROPHET_AVAILABLE = False
-        if _XGBOOST_AVAILABLE:
-            labels += ", XGBoost + macro"
-        else:
-            log.warning(
-                "--macro: xgboost not installed; XGBoost + macro (and plain XGBoost) "
-                "skipped. Install with: uv pip install -e '.[forecast]'"
-            )
-        if _PROPHET_AVAILABLE:
-            labels += ", Prophet + macro"
-        else:
-            log.warning("--macro: prophet not installed; Prophet + macro skipped.")
+        # Claim a macro variant only when its key was selected AND its lib is
+        # importable (--macro implies macro for the chosen macro-capable models).
+        if "xgboost" in model_keys:
+            try:
+                from engine.xgboost_model import _XGBOOST_AVAILABLE
+            except Exception:  # noqa: BLE001
+                _XGBOOST_AVAILABLE = False
+            if _XGBOOST_AVAILABLE:
+                labels += ", XGBoost + macro"
+            else:
+                log.warning("--macro: xgboost not installed; XGBoost + macro skipped.")
+        if "prophet" in model_keys:
+            try:
+                from engine.prophet_model import _PROPHET_AVAILABLE
+            except Exception:  # noqa: BLE001
+                _PROPHET_AVAILABLE = False
+            if _PROPHET_AVAILABLE:
+                labels += ", Prophet + macro"
+            else:
+                log.warning("--macro: prophet not installed; Prophet + macro skipped.")
 
     print("=" * 92)
     print(
         f" FORECAST HARNESS — {len(tickers)} tickers × {len(forecasters)} models "
-        f"× {args.days}d eval, horizon h={args.horizon}"
+        f"× {args.days}d eval, horizon h={args.horizon}, target={args.target}"
     )
     print(f" Models: {labels}")
     print(f" Output: {run_dir.resolve()}/")
@@ -451,6 +553,50 @@ def main() -> int:
     api = StockAppAPI()
     if not args.no_refresh:
         api.refresh_tickers(list(tickers), verbose=False)
+
+    # Up-front, loud warning if the LSTM regressor is enabled but its per-ticker
+    # weights are missing — otherwise it just produces no rows and is silently
+    # absent from the table.
+    if not args.no_lstm:
+        from engine.lstm_regressor import regressor_path
+
+        missing_reg = [t for t in tickers if not regressor_path(t, "models").exists()]
+        if missing_reg:
+            shown = ", ".join(missing_reg[:6]) + ("…" if len(missing_reg) > 6 else "")
+            log.warning(
+                "LSTM-reg: no weights for %d/%d ticker(s) [%s] — LSTM-reg will be "
+                "absent for them. Train: scripts/train_lstm_regressor.py with the "
+                "SAME --days %d --horizon %d; or pass --no-lstm to silence this.",
+                len(missing_reg),
+                len(tickers),
+                shown,
+                args.days,
+                args.horizon,
+            )
+
+    # Up-front, loud warning if --hybrid --hybrid-fit pretrained but the
+    # per-ticker residual weights are missing — otherwise the hybrid silently
+    # degenerates to the Prophet base (predicts 0 residual) and "Prophet +
+    # LSTM-res" rows would just equal Prophet, which is easy to misread.
+    if args.hybrid and args.hybrid_fit == "pretrained":
+        from engine.residual_learners import hybrid_residual_path
+
+        missing = [t for t in tickers if not hybrid_residual_path(t, "models").exists()]
+        if missing:
+            shown = ", ".join(missing[:6]) + ("…" if len(missing) > 6 else "")
+            log.warning(
+                "--hybrid --hybrid-fit pretrained: no residual weights for %d/%d "
+                "ticker(s) [%s] — the hybrid will fall back to the Prophet base for "
+                "them (its 'Prophet + LSTM-res' rows would just equal Prophet). "
+                "Train first: scripts/train_hybrid_residual.py with the SAME "
+                "--days %d --horizon %d; or use --hybrid-fit per_step (trains on "
+                "the fly, no pretraining).",
+                len(missing),
+                len(tickers),
+                shown,
+                args.days,
+                args.horizon,
+            )
 
     # Macro panel (fetched/cached once, aligned per ticker in the loop).
     macro_panel = None
@@ -474,6 +620,7 @@ def main() -> int:
         refit_k=args.refit_k,
         min_train=args.min_train,
         max_train=max_train,
+        target=args.target,
     )
 
     all_runs: list[ForecastRun] = []
@@ -497,13 +644,18 @@ def main() -> int:
             if hyb is not None:
                 ticker_models.append((hyb, "Prophet + LSTM-res"))
 
+        # Macro variants are added only for macro-capable models that were
+        # actually selected via --models (so --macro "implies macro" for the
+        # chosen models, not for ones the user didn't ask for).
         if macro_panel is not None:
-            mac = _build_macro_xgb(df, macro_panel)
-            if mac is not None:
-                ticker_models.append((mac, "XGBoost + macro"))
-            mac_p = _build_macro_prophet(df, macro_panel)
-            if mac_p is not None:
-                ticker_models.append((mac_p, "Prophet + macro"))
+            if "xgboost" in model_keys:
+                mac = _build_macro_xgb(df, macro_panel)
+                if mac is not None:
+                    ticker_models.append((mac, "XGBoost + macro"))
+            if "prophet" in model_keys:
+                mac_p = _build_macro_prophet(df, macro_panel)
+                if mac_p is not None:
+                    ticker_models.append((mac_p, "Prophet + macro"))
 
         ticker_runs: list[ForecastRun] = []
         for model, _label in ticker_models:
