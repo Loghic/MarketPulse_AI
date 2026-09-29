@@ -62,6 +62,11 @@ class ForecastStep:
     y_true: float
     y_pred: float
     y_naive: float  # random-walk reference (close[t])
+    # Prediction-interval width (yhat_upper - yhat_lower), when the model
+    # provides one (Prophet, ARIMA, and the hybrid via its Prophet base) —
+    # None for models with no native interval (XGBoost, LSTM-reg). Used for
+    # confidence gating (plan.md prerequisite #5); never fabricated.
+    interval_width: float | None = None
 
 
 @dataclass
@@ -181,6 +186,17 @@ class ForecastBacktester:
             if fr is None or not np.isfinite(fr.point):
                 run.skipped += 1
                 continue
+            iv = None
+            lo = fr.extra.get("yhat_lower") if fr.extra else None
+            hi = fr.extra.get("yhat_upper") if fr.extra else None
+            if lo is None or hi is None:
+                # ARIMA reports an interval via `quantiles` (0.1/0.9) instead
+                # of `extra` — same width, different carrier.
+                q = fr.quantiles or {}
+                lo = q.get(0.1, lo)
+                hi = q.get(0.9, hi)
+            if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
+                iv = float(hi) - float(lo)
             run.steps.append(
                 ForecastStep(
                     date=dates[t + h],
@@ -188,6 +204,7 @@ class ForecastBacktester:
                     y_true=float(closes[t + h]),
                     y_pred=float(fr.point),
                     y_naive=float(closes[t]),  # random-walk reference
+                    interval_width=iv,
                 )
             )
 
