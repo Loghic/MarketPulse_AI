@@ -209,6 +209,130 @@ def _build_macro_xgb(df, macro_panel):
         return None
 
 
+# GDELT has real historical depth (from 2017); Yahoo only returns whatever
+# yfinance's live .news endpoint has (effectively "recent"), so GDELT is the
+# only source worth backfilling from for a walk-forward eval window.
+_SENTIMENT_SOURCE = "gdelt"
+_SENTIMENT_LOOKBACK_DAYS = 180
+
+
+def _fetch_sentiment_panel(api, ticker: str, df):
+    """Build ``ticker``'s leakage-safe daily sentiment panel from cached news.
+
+    Uses whatever news is already in the DB (this pipeline has no arbitrary
+    historical-date backfill — GDELT/Yahoo only return recent news relative to
+    "now", so old cached rows are the only real historical coverage available;
+    see docs/forecasting-regression.md and plan.md R4.3). One best-effort live
+    top-up is attempted (short timeout, never blocks the run) in case there's
+    genuinely nothing cached yet for this ticker. Coverage may be partial
+    (only the dates real news exists for) — days with no qualifying news get
+    0.0, not a fabricated value; report the coverage window honestly.
+    """
+    try:
+        from engine.sentiment_data import daily_sentiment_panel
+
+        news_df = api.db.get_news(ticker)
+        if news_df is None or news_df.empty:
+            try:
+                api._process_news_with_db(
+                    ticker,
+                    source=_SENTIMENT_SOURCE,
+                    lookback_days=_SENTIMENT_LOOKBACK_DAYS,
+                    force_refresh=True,
+                )
+                news_df = api.db.get_news(ticker)
+            except Exception as e:  # noqa: BLE001 — network/rate-limit; proceed with no news
+                log.debug("%s: live news top-up failed (%s); using cache only.", ticker, e)
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        return daily_sentiment_panel(dates, news_df)
+    except Exception as e:  # noqa: BLE001 — one ticker's news failure shouldn't kill the run
+        log.warning(
+            "%s: sentiment fetch/panel failed (%s); skipping sentiment for this ticker.", ticker, e
+        )
+        return None
+
+
+def _build_sentiment_xgb(df, sentiment_panel):
+    """XGBoost with a per-ticker positive/negative sentiment regressor, or None.
+
+    ``sentiment_panel`` (from ``engine.sentiment_data.daily_sentiment_panel``) is
+    already leakage-safe — each row uses only news published strictly before
+    that date — so no further lag is applied here.
+    """
+    try:
+        from engine.xgboost_model import _XGBOOST_AVAILABLE, XGBoostForecaster
+
+        if not _XGBOOST_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        aligned = sentiment_panel.reindex(dates)
+        model = XGBoostForecaster(macro_df=aligned)
+        model.name = "XGBoost + sentiment"
+        return model
+    except Exception as e:  # noqa: BLE001
+        log.debug("sentiment XGBoost unavailable: %s", e)
+        return None
+
+
+def _build_sentiment_prophet(df, sentiment_panel):
+    """Prophet with a per-ticker positive/negative sentiment regressor, or None."""
+    try:
+        from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
+
+        if not _PROPHET_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        aligned = sentiment_panel.reindex(dates)
+        model = ProphetModel(macro_df=aligned)
+        model.name = "Prophet + sentiment"
+        return model
+    except Exception as e:  # noqa: BLE001
+        log.debug("sentiment Prophet unavailable: %s", e)
+        return None
+
+
+def _build_macro_sentiment_xgb(df, macro_panel, sentiment_panel):
+    """XGBoost with BOTH macro and sentiment regressors, or None."""
+    try:
+        import pandas as pd
+
+        from engine.macro_data import align_macro
+        from engine.xgboost_model import _XGBOOST_AVAILABLE, XGBoostForecaster
+
+        if not _XGBOOST_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        macro_aligned = align_macro(list(dates), macro_panel, lag=1)
+        combined = pd.concat([macro_aligned, sentiment_panel.reindex(macro_aligned.index)], axis=1)
+        model = XGBoostForecaster(macro_df=combined)
+        model.name = "XGBoost + macro + sentiment"
+        return model
+    except Exception as e:  # noqa: BLE001
+        log.debug("macro+sentiment XGBoost unavailable: %s", e)
+        return None
+
+
+def _build_macro_sentiment_prophet(df, macro_panel, sentiment_panel):
+    """Prophet with BOTH macro and sentiment regressors, or None."""
+    try:
+        import pandas as pd
+
+        from engine.macro_data import align_macro
+        from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
+
+        if not _PROPHET_AVAILABLE:
+            return None
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        macro_aligned = align_macro(list(dates), macro_panel, lag=1)
+        combined = pd.concat([macro_aligned, sentiment_panel.reindex(macro_aligned.index)], axis=1)
+        model = ProphetModel(macro_df=combined)
+        model.name = "Prophet + macro + sentiment"
+        return model
+    except Exception as e:  # noqa: BLE001
+        log.debug("macro+sentiment Prophet unavailable: %s", e)
+        return None
+
+
 def _build_hybrid(ticker: str, args):
     """Construct the per-ticker Prophet + LSTM-res hybrid, or None if unavailable.
 
@@ -470,6 +594,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--sentiment",
+        action="store_true",
+        help=(
+            "Add an 'XGBoost + sentiment' / 'Prophet + sentiment' variant (and "
+            "'+ macro + sentiment' combos when --macro is also set) — the "
+            "news-vs-no-news ablation. Positive/negative headline scores, "
+            "half-life weighted, per ticker, strictly-before-t (leakage-safe). "
+            "Needs a network fetch per ticker on first run (GDELT); cached news "
+            "is reused after that."
+        ),
+    )
+    parser.add_argument(
         "--no-refresh", action="store_true", help="Skip the data download (use cached prices)."
     )
     parser.add_argument(
@@ -540,6 +676,11 @@ def main() -> int:
                 labels += ", Prophet + macro"
             else:
                 log.warning("--macro: prophet not installed; Prophet + macro skipped.")
+    if args.sentiment:
+        if "xgboost" in model_keys:
+            labels += ", XGBoost + sentiment"
+        if "prophet" in model_keys:
+            labels += ", Prophet + sentiment"
 
     print("=" * 92)
     print(
@@ -656,6 +797,31 @@ def main() -> int:
                 mac_p = _build_macro_prophet(df, macro_panel)
                 if mac_p is not None:
                     ticker_models.append((mac_p, "Prophet + macro"))
+
+        # Sentiment variant (per-ticker: fetch/backfill news, build the
+        # leakage-safe daily pos/neg panel, same "implies for selected models"
+        # rule as --macro).
+        if args.sentiment:
+            sentiment_panel = _fetch_sentiment_panel(api, ticker, df)
+            if sentiment_panel is not None:
+                if "xgboost" in model_keys:
+                    sent = _build_sentiment_xgb(df, sentiment_panel)
+                    if sent is not None:
+                        ticker_models.append((sent, "XGBoost + sentiment"))
+                    if macro_panel is not None:
+                        mac_sent = _build_macro_sentiment_xgb(df, macro_panel, sentiment_panel)
+                        if mac_sent is not None:
+                            ticker_models.append((mac_sent, "XGBoost + macro + sentiment"))
+                if "prophet" in model_keys:
+                    sent_p = _build_sentiment_prophet(df, sentiment_panel)
+                    if sent_p is not None:
+                        ticker_models.append((sent_p, "Prophet + sentiment"))
+                    if macro_panel is not None:
+                        mac_sent_p = _build_macro_sentiment_prophet(
+                            df, macro_panel, sentiment_panel
+                        )
+                        if mac_sent_p is not None:
+                            ticker_models.append((mac_sent_p, "Prophet + macro + sentiment"))
 
         ticker_runs: list[ForecastRun] = []
         for model, _label in ticker_models:

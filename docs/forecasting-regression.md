@@ -375,3 +375,33 @@ below 1 on daily levels — but the ablation has to be *run* for the paper to sa
   output (both currently consume the per-step CSVs the harness already writes).
 
 See the forecasting plan for the full R0–R8 roadmap.
+
+## The paper draft
+
+`docs/paper/paper.tex` is a filled-in draft (compiles with `pdflatex`) of
+*"When Does Residual Learning Improve Financial Time-Series Forecasting:
+Evidence from Prophet–LSTM Hybrid Models"*, backed by an actual run of this
+pipeline (2026-09-29): all 25 tickers, $h=1$ core result in
+`results/fc_all_100d_h1_20260929-142930/` (plus its `_dm_wilcoxon.csv`,
+`_residual_structure_gain.csv`, `_regime_table.csv` from
+`scripts/paper_aggregate.py`), multi-horizon sweep in
+`results/fc_all_100d_h{5,10,20}_20260929-*/`, and the lookback/refit-cadence
+robustness sweep in `results/robust_lookback252/`,
+`results/robust_lookback_full/`, `results/robust_refitk5/`. Headline finding:
+a clean negative on the paper's own falsification criteria — the hybrid's
+residuals are structured everywhere (Ljung–Box rejects white noise on
+25/25 tickers) and the LSTM learner exploits nearly all of it, but the
+corrected series still doesn't cross the random-walk line (median hybrid
+$U_2 = 1.036$, 0/225 DM-significant vs.\ RW after FDR). `results/` and
+`models/` are gitignored, so the run directories above are local-only —
+regenerate with the commands in this doc's "Running it" section if they're
+missing.
+
+A later pass (2026-09-29, same day) wired sentiment in (`engine/sentiment_data.py`,
+`--sentiment` on `forecast_harness.py`, mirrors `--macro`) and reran the ablation —
+`results/fc_all_100d_h1_20260929-181225/` vs the baseline above, compared with
+`scripts/sentiment_ablation_compare.py`. Also a clean negative (2/100 DM cells
+survive FDR, both negligible), with a real caveat: GDELT/Yahoo have no
+point-in-time historical backfill, so news coverage only spans the first ~7 of
+the eval window's ~21 weeks for the best-covered tickers. See
+`docs/paper/paper.tex` §News/Sentiment Ablation.
