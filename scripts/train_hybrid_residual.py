@@ -92,6 +92,16 @@ def main() -> int:
         default=0,
         help="Cap residual history to the most-recent N rows before eval (0 = all).",
     )
+    parser.add_argument(
+        "--macro",
+        action="store_true",
+        help=(
+            "Also train a macro-aware residual learner (lag-1-aligned VIX/DXY/"
+            "Gold/SP500/DGS1 alongside the residual window), saved to a "
+            "separate '_hybrid_res_macro.pt' path. Needs xgboost-free macro "
+            "fetch (engine.macro_data); skipped per-ticker on any gap."
+        ),
+    )
     parser.add_argument("--no-refresh", action="store_true")
     parser.add_argument("--models-dir", type=str, default="models")
     args = parser.parse_args()
@@ -107,7 +117,21 @@ def main() -> int:
     if not args.no_refresh:
         api.refresh_tickers(list(tickers), verbose=False)
 
+    macro_panel = None
+    if args.macro:
+        from engine.macro_data import MacroCache, fetch_macro
+
+        cache = MacroCache()
+        macro_panel = cache.load() if args.no_refresh else None
+        if macro_panel is None or macro_panel.empty:
+            macro_panel = fetch_macro()
+            cache.save(macro_panel)
+        if macro_panel is None or macro_panel.empty:
+            log.warning("--macro: no macro series available; skipping the macro variant.")
+            macro_panel = None
+
     trained, skipped = 0, 0
+    trained_macro, skipped_macro = 0, 0
     for ticker in progress_bar(tickers, desc="Train hybrid-res"):
         df = api.get_data(ticker, period="max")
         if df is None or df.empty:
@@ -136,34 +160,65 @@ def main() -> int:
             log.info("%s: base fit misaligned; skipping.", ticker)
             skipped += 1
             continue
-        residuals = closes - fitted
-        residuals = residuals[np.isfinite(residuals)]
+        residuals_raw = closes - fitted
+        finite_mask = np.isfinite(residuals_raw)
+        residuals = residuals_raw[finite_mask]
 
         # Map the preset tier onto the residual learner (same tiers as the
         # LSTM regressor); explicit --hidden/--epochs override.
         cfg = REG_TRAINING_PRESETS[args.preset]
-        learner = LSTMResidualLearner(
-            window=args.window,
-            hidden_size=args.hidden if args.hidden is not None else cfg["hidden_size"],
-            num_layers=cfg["num_layers"],
-            dropout=cfg["dropout"],
-            epochs=args.epochs if args.epochs is not None else cfg["epochs"],
-            lr=cfg["lr"],
-            batch_size=cfg["batch_size"],
-            patience=cfg["patience"],
-        )
+
+        def _new_learner(cfg=cfg):
+            return LSTMResidualLearner(
+                window=args.window,
+                hidden_size=args.hidden if args.hidden is not None else cfg["hidden_size"],
+                num_layers=cfg["num_layers"],
+                dropout=cfg["dropout"],
+                epochs=args.epochs if args.epochs is not None else cfg["epochs"],
+                lr=cfg["lr"],
+                batch_size=cfg["batch_size"],
+                patience=cfg["patience"],
+            )
+
+        learner = _new_learner()
         learner.fit(residuals)
         if not learner.is_trained:
             log.info("%s: residual learner couldn't train (too few residuals); skipping.", ticker)
             skipped += 1
-            continue
+        else:
+            out = hybrid_residual_path(ticker, models_dir)
+            learner.save(out)
+            log.info("%s: trained hybrid residual learner (%s base) → %s", ticker, args.base, out)
+            trained += 1
 
-        out = hybrid_residual_path(ticker, models_dir)
-        learner.save(out)
-        log.info("%s: trained hybrid residual learner (%s base) → %s", ticker, args.base, out)
-        trained += 1
+        if macro_panel is not None:
+            from engine.macro_data import align_macro
+
+            dates = train_df["date"].astype(str).to_numpy() if "date" in train_df.columns else None
+            exog = None
+            if dates is not None:
+                aligned = align_macro(list(dates), macro_panel, lag=1)
+                rows = aligned.reindex(dates[finite_mask])
+                if not rows.isna().any().any():
+                    exog = rows.to_numpy(dtype=float)
+            if exog is None:
+                log.info("%s: macro unavailable/misaligned; skipping macro variant.", ticker)
+                skipped_macro += 1
+            else:
+                learner_m = _new_learner()
+                learner_m.fit(residuals, exog)
+                if not learner_m.is_trained:
+                    log.info("%s: macro residual learner couldn't train; skipping.", ticker)
+                    skipped_macro += 1
+                else:
+                    out_m = hybrid_residual_path(ticker, models_dir, macro=True)
+                    learner_m.save(out_m)
+                    log.info("%s: trained macro hybrid residual learner → %s", ticker, out_m)
+                    trained_macro += 1
 
     print(f"\nDone. Trained {trained}, skipped {skipped}.")
+    if args.macro:
+        print(f"Macro variant: trained {trained_macro}, skipped {skipped_macro}.")
     print("Run the harness with: --hybrid --hybrid-fit pretrained (same --days/--horizon).")
     return 0
 
