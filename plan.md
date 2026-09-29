@@ -267,6 +267,172 @@ engines.
 
 ---
 
+## Immediate action — prerequisites, then the evaluation-window (`--days`) sweep
+
+**Trimmed asset universe (Loghi's call).** Every run below uses an explicit
+`--tickers` list instead of `--all`, so `config.py`'s asset registry stays
+untouched (no blast radius on the directional/trading track or the web GUI,
+which both read the full registry) — this is scoped to the paper reruns only:
+
+```
+--tickers AAPL MSFT NVDA GOOGL META TSLA BTC-USD ETH-USD GLD SLV VOO QQQM FXE FXY
+```
+
+14 tickers: 6 stocks (dropped AMD/TSM/ASML/AVGO/INTC), 2 crypto (BTC/ETH,
+dropped SOL/BNB), 2 commodities (GLD **+ SLV, new — silver, not yet in the news
+registry**), 2 indices (VOO/QQQM, unchanged), 2 FX (FXE **+ FXY, new — Japanese
+Yen**). Smallcap/sector class dropped entirely from these runs (config.py keeps
+it; it's just not passed via `--tickers`). SLV/FXY aren't in `config.py`'s
+`news_names` map, so their sentiment fetch will fall back to the bare ticker
+symbol as the news search query — fine, just less precise than a mapped name;
+not worth a config.py edit for two tickers.
+
+**Data refresh first (prices are ~3 months stale).** Before any of the runs
+below, refresh prices for this exact ticker list:
+
+```
+uv run python refresh.py --tickers AAPL MSFT NVDA GOOGL META TSLA BTC-USD ETH-USD GLD SLV VOO QQQM FXE FXY
+```
+
+Then drop `--no-refresh` (i.e. let the harness/training scripts refresh again,
+or keep `--no-refresh` once the cache is confirmed current — cheaper) for the
+first run in the sequence below.
+
+Two correctness fixes must land **before** any further sweep or rerun, because
+both invalidate the existing `--days 100` results too (not just future runs) —
+the 100-day baseline itself needs to be regenerated once these land, not just
+the 200/400/800 sweep:
+
+1. **Retrain-per-window (leakage fix).** `--hybrid-fit pretrained` (and plain
+   `LSTM-reg`) load weights from `models/{ticker}_reg.pt` /
+   `models/{ticker}_hybrid_res.pt`, trained by `train_lstm_regressor.py` /
+   `train_hybrid_residual.py` with a **fixed** `--days`/`--horizon` that trims only
+   that many trailing rows before fitting. Scoring at a *larger* `--days` than the
+   weights were trained for re-exposes rows the network already trained on — a
+   real leakage bug (caught when the `--days 200` sweep run was stopped; see
+   session notes). **Fix:** before scoring any `--days D`, retrain both scripts
+   with the matching `--days D --horizon 1` first. This must be a step in the
+   sweep procedure below, not a one-off — every window in the sweep needs its own
+   retrain pass.
+2. **Macro into the hybrid.** `_build_hybrid()` in `scripts/forecast_harness.py`
+   currently always constructs a plain `ProphetModel()` with no macro, regardless
+   of `--macro` — the flag only reaches the standalone `XGBoost`/`Prophet`
+   variants (R4.4 leftover, noted in `docs/forecasting-regression.md`'s "What's
+   next"). Wire macro into **both** paths before the next run:
+   - Prophet base: pass the same lag-1-aligned macro panel `_build_macro_prophet`
+     already builds into the hybrid's internal `ProphetModel(macro_df=...)`.
+   - LSTM residual learner: feed macro (lag-1 aligned) alongside the residual
+     window as an input — untested and arguably the more interesting path, since
+     `Prophet + macro` alone scored *worse* than plain Prophet (median U2 2.561 vs
+     2.478), so macro not helping the trend fit says nothing about whether it
+     helps the *residual* the LSTM is trying to predict.
+   - Add a model-name variant (`Prophet + LSTM (hybrid) + macro` or similar) so
+     the ablation is comparable in `_fc_summary.csv` the same way `XGBoost +
+     macro` already is.
+3. **Per-asset regime labels (fixes the bull/bear gap).** `scripts/paper_aggregate.py`
+   currently derives bull/bear from **one market-wide SPY 50/200-day MA cross**
+   applied to every ticker's rows for a given date — so no ticker choice can ever
+   produce a bear-regime slice as long as SPY itself is trending up over the eval
+   window (exactly what happened in the existing 100-day run: the whole window
+   was bull, `paper.tex` says so). Add a **per-asset** trend label (each ticker's
+   own 50/200-day MA cross, or a rolling-return-sign fallback for short windows)
+   alongside the existing SPY-wide label — report both, and use the per-asset one
+   for the regime table so idiosyncratic bear stretches actually count. Cached
+   price data (as of the ~3-months-stale DB, before the refresh above) already
+   shows **TSLA** down ~17% over the most recent 100 trading days and ~25% over
+   200, while SPY/QQQM were flat-to-up over the same dates — a real bear stretch
+   sitting in the trimmed universe's existing 6 stocks; GOOGL and GLD show
+   shorter bear stretches too. Re-check after the data refresh (exact numbers
+   will move) but don't expect the relative story to flip. No new "bear ticker"
+   needed — this is a labeling fix, not a universe-composition fix.
+4. **Adaptive residual weight λ_t.** Generalize the hybrid from `P̂ =
+   P̂^Prophet + reŝ` to `P̂ = P̂^Prophet + λ_t · reŝ` in `engine/residual_hybrid.py`.
+   `λ_t` should be driven by rolling residual structure (e.g. a rolling
+   Ljung–Box/ACF1 window feeding the same signal `engine/residual_diagnostics.py`
+   already computes) so the correction shrinks toward 0 on days/tickers where the
+   residual looks like white noise and stays near 1 where it's structured — this
+   *is* the residual-structure-as-gate idea, implemented as one mechanism rather
+   than two. Directly targets the current gap: the hybrid already recovers ~95%
+   of Prophet's error (median U2 2.478 → 1.036) but slightly overshoots past the
+   random-walk floor; a shrinkage weight is the most likely lever to close that
+   last ~3.6% (or to show it can't be closed, which is itself a real finding).
+   Must land **before** the sweep, since it changes what the hybrid predicts —
+   add it as a new model variant (`Prophet + LSTM (hybrid, adaptive-λ)`) so it's
+   directly comparable to the fixed-λ=1 hybrid already in every prior run, don't
+   replace the existing hybrid outright.
+5. **Confidence gating (Prophet / ARIMA / hybrid only).** Cheaper than it looks —
+   Prophet and ARIMA already emit prediction intervals (`yhat_lower`/`yhat_upper`
+   in `ForecastResult.extra`, `engine/prophet_model.py` / `engine/arima_model.py`),
+   and this machinery is already used by the *directional* track's
+   `--min-confidence`/`--confidence-sweep`. The hybrid inherits Prophet's base
+   interval. **Scope explicitly to these three** — XGBoost and LSTM-reg have no
+   native interval (would need a quantile-regression objective, real new modeling
+   work, not wiring) — don't force gating onto them, note the gap instead of
+   faking an interval. Persist the interval width per step into the regression
+   track's per-step CSVs (`forecast_backtester.py`'s output currently doesn't
+   carry it), then report coverage (% of days acted on) and accuracy on the
+   acted-on subset at a couple of threshold levels, alongside the ungated numbers.
+
+**Then the adaptive `--days` doubling procedure** (stop as soon as the metric
+stops moving), rerun with both fixes in place, **starting with a fresh `--days
+100` rerun** (per Loghi's direction — this supersedes the earlier pre-fix 100-day
+runs and becomes the new baseline the 200/400/800 sweep diffs against):
+
+0. Retrain weights for `--days 100 --horizon 1`, then rerun the core config
+   (`--tickers <the 14 above> --horizon 1 --macro --hybrid --hybrid-fit pretrained --sentiment`,
+   plus the new hybrid+macro variant) at `--days 100`. This is the new baseline —
+   compare it against the existing pre-fix `--days 100` run to sanity-check the
+   two fixes changed what was expected (hybrid+macro should differ from the old
+   macro-less hybrid; leakage fix shouldn't change 100 itself much, since 100 was
+   the window the old weights were already trained for — a large shift here would
+   be a red flag worth stopping on).
+1. Retrain weights for `--days 200`, run it, diff against the new `--days 100`
+   baseline from step 0. Then retrain + run `--days 400`, diffing `400` against
+   `200`.
+2. If `200` differs meaningfully from `100` but `400` ≈ `200` → **stop**, `200`-ish
+   is enough; optionally fill in `300` to locate the elbow more precisely.
+3. If `400` still differs meaningfully from `200` → the metric hasn't converged yet;
+   go to `800` and repeat the same comparison (retrain weights for `800` too).
+4. "Meaningfully different" = model rankings reorder, or median U2 shifts by more
+   than the run-to-run DM-noise floor already characterized in the h=1 core run —
+   don't chase third-decimal wobble.
+5. Report the convergence point (or lack of one) as a new Robustness Checks
+   paragraph; if it never converges within a reasonable ceiling (~800–1000, limited
+   by shortest-history tickers), say so plainly rather than picking a window that
+   happens to flatter the result.
+6. **Model Confidence Set (MCS).** Post-hoc only — doesn't need a rerun, compute
+   it from whichever run's saved per-step predictions are current at the time
+   (Hansen–Lunde–Nason procedure, or a simpler elimination approach if a full MCS
+   implementation is overkill for pure numpy). Complements the existing FDR grid
+   in `engine/forecast_significance.py`: instead of "is model X significantly
+   different from RW," report the *set* of models statistically indistinguishable
+   from the best at each ticker/horizon — a cleaner summary than a 200-cell p-value
+   table. Add wherever `compare_to_reference` results are already reported (the
+   Forecast Accuracy / Statistical Testing sections of `paper.tex`).
+7. **Graphs.** Entirely producible from already-saved CSVs (`results/fc_*`,
+   `results/robust_*`, the residual-diagnostics and sentiment-ablation outputs) —
+   no pipeline changes needed, run this after the reruns above land so the
+   numbers match the final tables (matplotlib, already a transitive dep via the
+   forecast extras). Minimum set, into `docs/paper/figures/`, referenced from the
+   matching `paper.tex` subsection:
+   - **U2 by model** — box/strip plot across all 14 tickers, reference line at
+     U2=1. The headline Forecast Accuracy figure.
+   - **Residual structure vs. hybrid gain** — scatter of Ljung–Box stat (or
+     |ACF1|) vs. ΔU2 per ticker, from `structure_vs_gain`. This *is* the paper's
+     central "when does it help" figure per `docs/forecasting-regression.md`.
+   - **Actual vs. predicted overlay** — 2–3 representative tickers (e.g. TSLA for
+     the bear stretch, AAPL for bull): true close vs. RW vs. Prophet vs. hybrid
+     over the eval window.
+   - **U2 vs. horizon** — line plot per model across h∈{1,5,10,20}.
+   - **Regime bar chart** — median U2 by vol tercile (and the new per-asset
+     bull/bear split), grouped by model.
+   - **Robustness lookback plot** — U2 vs `--max-train` (252/504/full, log-scale
+     y) — sells the "uncapping is catastrophic" finding visually.
+   - **Sentiment ablation** — ΔU2 with vs. without news per ticker, centered near
+     zero — sells the null result visually.
+
+---
+
 ## Phase R8 — Robustness (maps to Robustness §7)
 
 - Lookback windows (LSTM sequence length), refit cadence `K` (R0.3), hyperparameters
@@ -331,20 +497,34 @@ publishable finding and is more credible than a fragile positive.
 
 ## Build order checklist
 
-- [ ] R0 — write the evaluation contract (target space, leakage rule, refit cadence, horizons)
-- [ ] R1.1 — `regression_metrics.py` (RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2) + tests
-- [ ] R2.1 — `naive_forecasters.py` (RandomWalk reference)
-- [ ] R1.2/R1.3 — `forecast_backtester.py` + persist per-step predictions
-- [ ] R3.1 — `lstm_regressor.py` (regression head)
-- [ ] R3.2/R3.4 — `residual_hybrid.py` + leakage-safe residual construction + tests
-- [ ] R3.3 — multivariate Prophet (`add_regressor`)
-- [ ] R5.1/R5.2 — Diebold–Mariano + Wilcoxon + FDR + tests
-- [ ] R2.2 — ARIMA benchmark
-- [ ] R2.3 — XGBoost benchmark
-- [ ] R4 — `macro_data.py` (VIX/DXY/Gold/SP500/DGS1) + lag-safe alignment + pos/neg sentiment
-- [ ] R6 — `residual_diagnostics.py` (ACF/PACF/Ljung–Box) + the structure-vs-gain cross-tab
-- [ ] R7 — horizon/regime/asset-class slicing
-- [ ] R8 — robustness sweeps + reproducibility statement
+- [x] R0 — write the evaluation contract (target space, leakage rule, refit cadence, horizons)
+- [x] R1.1 — `regression_metrics.py` (RMSE/MAE/MAPE/sMAPE + MASE/RMSSE/Theil U2) + tests
+- [x] R2.1 — `naive_forecasters.py` (RandomWalk reference)
+- [x] R1.2/R1.3 — `forecast_backtester.py` + persist per-step predictions
+- [x] R3.1 — `lstm_regressor.py` (regression head)
+- [x] R3.2/R3.4 — `residual_hybrid.py` + leakage-safe residual construction + tests
+- [x] R3.3 — multivariate Prophet (`add_regressor`)
+- [x] R5.1/R5.2 — Diebold–Mariano + Wilcoxon + FDR + tests
+- [x] R2.2 — ARIMA benchmark
+- [x] R2.3 — XGBoost benchmark
+- [x] R4 — `macro_data.py` (VIX/DXY/Gold/SP500/DGS1) + lag-safe alignment.
+- [x] R4.3/R4.4 — `sentiment_data.py` (per-ticker daily pos/neg panel, leakage-safe by
+      construction) wired into XGBoost/Prophet via `--sentiment` (mirrors `--macro`);
+      ablation run and reported (`docs/paper/paper.tex` §News/Sentiment Ablation): no
+      DM-significant effect after FDR correction (2/100 cells survive, both a tiny
+      Prophet/ETH-USD improvement). **Caveat:** GDELT/Yahoo have no point-in-time
+      historical backfill, so real news coverage only spans ~7 of the eval window's
+      ~21 weeks for the best-covered tickers — a preliminary negative, not definitive
+      (see plan.md's own R8 robustness note in the paper).
+- [x] R6 — `residual_diagnostics.py` (ACF/PACF/Ljung–Box) + the structure-vs-gain cross-tab — run for the paper
+      (`docs/paper/paper.tex` §Residual Predictability): 25/25 tickers show structured (Ljung–Box) Prophet
+      residuals, mean ΔU2 = 1.80.
+- [x] R7 — horizon/regime/asset-class slicing — run via `scripts/forecast_harness.py` (h∈{1,5,10,20}, all 6
+      asset classes) + `scripts/paper_aggregate.py` (bull/bear + VIX-tercile regime split). Bull/bear was
+      uninformative this run (eval window fell entirely in a bull regime); vol-tercile split worked.
+- [~] R8 — robustness sweeps: **partial**. Ran lookback (`--max-train` 252/504/0) and refit-cadence
+      (`--refit-k` 5/21) on the `--stocks` subset only — not the full asset-subset × hyperparameter grid, and
+      no seed sweep. See `docs/paper/paper.tex` §Robustness Checks for exactly what ran.
 
 ---
 
