@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from statistics import NormalDist
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -85,7 +86,7 @@ class ProphetModel(ForecastModel):
                 "Or: uv pip install -e '.[forecast]'"
             )
         self.interval_width = interval_width
-        self._kwargs = dict(
+        self._kwargs: dict[str, Any] = dict(
             interval_width=interval_width,
             weekly_seasonality=weekly_seasonality,
             yearly_seasonality=yearly_seasonality,
