@@ -96,6 +96,42 @@ def residual_structure_cross_tab(
     )
 
 
+def confidence_gating_table(
+    df: pd.DataFrame, thresholds: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
+) -> pd.DataFrame:
+    """Coverage/accuracy at increasing confidence thresholds (plan.md #5).
+
+    Only models with an ``interval_width`` (Prophet, ARIMA, the hybrid —
+    XGBoost/LSTM-reg have no native interval and are silently absent, not
+    faked). At each threshold, keeps the ``threshold``-fraction of steps with
+    the *narrowest* interval (pooled across tickers) and reports Theil U2 on
+    that acted-on subset — coverage=1.0 reproduces the ungated number.
+    """
+    rows = []
+    if "interval_width" not in df.columns:
+        return pd.DataFrame()
+    for model, g in df.groupby("model"):
+        g = g.dropna(subset=["interval_width"])
+        if g.empty:
+            continue
+        g = g.sort_values("interval_width")
+        n_total = len(g)
+        for thr in thresholds:
+            k = max(1, int(round(n_total * thr)))
+            sub = g.iloc[:k]
+            rows.append(
+                dict(
+                    model=model,
+                    coverage=thr,
+                    n=k,
+                    n_total=n_total,
+                    mean_interval_width=float(sub["interval_width"].mean()),
+                    theil_u2=theil_u2(sub.y_true, sub.y_pred, sub.y_naive),
+                )
+            )
+    return pd.DataFrame(rows)
+
+
 def regime_labels() -> pd.DataFrame:
     """SPY 50/200d trend (bull/bear) + VIX tercile (high/low-vol) per date."""
     macro = MacroCache().load()
@@ -123,17 +159,65 @@ def regime_labels() -> pd.DataFrame:
     return out.reset_index()
 
 
-def regime_table(df: pd.DataFrame, regimes: pd.DataFrame) -> pd.DataFrame:
-    m = df.merge(regimes, on="date", how="left")
+def per_asset_trend(
+    tickers: list[str], min_ma_rows: int = 200, fallback_window: int = 20
+) -> pd.DataFrame:
+    """Each ticker's OWN 50/200-day MA-cross bull/bear label (full history via
+    yfinance) — distinct from ``regime_labels()``'s single market-wide SPY
+    label. Lets an idiosyncratic decline (e.g. one stock down while SPY is up)
+    count as a real bear-regime observation instead of being masked by
+    whatever the index is doing. Falls back to a rolling ``fallback_window``
+    -day return-sign heuristic when a ticker has fewer than ``min_ma_rows`` of
+    history to support a real 200-day MA (positive trailing return -> bull).
+    """
+    import yfinance as yf
+
     rows = []
-    for regime_col, label_set in [("trend", ["bull", "bear"]), ("vol", ["low-vol", "high-vol"])]:
+    for ticker in tickers:
+        try:
+            px = yf.download(ticker, period="10y", progress=False, auto_adjust=True)["Close"]
+            px = px.squeeze()
+        except Exception as e:  # noqa: BLE001 — one ticker's fetch shouldn't kill the rest
+            print(f"per_asset_trend: {ticker} fetch failed ({e}); skipping.")
+            continue
+        if px.empty:
+            continue
+        if len(px) >= min_ma_rows:
+            ma50 = px.rolling(50).mean()
+            ma200 = px.rolling(200).mean()
+            trend = pd.Series(np.where(ma50 > ma200, "bull", "bear"), index=px.index)
+        else:
+            roll_ret = px.pct_change(fallback_window)
+            trend = pd.Series(np.where(roll_ret > 0, "bull", "bear"), index=px.index)
+        for date, label in trend.dropna().items():
+            rows.append((ticker, date, label))
+    out = pd.DataFrame(rows, columns=["ticker", "date", "trend_asset"])
+    if not out.empty:
+        out["date"] = pd.to_datetime(out["date"])
+    return out
+
+
+def regime_table(
+    df: pd.DataFrame, regimes: pd.DataFrame, asset_trend: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    m = df.merge(regimes, on="date", how="left")
+    if asset_trend is not None and not asset_trend.empty:
+        m = m.merge(asset_trend, on=["ticker", "date"], how="left")
+    rows = []
+    regime_cols = [
+        ("trend", ["bull", "bear"], "spy-wide"),
+        ("vol", ["low-vol", "high-vol"], "spy-wide"),
+    ]
+    if asset_trend is not None and not asset_trend.empty:
+        regime_cols.append(("trend_asset", ["bull", "bear"], "per-asset"))
+    for regime_col, label_set, source in regime_cols:
         for label in label_set:
             sub = m[m[regime_col] == label]
             for model, g in sub.groupby("model"):
                 if g.empty:
                     continue
                 u2 = theil_u2(g.y_true, g.y_pred, g.y_naive)
-                rows.append(dict(regime=label, model=model, n=len(g), theil_u2=u2))
+                rows.append(dict(source=source, regime=label, model=model, n=len(g), theil_u2=u2))
     return pd.DataFrame(rows)
 
 
@@ -167,9 +251,21 @@ def main() -> None:
             f"Skipping structure-vs-gain: need {args.base_model!r} and {args.hybrid_model!r} in {models}"
         )
 
+    gate = confidence_gating_table(df)
+    if not gate.empty:
+        gate.to_csv(out_dir / "_confidence_gating.csv", index=False)
+        print(f"Confidence gating: {len(gate)} rows -> {out_dir/'_confidence_gating.csv'}")
+    else:
+        print("Confidence gating: no model reported an interval_width; skipped.")
+
     try:
         regimes = regime_labels()
-        rt = regime_table(df, regimes)
+        try:
+            asset_trend = per_asset_trend(sorted(df.ticker.unique().tolist()))
+        except Exception as e:  # noqa: BLE001 — per-asset trend is best-effort
+            print(f"per_asset_trend failed ({e}); regime table will use spy-wide only.")
+            asset_trend = None
+        rt = regime_table(df, regimes, asset_trend)
         rt.to_csv(out_dir / "_regime_table.csv", index=False)
         print(f"Regime table: {len(rt)} rows -> {out_dir/'_regime_table.csv'}")
     except Exception as e:  # pragma: no cover - network/data best-effort
