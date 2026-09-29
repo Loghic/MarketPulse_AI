@@ -32,3 +32,6 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+
+# Paper draft (working doc, not versioned)
+docs/paper/
