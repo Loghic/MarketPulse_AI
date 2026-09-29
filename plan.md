@@ -298,94 +298,129 @@ Then drop `--no-refresh` (i.e. let the harness/training scripts refresh again,
 or keep `--no-refresh` once the cache is confirmed current — cheaper) for the
 first run in the sequence below.
 
-Two correctness fixes must land **before** any further sweep or rerun, because
-both invalidate the existing `--days 100` results too (not just future runs) —
-the 100-day baseline itself needs to be regenerated once these land, not just
-the 200/400/800 sweep:
+Six prerequisites must land **before** any further sweep or rerun, because
+several invalidate the existing `--days 100` results too (not just future
+runs) — the 100-day baseline itself needs to be regenerated once these land,
+not just the 200/400/800 sweep. **Status: all six are implemented and
+smoke-tested (1 ticker, `--days 5`–`10`, `--max-train 504`) as of this
+session — none have been run at real paper scale yet.** `uv run pytest
+tests/ -q` (349 tests, excluding the pre-existing unrelated
+`test_web_api.py` fastapi gap) and `ruff`/`mypy` are clean.
 
-1. **Retrain-per-window (leakage fix).** `--hybrid-fit pretrained` (and plain
-   `LSTM-reg`) load weights from `models/{ticker}_reg.pt` /
-   `models/{ticker}_hybrid_res.pt`, trained by `train_lstm_regressor.py` /
-   `train_hybrid_residual.py` with a **fixed** `--days`/`--horizon` that trims only
-   that many trailing rows before fitting. Scoring at a *larger* `--days` than the
-   weights were trained for re-exposes rows the network already trained on — a
-   real leakage bug (caught when the `--days 200` sweep run was stopped; see
-   session notes). **Fix:** before scoring any `--days D`, retrain both scripts
-   with the matching `--days D --horizon 1` first. This must be a step in the
-   sweep procedure below, not a one-off — every window in the sweep needs its own
-   retrain pass.
-2. **Macro into the hybrid.** `_build_hybrid()` in `scripts/forecast_harness.py`
-   currently always constructs a plain `ProphetModel()` with no macro, regardless
-   of `--macro` — the flag only reaches the standalone `XGBoost`/`Prophet`
-   variants (R4.4 leftover, noted in `docs/forecasting-regression.md`'s "What's
-   next"). Wire macro into **both** paths before the next run:
-   - Prophet base: pass the same lag-1-aligned macro panel `_build_macro_prophet`
-     already builds into the hybrid's internal `ProphetModel(macro_df=...)`.
-   - LSTM residual learner: feed macro (lag-1 aligned) alongside the residual
-     window as an input — untested and arguably the more interesting path, since
-     `Prophet + macro` alone scored *worse* than plain Prophet (median U2 2.561 vs
-     2.478), so macro not helping the trend fit says nothing about whether it
-     helps the *residual* the LSTM is trying to predict.
-   - Add a model-name variant (`Prophet + LSTM (hybrid) + macro` or similar) so
-     the ablation is comparable in `_fc_summary.csv` the same way `XGBoost +
-     macro` already is.
-3. **Per-asset regime labels (fixes the bull/bear gap).** `scripts/paper_aggregate.py`
-   currently derives bull/bear from **one market-wide SPY 50/200-day MA cross**
-   applied to every ticker's rows for a given date — so no ticker choice can ever
-   produce a bear-regime slice as long as SPY itself is trending up over the eval
-   window (exactly what happened in the existing 100-day run: the whole window
-   was bull, `paper.tex` says so). Add a **per-asset** trend label (each ticker's
-   own 50/200-day MA cross, or a rolling-return-sign fallback for short windows)
-   alongside the existing SPY-wide label — report both, and use the per-asset one
-   for the regime table so idiosyncratic bear stretches actually count. Cached
-   price data (as of the ~3-months-stale DB, before the refresh above) already
-   shows **TSLA** down ~17% over the most recent 100 trading days and ~25% over
-   200, while SPY/QQQM were flat-to-up over the same dates — a real bear stretch
-   sitting in the trimmed universe's existing 6 stocks; GOOGL and GLD show
-   shorter bear stretches too. Re-check after the data refresh (exact numbers
-   will move) but don't expect the relative story to flip. No new "bear ticker"
-   needed — this is a labeling fix, not a universe-composition fix.
-4. **Adaptive residual weight λ_t.** Generalize the hybrid from `P̂ =
-   P̂^Prophet + reŝ` to `P̂ = P̂^Prophet + λ_t · reŝ` in `engine/residual_hybrid.py`.
-   `λ_t` should be driven by rolling residual structure (e.g. a rolling
-   Ljung–Box/ACF1 window feeding the same signal `engine/residual_diagnostics.py`
-   already computes) so the correction shrinks toward 0 on days/tickers where the
-   residual looks like white noise and stays near 1 where it's structured — this
-   *is* the residual-structure-as-gate idea, implemented as one mechanism rather
-   than two. Directly targets the current gap: the hybrid already recovers ~95%
-   of Prophet's error (median U2 2.478 → 1.036) but slightly overshoots past the
-   random-walk floor; a shrinkage weight is the most likely lever to close that
-   last ~3.6% (or to show it can't be closed, which is itself a real finding).
-   Must land **before** the sweep, since it changes what the hybrid predicts —
-   add it as a new model variant (`Prophet + LSTM (hybrid, adaptive-λ)`) so it's
-   directly comparable to the fixed-λ=1 hybrid already in every prior run, don't
-   replace the existing hybrid outright.
-5. **Confidence gating (Prophet / ARIMA / hybrid only).** Cheaper than it looks —
-   Prophet and ARIMA already emit prediction intervals (`yhat_lower`/`yhat_upper`
-   in `ForecastResult.extra`, `engine/prophet_model.py` / `engine/arima_model.py`),
-   and this machinery is already used by the *directional* track's
-   `--min-confidence`/`--confidence-sweep`. The hybrid inherits Prophet's base
-   interval. **Scope explicitly to these three** — XGBoost and LSTM-reg have no
-   native interval (would need a quantile-regression objective, real new modeling
-   work, not wiring) — don't force gating onto them, note the gap instead of
-   faking an interval. Persist the interval width per step into the regression
-   track's per-step CSVs (`forecast_backtester.py`'s output currently doesn't
-   carry it), then report coverage (% of days acted on) and accuracy on the
-   acted-on subset at a couple of threshold levels, alongside the ungated numbers.
+1. **Retrain-per-window (leakage fix). — process, not code; already
+   supported.** `--hybrid-fit pretrained` (and plain `LSTM-reg`) load weights
+   from `models/{ticker}_reg.pt` / `models/{ticker}_hybrid_res.pt`, trained by
+   `train_lstm_regressor.py` / `train_hybrid_residual.py` with a **fixed**
+   `--days`/`--horizon` that trims only that many trailing rows before
+   fitting. Scoring at a *larger* `--days` than the weights were trained for
+   re-exposes rows the network already trained on — a real leakage bug
+   (caught when the `--days 200` sweep run was stopped; see session notes).
+   Nothing to build: both training scripts already trim correctly. The fix is
+   **discipline** — retrain with the matching `--days D --horizon 1` before
+   scoring every window in the sweep below; step 0 makes this explicit.
+2. **Macro into the hybrid. — done.** `scripts/forecast_harness.py:_build_hybrid()`
+   now takes `df`/`macro_panel` and, when passed, builds a macro-aware Prophet
+   base (`ProphetModel(macro_df=...)`, same panel `_build_macro_prophet` uses)
+   **and** passes the same lag-1-aligned panel into `ResidualHybrid(macro_df=...)`
+   for the LSTM residual learner. `engine/residual_learners.py:LSTMResidualLearner`
+   gained an optional exog channel (`_ResNet`'s linear head widens from
+   `hidden_size` to `hidden_size+exog_dim`; `exog_dim=0` reproduces the old
+   architecture exactly, so existing univariate pretrained weights still
+   load). `train_hybrid_residual.py --macro` trains a **separate**
+   `{ticker}_hybrid_res_macro.pt` (different architecture, can't share a
+   file with the univariate weights). New variant:
+   `Prophet + LSTM-res (hybrid) + macro`, added alongside the plain hybrid,
+   not replacing it. Smoke-tested on AAPL (`--days 5`/`10`, `--max-train
+   504`): produces a genuinely different prediction from the plain hybrid
+   (not a silent no-op fallback). **Gotcha hit during testing:**
+   `train_hybrid_residual.py`'s `--max-train` defaults to `0` (uncapped) —
+   unlike the harness's own 504-row default — so training on AAPL's full
+   ~46-year history hits dates before the macro series (VIX/DXY/etc.) even
+   starts, and the alignment check correctly (not a bug) skips the macro
+   variant. **Pass `--max-train 504` (or similar) to `train_hybrid_residual.py
+   --macro` in the real sweep**, matching the harness's own cap, or the macro
+   hybrid will silently skip every long-history ticker.
+3. **Per-asset regime labels (fixes the bull/bear gap). — done.**
+   `scripts/paper_aggregate.py:per_asset_trend()` fetches each ticker's own
+   10y history via yfinance and computes its own 50/200-day MA cross
+   (falling back to a 20-day rolling-return-sign heuristic if a ticker has
+   under 200 rows of history), independent of the shared SPY-wide label
+   `regime_labels()` still produces. `regime_table()` now merges both and
+   tags each row's `source` column (`spy-wide` vs `per-asset`) so both are
+   reported, not just one replacing the other. Smoke-tested directly
+   (`per_asset_trend(["TSLA","AAPL"])`, no harness run needed): **confirmed
+   TSLA's own trend is currently `bear` for its entire recent stretch through
+   today**, while AAPL's is `bull` — exactly the idiosyncratic-bear signal
+   the SPY-wide label was masking. TSLA's overall history splits ~1293
+   bull / ~1220 bear days (10y), a real, usable regime split.
+4. **Adaptive residual weight λ_t. — done.** `engine/residual_hybrid.py`
+   generalizes `P̂ = P̂^Prophet + reŝ` to `P̂ = P̂^Prophet + λ_t·reŝ` behind a new
+   `adaptive_lambda: bool = False` constructor flag (default off — the
+   existing fixed-λ=1 hybrid is untouched). `λ_t = clip(1 - p/α, 0, 1)`, `p` =
+   Ljung–Box p-value on the most recent `lambda_window` (default 20)
+   residuals, `α` = 0.05 (the same significance threshold
+   `residual_diagnostics.diagnose()` already uses to call a residual
+   "structured") — p≈0 (structured) → λ≈1 (full correction); p≥α (white
+   noise) → λ=0 (hybrid reduces to base). New variant:
+   `Prophet + LSTM-res (hybrid, adaptive-λ)`, added alongside the fixed-λ
+   hybrid. Smoke-tested on AAPL: at `--days 5` it collapsed to λ≈0 for every
+   step (identical output to plain Prophet — plausible, not a bug: a
+   20-point rolling window with `lags=10` is a low-power test, easy to land
+   p≥0.05 even when the full-series test rejects strongly); at `--days 10` it
+   diverged from both the plain hybrid and plain Prophet, confirming the
+   mechanism isn't stuck at a constant. **Watch this in the real sweep** — if
+   `lambda_window=20` proves too noisy at paper scale (100+ day windows),
+   widening it is a one-line change.
+5. **Confidence gating (Prophet / ARIMA / hybrid only). — done.** Prophet
+   already emitted an interval via `ForecastResult.extra["yhat_lower"/"yhat_upper"]`;
+   ARIMA reports one via `ForecastResult.quantiles` (`{0.1, 0.5, 0.9}`)
+   instead — `engine/forecast_backtester.py`'s walk-forward loop now checks
+   both carriers and persists the resulting `interval_width` (`hi - lo`) per
+   step (`None` for XGBoost/LSTM-reg — never faked). `ResidualHybrid` now
+   also copies the base's `quantiles`/`extra` onto its own `ForecastResult`,
+   so the hybrid genuinely inherits Prophet's interval (it didn't before this
+   fix — the "inherits" claim in the original prerequisite note was
+   aspirational until now). New CSV column `interval_width` in the per-step
+   output (`scripts/forecast_harness.py:write_per_ticker_steps`).
+   `scripts/paper_aggregate.py:confidence_gating_table()` computes coverage/
+   Theil-U2-on-acted-on-subset at `{0.25, 0.5, 0.75, 1.0}` thresholds for
+   whichever models have an interval. Smoke-tested end-to-end (AAPL, 10 days,
+   `--hybrid`): ARIMA/Prophet/hybrid rows populated, XGBoost/RW rows blank as
+   expected; `paper_aggregate.py` ran clean and produced a sane 16-row table.
+6. **Dual sentiment scorer comparison (VADER vs FinBERT) — done, not in the
+   original prerequisite list, added per Loghi's request.** The earlier
+   sentiment-ablation work hardcoded VADER. `engine/sentiment_data.py` /
+   `scripts/forecast_harness.py:_fetch_sentiment_panel()` now takes a
+   `method` param and filters cached news by the DB's `method` column before
+   building the panel (live top-up also scores with the requested method);
+   `--sentiment` now builds **two** variants per selected model —
+   `XGBoost + sentiment (vader)` / `(finbert)` and the Prophet equivalents —
+   via a new `--sentiment-methods` flag (default: both). Smoke-tested on
+   AAPL (`--days 5`): both variants ran and produced different numbers;
+   confirmed in the news DB that real `vader` (62 rows) and `finbert` (20
+   rows) scores were independently computed, not one relabeled as the other.
+   FinBERT genuinely works in this environment (downloaded `ProsusAI/finbert`
+   via `transformers`, no fallback triggered).
 
 **Then the adaptive `--days` doubling procedure** (stop as soon as the metric
 stops moving), rerun with both fixes in place, **starting with a fresh `--days
 100` rerun** (per Loghi's direction — this supersedes the earlier pre-fix 100-day
 runs and becomes the new baseline the 200/400/800 sweep diffs against):
 
-0. Retrain weights for `--days 100 --horizon 1`, then rerun the core config
-   (`--tickers <the 14 above> --horizon 1 --macro --hybrid --hybrid-fit pretrained --sentiment`,
-   plus the new hybrid+macro variant) at `--days 100`. This is the new baseline —
-   compare it against the existing pre-fix `--days 100` run to sanity-check the
-   two fixes changed what was expected (hybrid+macro should differ from the old
-   macro-less hybrid; leakage fix shouldn't change 100 itself much, since 100 was
-   the window the old weights were already trained for — a large shift here would
-   be a red flag worth stopping on).
+0. Retrain weights for `--days 100 --horizon 1` — **both**
+   `train_lstm_regressor.py --days 100 --horizon 1` and
+   `train_hybrid_residual.py --days 100 --horizon 1 --macro --max-train 504`
+   (the `--max-train 504` is required, per prerequisite #2's gotcha, or the
+   macro variant silently skips every long-history ticker). Then rerun the
+   core config (`--tickers <the 14 above> --horizon 1 --macro --hybrid
+   --hybrid-fit pretrained --sentiment`, which now automatically includes the
+   hybrid+macro and adaptive-λ variants alongside the plain hybrid, and both
+   `(vader)`/`(finbert)` sentiment variants) at `--days 100`. This is the new
+   baseline — compare it against the existing pre-fix `--days 100` run to
+   sanity-check the fixes changed what was expected (hybrid+macro should
+   differ from the old macro-less hybrid; leakage fix shouldn't change 100
+   itself much, since 100 was the window the old weights were already
+   trained for — a large shift here would be a red flag worth stopping on).
 1. Retrain weights for `--days 200`, run it, diff against the new `--days 100`
    baseline from step 0. Then retrain + run `--days 400`, diffing `400` against
    `200`.
