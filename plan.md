@@ -408,28 +408,35 @@ tests/ -q` (349 tests, excluding the pre-existing unrelated
    via `transformers`, no fallback triggered).
 
 **Then the adaptive `--days` doubling procedure** (stop as soon as the metric
-stops moving), rerun with both fixes in place, **starting with a fresh `--days
-100` rerun** (per Loghi's direction — this supersedes the earlier pre-fix 100-day
-runs and becomes the new baseline the 200/400/800 sweep diffs against):
+stops moving), rerun with both fixes in place, **starting with `--days 50`,
+followed by `--days 100`** (per Loghi's direction — the 100-day leg supersedes
+the earlier pre-fix 100-day runs and, together with 50, becomes the baseline
+pair the 200/400/800 sweep diffs against):
 
-0. Retrain weights for `--days 100 --horizon 1` — **both**
-   `train_lstm_regressor.py --days 100 --horizon 1` and
-   `train_hybrid_residual.py --days 100 --horizon 1 --macro` (`--max-train`
-   no longer needs to be passed manually — it now defaults to 504 whenever
-   `--macro` is set, per prerequisite #2's fix, and warns loudly if the macro
-   variant ends up skipped anyway). Then rerun the
-   core config (`--tickers <the 14 above> --horizon 1 --macro --hybrid
-   --hybrid-fit pretrained --sentiment`, which now automatically includes the
-   hybrid+macro and adaptive-λ variants alongside the plain hybrid, and both
-   `(vader)`/`(finbert)` sentiment variants) at `--days 100`. This is the new
-   baseline — compare it against the existing pre-fix `--days 100` run to
-   sanity-check the fixes changed what was expected (hybrid+macro should
-   differ from the old macro-less hybrid; leakage fix shouldn't change 100
-   itself much, since 100 was the window the old weights were already
-   trained for — a large shift here would be a red flag worth stopping on).
-1. Retrain weights for `--days 200`, run it, diff against the new `--days 100`
-   baseline from step 0. Then retrain + run `--days 400`, diffing `400` against
-   `200`.
+-1. Retrain weights for `--days 50 --horizon 1` — **both**
+    `train_lstm_regressor.py --days 50 --horizon 1` and
+    `train_hybrid_residual.py --days 50 --horizon 1 --macro` (`--max-train`
+    auto-defaults to 504 whenever `--macro` is set, per prerequisite #2's fix).
+    Then run the core config (`--tickers <the 14 above> --horizon 1 --macro
+    --hybrid --hybrid-fit pretrained --sentiment`, which now automatically
+    includes the hybrid+macro and adaptive-λ variants alongside the plain
+    hybrid, and both `(vader)`/`(finbert)` sentiment variants) at `--days 50`.
+    This is the shortest window in the sweep — a real data point, not just a
+    smoke test, but expect noisier per-ticker U2 than the longer windows given
+    fewer eval steps.
+0. Retrain weights for `--days 100 --horizon 1` (both scripts, same flags as
+   above), then run the core config at `--days 100`. This is the new
+   post-fix 100-day baseline — compare it against both (a) the existing
+   pre-fix `--days 100` run, to sanity-check the fixes changed what was
+   expected (hybrid+macro should differ from the old macro-less hybrid;
+   leakage fix shouldn't change 100 itself much, since 100 was the window the
+   old weights were already trained for — a large shift here would be a red
+   flag worth stopping on), and (b) the new `--days 50` run from step -1, as
+   the first leg of the actual convergence check.
+1. Retrain weights for `--days 200`, run it, diff against the `--days 100`
+   baseline from step 0 (and, informally, against the `50`→`100` delta from
+   step -1 — is the metric still moving by a similar amount, or slowing down?).
+   Then retrain + run `--days 400`, diffing `400` against `200`.
 2. If `200` differs meaningfully from `100` but `400` ≈ `200` → **stop**, `200`-ish
    is enough; optionally fill in `300` to locate the elbow more precisely.
 3. If `400` still differs meaningfully from `200` → the metric hasn't converged yet;
