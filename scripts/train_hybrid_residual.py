@@ -89,8 +89,14 @@ def main() -> int:
     parser.add_argument(
         "--max-train",
         type=int,
-        default=0,
-        help="Cap residual history to the most-recent N rows before eval (0 = all).",
+        default=None,
+        help=(
+            "Cap residual history to the most-recent N rows before eval "
+            "(0 = all). Default: 504 (~2 trading years) when --macro is set "
+            "(macro series don't reach back further, so an uncapped window "
+            "silently trains on pre-macro-era history and skips every "
+            "ticker's macro variant); 0 otherwise."
+        ),
     )
     parser.add_argument(
         "--macro",
@@ -105,6 +111,24 @@ def main() -> int:
     parser.add_argument("--no-refresh", action="store_true")
     parser.add_argument("--models-dir", type=str, default="models")
     args = parser.parse_args()
+
+    if args.max_train is None:
+        args.max_train = 504 if args.macro else 0
+        if args.macro:
+            log.warning(
+                "--macro with no --max-train: defaulting to 504 (~2 trading "
+                "years) so the macro variant isn't silently skipped for every "
+                "ticker. Pass --max-train 0 explicitly to train on full "
+                "uncapped history anyway (expect most/all macro variants to "
+                "be skipped)."
+            )
+    elif args.macro and args.max_train == 0:
+        log.warning(
+            "--macro --max-train 0: training on full uncapped history. Macro "
+            "series (VIX/DXY/Gold/SP500/DGS1) don't reach back that far, so "
+            "most/all tickers' macro variant will likely be skipped — watch "
+            "for 'skipping macro variant' messages below."
+        )
 
     if not _TORCH_AVAILABLE:
         log.error("PyTorch not installed. Install with: uv pip install -e '.[ai]'")
@@ -219,6 +243,21 @@ def main() -> int:
     print(f"\nDone. Trained {trained}, skipped {skipped}.")
     if args.macro:
         print(f"Macro variant: trained {trained_macro}, skipped {skipped_macro}.")
+        if trained_macro == 0:
+            log.warning(
+                "Macro variant: 0 tickers trained — every ticker was skipped "
+                "(see 'skipping macro variant' messages above). The harness's "
+                "'+ macro' hybrid run will silently fall back to the plain "
+                "hybrid for all of them. Check --max-train and macro data "
+                "availability before spending time on the real run."
+            )
+        elif skipped_macro > 0:
+            log.warning(
+                "Macro variant: %d/%d tickers skipped — those will silently "
+                "fall back to the plain hybrid in the harness run.",
+                skipped_macro,
+                trained_macro + skipped_macro,
+            )
     print("Run the harness with: --hybrid --hybrid-fit pretrained (same --days/--horizon).")
     return 0
 
