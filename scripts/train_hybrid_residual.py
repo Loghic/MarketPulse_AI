@@ -211,7 +211,7 @@ def main() -> int:
             skipped += 1
         else:
             out = hybrid_residual_path(ticker, models_dir)
-            learner.save(out)
+            learner.save(out, horizon=args.horizon)
             log.info("%s: trained hybrid residual learner (%s base) → %s", ticker, args.base, out)
             trained += 1
 
@@ -236,7 +236,7 @@ def main() -> int:
                     skipped_macro += 1
                 else:
                     out_m = hybrid_residual_path(ticker, models_dir, macro=True)
-                    learner_m.save(out_m)
+                    learner_m.save(out_m, horizon=args.horizon)
                     log.info("%s: trained macro hybrid residual learner → %s", ticker, out_m)
                     trained_macro += 1
 

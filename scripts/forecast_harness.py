@@ -381,6 +381,24 @@ def _build_hybrid(ticker: str, args, df=None, macro_panel=None, adaptive_lambda:
     if args.hybrid_fit == "pretrained":
         path = hybrid_residual_path(ticker, "models", macro=macro_aligned is not None)
         loaded = learner.load(path)
+        if loaded and learner.trained_horizon not in (None, args.horizon):
+            # Weight files are keyed by ticker only, not horizon — a stale
+            # checkpoint from a different --horizon would otherwise be scored
+            # silently (see plan.md). Treat it the same as "no weights": the
+            # hybrid falls back to the base rather than mis-scoring.
+            log.warning(
+                "%s: pretrained hybrid weights (%s) were trained for horizon=%s "
+                "but this run is scoring horizon=%d; falling back to the base "
+                "instead of using stale-horizon weights. Retrain with "
+                "--horizon %d to get the hybrid.",
+                ticker,
+                path,
+                learner.trained_horizon,
+                args.horizon,
+                args.horizon,
+            )
+            learner = LSTMResidualLearner()
+            loaded = False
         if not loaded:
             # Per-ticker detail at debug; the run-level warning (in main, before
             # the loop) is the loud one so it isn't lost in per-ticker noise.

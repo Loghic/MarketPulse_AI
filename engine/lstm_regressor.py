@@ -207,6 +207,7 @@ class LSTMRegressorForecaster(ForecastModel):
         self._y_std = 1.0
         self._x_mean: np.ndarray | None = None
         self._x_std: np.ndarray | None = None
+        self._horizon_warned = False
 
     def _ensure_loaded(self) -> bool:
         if self._loaded:
@@ -256,6 +257,18 @@ class LSTMRegressorForecaster(ForecastModel):
 
     def _raw_forecast(self, df: pd.DataFrame, horizon: int = 1) -> ForecastResult | None:
         if not self._ensure_loaded():
+            return None
+        if horizon != self._horizon:
+            if not self._horizon_warned:
+                log.warning(
+                    "%s: pretrained regressor was trained for horizon=%d but is "
+                    "being scored at horizon=%d; skipping this ticker rather than "
+                    "silently mis-scoring it. Retrain with the matching --horizon.",
+                    self.ticker,
+                    self._horizon,
+                    horizon,
+                )
+                self._horizon_warned = True
             return None
         if "close" not in df.columns:
             return None

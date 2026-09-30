@@ -147,6 +147,9 @@ class LSTMResidualLearner:
         self._exog_mean: np.ndarray | None = None
         self._exog_std: np.ndarray | None = None
         self._last_exog: np.ndarray | None = None  # standardised, for predict()
+        self.trained_horizon: int | None = (
+            None  # set on save()/load(); None = unknown (old checkpoint)
+        )
 
     def fit(self, residuals: np.ndarray, exog: np.ndarray | None = None) -> None:
         """``exog`` (optional): shape (len(residuals), k), position-aligned with
@@ -297,8 +300,13 @@ class LSTMResidualLearner:
     def is_trained(self) -> bool:
         return self._net is not None
 
-    def save(self, path) -> None:
-        """Persist trained weights + scaler + hyperparams to ``path``."""
+    def save(self, path, horizon: int | None = None) -> None:
+        """Persist trained weights + scaler + hyperparams to ``path``.
+
+        ``horizon`` records which ``--horizon`` this checkpoint was trained
+        for, so ``load()``/the caller can catch a stale pretrained-weight
+        mismatch instead of silently scoring the wrong horizon.
+        """
         if self._net is None:
             raise RuntimeError("Cannot save: residual learner is not trained.")
         from pathlib import Path
@@ -317,13 +325,19 @@ class LSTMResidualLearner:
                 "exog_dim": self._exog_dim,
                 "exog_mean": self._exog_mean,
                 "exog_std": self._exog_std,
+                "horizon": horizon,
             },
             p,
         )
 
     def load(self, path) -> bool:
         """Load weights + scaler. Returns False if the file is missing; safe
-        (leaves the learner untrained) on any error."""
+        (leaves the learner untrained) on any error.
+
+        Sets ``self.trained_horizon`` from the checkpoint (``None`` for an
+        older checkpoint saved before this field existed — callers should
+        treat that as "unknown, don't assume it matches").
+        """
         from pathlib import Path
 
         p = Path(path)
@@ -340,6 +354,7 @@ class LSTMResidualLearner:
             self._exog_dim = ck.get("exog_dim", 0)
             self._exog_mean = ck.get("exog_mean")
             self._exog_std = ck.get("exog_std")
+            self.trained_horizon = ck.get("horizon")
             net = _ResNet(self.hidden_size, self.num_layers, self.dropout, exog_dim=self._exog_dim)
             net.load_state_dict(ck["model_state"])
             net.eval()
