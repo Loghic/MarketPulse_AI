@@ -528,92 +528,39 @@ pass — text+tables only, per priority.
      complement to the aggregate tables, not a replacement for the honest
      overall median-U2 conclusion.
 9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`, full
-   model set including the hybrid.** — **`--days 50` leg: DONE and verified
-   clean** (all 3 `(days, horizon)` pairs succeeded, ~115 min via
-   `run_horizon_sweep.py --days 50 --horizons 5 10 20`, h=20 leg re-run once
-   more after the fix below, +42 min). Real findings: Prophet and the hybrid
-   both improve sharply with horizon (Prophet U2 3.214→1.5–1.8; hybrid
-   1.225→1.03–1.26), same "better suited to smoother longer-horizon targets"
-   story as the earlier pre-fix result, still never crossing U2<1. **The
-   adaptive-λ hybrid's regression reproduces at every horizon tested**
-   (worse than the fixed-weight hybrid at h=1/5/10/20 alike, on clean n=14
-   data throughout) — strong evidence it's a real property of the shrinkage
-   formula, not window-specific noise; still not root-caused, now a priority
-   before trusting that variant further. **Data-gap bug: found, fixed,
-   re-verified.** The first h=20 training pass hit a transient yfinance
-   "no data" failure for 12/14 tickers (all but BTC-USD/ETH-USD) despite
-   their history being cached locally. Root cause: `interface/api.py:
-   get_data()` ignores `--no-refresh` for its own per-ticker staleness
-   check and discarded good cached data when its live refresh attempt
-   failed, instead of falling back to it (fixed in `811698e` — falls back
-   to cached prices now). **Re-running showed the bug's actual blast radius
-   was narrower than first assessed**: it only ever degraded the
-   *standalone* `LSTM-reg` model (n=2→n=14 after the fix, median U2 0.995→
-   0.997, a negligible shift) — `train_hybrid_residual.py` is a separate
-   script with independent data-fetch timing and was **never actually
-   affected**, so the hybrid numbers reported above were correct all along,
-   not the "Prophet-alone under a hybrid label" fallback initially assumed
-   from the LSTM-reg failure alone. `paper.tex`'s horizon table/paragraphs
-   updated with the corrected, fully-verified n=14 numbers throughout. —
-   **`--days 100` leg: still open**, same 3 pairs, same script, run next
-   when ready: `run_horizon_sweep.py --tickers <the 14> --days 100
-   --horizons 5 10 20 --preset standard --no-refresh`.
+   model set including the hybrid. — DONE, fully closed out.** All 6
+   `(days, horizon)` pairs run via `scripts/run_horizon_sweep.py`, all
+   `n=14` verified clean. Both `--days 100` h=1 (the paper's original
+   headline baseline, predating the fixes below) and the earlier `--days 50`
+   h=20 pass were explicitly re-verified after the fact rather than assumed
+   safe — both held up (moves ≤0.02 U2, pure retrain noise). Full
+   4-horizon × 2-window table is in `paper.tex` (§Robustness Checks).
 
-   Superseded decision (Loghi, after
-   reviewing the benchmark-only scope below): the hybrid **is** needed at
-   every horizon, not deferred. The existing h=5/10/20 numbers (`plan.md`'s
-   R7.1) are from the **pre-fix** 25-ticker, 100-day-only, benchmark-only pass
-   — stale on universe, fixes, `--days`, and now also on model scope.
-   - **Training required per horizon** (LSTM-reg/hybrid weights are horizon-
-     specific — `close[t+h]−close[t]` is a different target for h=5 than
-     h=1 — pretrained weights from the h=1 runs do **not** carry over):
-     for each of the 6 `(days, horizon)` pairs — `(50,5) (50,10) (50,20)
-     (100,5) (100,10) (100,20)` — run `train_lstm_regressor.py --tickers <the
-     14> --days {50,100} --horizon {5,10,20} --no-refresh` and
-     `train_hybrid_residual.py --tickers <the 14> --days {50,100} --horizon
-     {5,10,20} --macro --no-refresh` (the `--max-train` auto-default from the
-     macro-skip fix applies here too — no manual flag needed), then
-     `forecast_harness.py --tickers <the 14> --days {50,100} --horizon
-     {5,10,20} --macro --hybrid --hybrid-fit pretrained --sentiment
-     --no-refresh` — same full model set as the h=1 runs (plain hybrid,
-     hybrid+macro, adaptive-λ, dual vader/finbert sentiment).
-   - **Infrastructure (built, tested):** `scripts/run_horizon_sweep.py` drives
-     the train→train→score sequence for a list of `--days`/`--horizons` pairs
-     automatically (e.g. `--days 50 100 --horizons 5 10 20`), one pair at a
-     time, continuing past a failed pair instead of aborting the whole sweep.
-     Verified end-to-end with a real smoke pair (all 3 steps succeeded, full
-     model set — including hybrid/hybrid+macro/adaptive-λ/dual sentiment —
-     confirmed present in the output).
-   - **Correctness fix (found + fixed while building this item):** weight
-     files are keyed by ticker only, not horizon (`models/{ticker}_reg.pt`,
-     `models/{ticker}_hybrid_res*.pt`), so training pair N's weights, scoring
-     with a stale pair-(N-1)-trained file (e.g. a manual rerun forgetting to
-     retrain first, or a per-ticker training failure leaving an old file
-     behind) used to **silently mis-score** — the loaded network would predict
-     as if forecasting its trained horizon while being labeled/scored as the
-     requested one. Fixed: both `LSTMRegressorForecaster` and the hybrid's
-     `LSTMResidualLearner` checkpoints now record the horizon they were
-     trained for; a mismatch at load time logs a clear warning and the model
-     is skipped (LSTM-reg) or falls back to the base (hybrid) instead of
-     silently scoring the wrong thing. Verified with a deliberate mismatch
-     (trained h=5, scored h=1) — both warnings fired, both fell back cleanly.
-     `run_horizon_sweep.py`'s own sequential train-then-score-immediately
-     order means this shouldn't normally trigger during the sweep itself, but
-     it's now a hard guarantee rather than an assumption.
-   - **Cost:** 6 full train+harness passes, ~6–8 hours total per the
-     linear-scaling estimate from the `--days` sweep (each pass roughly
-     comparable to the h=1 100-day leg, ~85 min, times 6, plus some slack for
-     the 50-day legs being faster) — this is the expensive path that was
-     explicitly deferred one message ago; now in scope per Loghi's direction.
-   - Given the adaptive-λ hybrid's unexplained regression at h=1 (both 50 and
-     100 days: U2 ~1.85–1.92 vs. the fixed-weight hybrid's ~1.19–1.23) —
-     **confirmed reproducing at h=5/10/20 too** (the `--days 50` leg, above):
-     stronger evidence it's a real property of the shrinkage formula, not
-     window-specific noise. Prioritize root-causing it before the `--days
-     100` horizon leg or the full `--days` sweep (200/400/800) go further.
-   - Write-up: extend the "U2 vs. horizon" figure/table (item 7) with real,
-     post-fix numbers for every model including the hybrid variants, replacing
-     the stale pre-fix benchmark-only ones.
+   **Findings:** Prophet and the hybrid both improve sharply from h=1 to
+   h=5–10 then flatten/tick back up at h=20, in both windows — Prophet's
+   trend/seasonality decomposition suits smoother longer-horizon targets,
+   but the advantage plateaus. Never crosses U2<1 anywhere in the 8-cell
+   grid. **The adaptive-λ hybrid's regression reproduces in all 8 cells**
+   (worse than the fixed-weight hybrid at every horizon × window) — strong,
+   now near-conclusive evidence it's a real bug/property of the shrinkage
+   formula (`engine/residual_hybrid.py`'s `_lambda_t`), not noise. **Not
+   root-caused — this is the next priority** before trusting that variant
+   or running it further.
+
+   **Two data-gap bugs found and fixed along the way** (both verified with
+   a full rerun, not spot-checked): (1) `interface/api.py:get_data()`
+   ignored `--no-refresh` for its own per-ticker staleness check and
+   discarded good cached data on a failed live refresh instead of falling
+   back to it — hit 12/14 tickers at the first h=20/50d pass, but only ever
+   degraded the *standalone* `LSTM-reg` model (hybrid was unaffected, a
+   separate script/fetch path). Fixed in `811698e`. (2) Weight files keyed
+   by ticker only, not horizon, could silently mis-score a stale-horizon
+   checkpoint — fixed in `b545fa2` (checkpoints now record their horizon;
+   mismatch warns and falls back instead of silently scoring wrong).
+
+   **Infrastructure built along the way:** `scripts/run_horizon_sweep.py`
+   drives the train→train→score sequence per `(days, horizon)` pair
+   automatically, continuing past a failed pair rather than aborting.
 
 ---
 
