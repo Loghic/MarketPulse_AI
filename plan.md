@@ -526,6 +526,27 @@ pass — text+tables only, per priority.
      overlay plots from item 7 for that specific ticker) in Results — a nice
      complement to the aggregate tables, not a replacement for the honest
      overall median-U2 conclusion.
+9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`.**
+   The existing h=5/10/20 numbers (`plan.md`'s R7.1) are from the **pre-fix**
+   25-ticker, 100-day-only pass — stale on universe, fixes, and now also on
+   `--days` (we have 50 in addition to 100). Scope, decided with Loghi:
+   **benchmark-only model set** (RW, RW+Drift, Seasonal Naive, ARIMA, XGBoost,
+   Prophet — no `--hybrid`, no LSTM-reg), matching the original h=5/10/20 pass.
+   This needs **no training step** — LSTM-reg/hybrid weights are horizon-
+   specific (`close[t+h]−close[t]` is a different target per horizon), so
+   without `--hybrid`/pretrained weights the harness just skips them cleanly,
+   and the run is just `forecast_harness.py --tickers <the 14> --days {50,100}
+   --horizon {5,10,20} --no-refresh` — 6 harness-only runs, no train_lstm_
+   regressor.py/train_hybrid_residual.py needed, cheap relative to the h=1
+   full-model-set runs.
+   - **Explicitly deferred, not forgotten:** the full model set (hybrid,
+     hybrid+macro, adaptive-λ, dual sentiment) at h=5/10/20 — that needs 6 more
+     full train+harness passes (~6–8 hours total, per the linear-scaling
+     estimate from the `--days` sweep), and is a separate decision Loghi makes
+     explicitly later, not something to fold into this pass by default.
+   - Write-up: extend the "U2 vs. horizon" figure/table (item 7) with real,
+     post-fix numbers instead of the stale pre-fix ones; note in the text that
+     the hybrid isn't included at h>1 yet and why (cost, deferred per above).
 
 ---
 
