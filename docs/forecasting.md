@@ -70,15 +70,15 @@ skips, rather than aborting the run.
 ```python
 @dataclass
 class ForecastResult:
-    last_close: float                     # most recent close
-    point: float                          # predicted next value (median/mean)
+    last_close: float  # most recent close
+    point: float  # predicted next value (median/mean)
     horizon: int = 1
     quantiles: dict[float, float] | None  # {level: value}, e.g. {0.1: 101.2, 0.5: 103.0}
-    samples: np.ndarray | None            # Monte-Carlo sample values (Kronos)
-    prob_up: float                        # P(next > last_close)
-    direction: str                        # "UP" / "DOWN"
-    confidence: float                     # winning-class probability
-    extra: dict                           # model-specific extras
+    samples: np.ndarray | None  # Monte-Carlo sample values (Kronos)
+    prob_up: float  # P(next > last_close)
+    direction: str  # "UP" / "DOWN"
+    confidence: float  # winning-class probability
+    extra: dict  # model-specific extras
 ```
 
 ### Direction and confidence
@@ -162,14 +162,14 @@ open/high/low/close, not just the close.
 Configurable in `config.py`:
 
 ```python
-KRONOS_PATH = None                          # None -> ../Kronos (sibling of repo root)
+KRONOS_PATH = None  # None -> ../Kronos (sibling of repo root)
 KRONOS_MODEL_ID = "NeoQuasar/Kronos-small"  # small=24.7M/ctx512; base=102M; mini=4.1M/ctx2048
 KRONOS_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"  # use Kronos-Tokenizer-2k for mini
-KRONOS_MAX_CONTEXT = 512                     # 512 for small/base, 2048 for mini
-KRONOS_SAMPLE_COUNT = 5                      # internal averaging per predict() call
-KRONOS_PROB_SAMPLES = 1                      # >1 = empirical P(up) from N stochastic passes (slower)
-KRONOS_T = 1.0                               # sampling temperature
-KRONOS_TOP_P = 0.9                           # nucleus sampling
+KRONOS_MAX_CONTEXT = 512  # 512 for small/base, 2048 for mini
+KRONOS_SAMPLE_COUNT = 5  # internal averaging per predict() call
+KRONOS_PROB_SAMPLES = 1  # >1 = empirical P(up) from N stochastic passes (slower)
+KRONOS_T = 1.0  # sampling temperature
+KRONOS_TOP_P = 0.9  # nucleus sampling
 ```
 
 ## Use in backtests

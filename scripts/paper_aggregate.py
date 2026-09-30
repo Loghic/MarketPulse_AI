@@ -235,7 +235,7 @@ def main() -> None:
 
     dm = dm_wilcoxon_grid(df)
     dm.to_csv(out_dir / "_dm_wilcoxon.csv", index=False)
-    print(f"DM/Wilcoxon grid: {len(dm)} rows -> {out_dir/'_dm_wilcoxon.csv'}")
+    print(f"DM/Wilcoxon grid: {len(dm)} rows -> {out_dir / '_dm_wilcoxon.csv'}")
 
     models = sorted(df.model.unique())
     print("Models present:", models)
@@ -244,7 +244,7 @@ def main() -> None:
         cross = residual_structure_cross_tab(df, args.base_model, args.hybrid_model)
         cross.to_csv(out_dir / "_residual_structure_gain.csv", index=False)
         print(
-            f"Residual structure-vs-gain: {len(cross)} rows -> {out_dir/'_residual_structure_gain.csv'}"
+            f"Residual structure-vs-gain: {len(cross)} rows -> {out_dir / '_residual_structure_gain.csv'}"
         )
     else:
         print(
@@ -254,7 +254,7 @@ def main() -> None:
     gate = confidence_gating_table(df)
     if not gate.empty:
         gate.to_csv(out_dir / "_confidence_gating.csv", index=False)
-        print(f"Confidence gating: {len(gate)} rows -> {out_dir/'_confidence_gating.csv'}")
+        print(f"Confidence gating: {len(gate)} rows -> {out_dir / '_confidence_gating.csv'}")
     else:
         print("Confidence gating: no model reported an interval_width; skipped.")
 
@@ -267,7 +267,7 @@ def main() -> None:
             asset_trend = None
         rt = regime_table(df, regimes, asset_trend)
         rt.to_csv(out_dir / "_regime_table.csv", index=False)
-        print(f"Regime table: {len(rt)} rows -> {out_dir/'_regime_table.csv'}")
+        print(f"Regime table: {len(rt)} rows -> {out_dir / '_regime_table.csv'}")
     except Exception as e:  # pragma: no cover - network/data best-effort
         print(f"Regime analysis failed: {e}")
 

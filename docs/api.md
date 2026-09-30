@@ -225,6 +225,7 @@ from web.backend.routes.data import get_api
 
 router = APIRouter(prefix="/api/new-feature", tags=["new-feature"])
 
+
 @router.get("/{ticker}")
 def my_endpoint(ticker: str, period: str = "1y"):
     api = get_api()
@@ -236,5 +237,6 @@ def my_endpoint(ticker: str, period: str = "1y"):
 ```python
 # web/backend/app.py — add one line:
 from web.backend.routes import new_feature
+
 app.include_router(new_feature.router)
 ```

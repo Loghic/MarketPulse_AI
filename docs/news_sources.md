@@ -6,6 +6,7 @@ MarketPulse AI pulls headlines from pluggable providers in
 ```python
 class MyProvider:
     name: str
+
     def fetch(self, ticker: str, lookback_days: int) -> list[NewsItem]: ...
 ```
 
@@ -40,6 +41,7 @@ publication date — this is what makes downstream backtests look-ahead-safe.
 
 ```python
 from engine.news_sources import GDELTNewsProvider
+
 items = GDELTNewsProvider().fetch("AAPL", lookback_days=30)
 for it in items:
     print(it.published_at, it.headline)
@@ -54,6 +56,7 @@ for the very latest, GDELT for everything older.
 
 ```python
 from engine.news_sources import get_provider
+
 provider = get_provider(["yahoo", "gdelt"])
 items = provider.fetch("AAPL", lookback_days=60)
 ```
@@ -75,10 +78,10 @@ sentiment for day N comes only from news with `published_at < N`.
 `config.py` exposes:
 
 ```python
-DEFAULT_NEWS_SOURCES      = ["yahoo"]   # ["yahoo", "gdelt"] for combined
-DEFAULT_NEWS_LOOKBACK_DAYS = 7          # 0 = unbounded
-DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0       # 0 = no decay
-DEFAULT_SENTIMENT_METHOD  = "vader"     # "vader" | "finbert" | "naive"
+DEFAULT_NEWS_SOURCES = ["yahoo"]  # ["yahoo", "gdelt"] for combined
+DEFAULT_NEWS_LOOKBACK_DAYS = 7  # 0 = unbounded
+DEFAULT_NEWS_HALF_LIFE_DAYS = 3.0  # 0 = no decay
+DEFAULT_SENTIMENT_METHOD = "vader"  # "vader" | "finbert" | "naive"
 ```
 
 CLI overrides (on `backtest.py`):
@@ -104,13 +107,15 @@ class MyProvider:
     def fetch(self, ticker, lookback_days=7):
         items = []
         for entry in _call_api(ticker, lookback_days):
-            items.append(NewsItem(
-                ticker=ticker,
-                published_at=entry["published_at"][:10],
-                headline=entry["title"],
-                source="mysource",
-                url=entry.get("url", ""),
-            ))
+            items.append(
+                NewsItem(
+                    ticker=ticker,
+                    published_at=entry["published_at"][:10],
+                    headline=entry["title"],
+                    source="mysource",
+                    url=entry.get("url", ""),
+                )
+            )
         return items
 ```
 

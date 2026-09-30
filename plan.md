@@ -160,12 +160,13 @@ as direction emitters; the rest don't exist at all.
   class ResidualHybrid:
       def __init__(self, base: ForecastModel, residual_learner): ...
       def fit(self, df):
-          base_fit   = self.base.fit_in_sample(df)        # fitted P̂^base on train
-          residuals  = df.close - base_fit                 # R0.2 training residuals
-          self.residual_learner.fit(residuals, exog=...)   # learns structure base missed
+          base_fit = self.base.fit_in_sample(df)  # fitted P̂^base on train
+          residuals = df.close - base_fit  # R0.2 training residuals
+          self.residual_learner.fit(residuals, exog=...)  # learns structure base missed
+
       def forecast(self, df, h) -> ForecastResult:
-          p_base = self.base.forecast(df, h).point          # genuine OOS base forecast
-          r_hat  = self.residual_learner.predict(...)        # residuals up to t only
+          p_base = self.base.forecast(df, h).point  # genuine OOS base forecast
+          r_hat = self.residual_learner.predict(...)  # residuals up to t only
           return ForecastResult(point=p_base + r_hat)
   ```
   This is what makes Prophet+Kronos / Prophet+Chronos free later — swap `base`.

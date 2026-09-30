@@ -110,16 +110,30 @@ docs/                       → In-depth docs for humans (see docs/forecasting.m
 # tickers_for_scope(), SCOPE_FLAGS) all DERIVE from it.
 @dataclass(frozen=True)
 class AssetClass:
-    key: str; label: str; cli_flag: str
-    tickers: list[str]; benchmarks: list[str]
+    key: str
+    label: str
+    cli_flag: str
+    tickers: list[str]
+    benchmarks: list[str]
     news_names: dict[str, str] = field(default_factory=dict)  # ticker -> GDELT query
 
+
 ASSET_CLASSES = [
-    AssetClass("stock",     "Stocks",      "stocks",      [AAPL,MSFT,NVDA,META,GOOGL,AMD,TSM,ASML,AVGO,TSLA,INTC], ["SPY","QQQ"]),
-    AssetClass("crypto",    "Crypto",      "crypto",      ["BTC-USD","ETH-USD","SOL-USD","BNB-USD"],               ["BTC-USD"]),
-    AssetClass("commodity", "Commodities", "commodities", ["GLD"],          ["SPY"]),   # gold ETF proxy
-    AssetClass("index",     "Indices",     "indices",     ["VOO","QQQM"],   ["SPY","QQQ"]),  # S&P 500 / Nasdaq-100 ETF proxies
-    AssetClass("fx",        "FX",          "fx",          ["FXE"],          ["SPY"]),   # EUR/USD ETF proxy
+    AssetClass(
+        "stock",
+        "Stocks",
+        "stocks",
+        [AAPL, MSFT, NVDA, META, GOOGL, AMD, TSM, ASML, AVGO, TSLA, INTC],
+        ["SPY", "QQQ"],
+    ),
+    AssetClass(
+        "crypto", "Crypto", "crypto", ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"], ["BTC-USD"]
+    ),
+    AssetClass("commodity", "Commodities", "commodities", ["GLD"], ["SPY"]),  # gold ETF proxy
+    AssetClass(
+        "index", "Indices", "indices", ["VOO", "QQQM"], ["SPY", "QQQ"]
+    ),  # S&P 500 / Nasdaq-100 ETF proxies
+    AssetClass("fx", "FX", "fx", ["FXE"], ["SPY"]),  # EUR/USD ETF proxy
 ]
 # get_benchmarks(ticker) keeps its NAME (backtest_helpers imports it) but is now
 # registry-driven + self-excluding. news_names hold the GDELT query map exposed as
@@ -133,21 +147,21 @@ LOG_MODE = "cli"
 LOG_LEVEL = None  # override: "DEBUG", "INFO", "WARNING", "ERROR"
 
 # Trading
-DEFAULT_TRADING_FEE_PCT = 0.05   # per side, round-trip = 2x
-DEFAULT_STOP_LOSS_PCT = 0.0      # 0 = disabled
+DEFAULT_TRADING_FEE_PCT = 0.05  # per side, round-trip = 2x
+DEFAULT_STOP_LOSS_PCT = 0.0  # 0 = disabled
 
 # Forecasting models (backtests). Skipped if the lib/clone isn't present.
 FORECAST_MODELS = [("prophet", "Prophet"), ("chronos", "Chronos-2"), ("kronos", "Kronos")]
-FORECAST_DEVICE = None        # None = auto (cuda if available else cpu)
+FORECAST_DEVICE = None  # None = auto (cuda if available else cpu)
 CHRONOS_MODEL_ID = "amazon/chronos-2"
 CHRONOS_CONTEXT = 512
 # Kronos — external clone (not pip). See docs/forecasting.md.
-KRONOS_PATH = None            # None -> ../Kronos (sibling of repo root)
+KRONOS_PATH = None  # None -> ../Kronos (sibling of repo root)
 KRONOS_MODEL_ID = "NeoQuasar/Kronos-small"
 KRONOS_TOKENIZER_ID = "NeoQuasar/Kronos-Tokenizer-base"
 KRONOS_MAX_CONTEXT = 512
-KRONOS_SAMPLE_COUNT = 5        # internal averaging per predict() call
-KRONOS_PROB_SAMPLES = 1        # >1 = empirical P(up) from N stochastic passes (slower)
+KRONOS_SAMPLE_COUNT = 5  # internal averaging per predict() call
+KRONOS_PROB_SAMPLES = 1  # >1 = empirical P(up) from N stochastic passes (slower)
 KRONOS_T = 1.0
 KRONOS_TOP_P = 0.9
 ```
@@ -348,8 +362,8 @@ Coverage uploaded to Codecov (`.codecov.yml` sets 60% target).
 from engine.logger import get_logger, progress_bar, epoch_progress
 
 log = get_logger(__name__)
-log.info("operational message")   # shown in cli, hidden in gui
-log.warning("something wrong")    # shown in both modes
+log.info("operational message")  # shown in cli, hidden in gui
+log.warning("something wrong")  # shown in both modes
 
 for ticker in progress_bar(tickers, desc="Predicting"):  # tqdm in cli, silent in gui
     ...

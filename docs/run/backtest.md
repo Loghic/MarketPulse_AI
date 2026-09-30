@@ -264,11 +264,15 @@ these CSVs:
 
 ```python
 import pandas as pd
+
 df = pd.read_csv("results/all_best_period.csv")
 # Best (model, period) per ticker by total return
 best = df.sort_values("total_return", ascending=False).groupby("ticker").head(1)
-print(best[["ticker", "model", "period", "accuracy", "total_return",
-            "sharpe_ratio", "buy_hold_return"]])
+print(
+    best[
+        ["ticker", "model", "period", "accuracy", "total_return", "sharpe_ratio", "buy_hold_return"]
+    ]
+)
 ```
 
 Or — equivalently from the terminal — `run_all.py` does this
