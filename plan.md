@@ -526,27 +526,40 @@ pass — text+tables only, per priority.
      overlay plots from item 7 for that specific ticker) in Results — a nice
      complement to the aggregate tables, not a replacement for the honest
      overall median-U2 conclusion.
-9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`.**
-   The existing h=5/10/20 numbers (`plan.md`'s R7.1) are from the **pre-fix**
-   25-ticker, 100-day-only pass — stale on universe, fixes, and now also on
-   `--days` (we have 50 in addition to 100). Scope, decided with Loghi:
-   **benchmark-only model set** (RW, RW+Drift, Seasonal Naive, ARIMA, XGBoost,
-   Prophet — no `--hybrid`, no LSTM-reg), matching the original h=5/10/20 pass.
-   This needs **no training step** — LSTM-reg/hybrid weights are horizon-
-   specific (`close[t+h]−close[t]` is a different target per horizon), so
-   without `--hybrid`/pretrained weights the harness just skips them cleanly,
-   and the run is just `forecast_harness.py --tickers <the 14> --days {50,100}
-   --horizon {5,10,20} --no-refresh` — 6 harness-only runs, no train_lstm_
-   regressor.py/train_hybrid_residual.py needed, cheap relative to the h=1
-   full-model-set runs.
-   - **Explicitly deferred, not forgotten:** the full model set (hybrid,
-     hybrid+macro, adaptive-λ, dual sentiment) at h=5/10/20 — that needs 6 more
-     full train+harness passes (~6–8 hours total, per the linear-scaling
-     estimate from the `--days` sweep), and is a separate decision Loghi makes
-     explicitly later, not something to fold into this pass by default.
+9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`, full
+   model set including the hybrid.** Superseded decision (Loghi, after
+   reviewing the benchmark-only scope below): the hybrid **is** needed at
+   every horizon, not deferred. The existing h=5/10/20 numbers (`plan.md`'s
+   R7.1) are from the **pre-fix** 25-ticker, 100-day-only, benchmark-only pass
+   — stale on universe, fixes, `--days`, and now also on model scope.
+   - **Training required per horizon** (LSTM-reg/hybrid weights are horizon-
+     specific — `close[t+h]−close[t]` is a different target for h=5 than
+     h=1 — pretrained weights from the h=1 runs do **not** carry over):
+     for each of the 6 `(days, horizon)` pairs — `(50,5) (50,10) (50,20)
+     (100,5) (100,10) (100,20)` — run `train_lstm_regressor.py --tickers <the
+     14> --days {50,100} --horizon {5,10,20} --no-refresh` and
+     `train_hybrid_residual.py --tickers <the 14> --days {50,100} --horizon
+     {5,10,20} --macro --no-refresh` (the `--max-train` auto-default from the
+     macro-skip fix applies here too — no manual flag needed), then
+     `forecast_harness.py --tickers <the 14> --days {50,100} --horizon
+     {5,10,20} --macro --hybrid --hybrid-fit pretrained --sentiment
+     --no-refresh` — same full model set as the h=1 runs (plain hybrid,
+     hybrid+macro, adaptive-λ, dual vader/finbert sentiment).
+   - **Cost:** 6 full train+harness passes, ~6–8 hours total per the
+     linear-scaling estimate from the `--days` sweep (each pass roughly
+     comparable to the h=1 100-day leg, ~85 min, times 6, plus some slack for
+     the 50-day legs being faster) — this is the expensive path that was
+     explicitly deferred one message ago; now in scope per Loghi's direction.
+   - Given the adaptive-λ hybrid's unexplained regression at h=1 (both 50 and
+     100 days: U2 ~1.85–1.92 vs. the fixed-weight hybrid's ~1.19–1.23, not yet
+     root-caused), **watch whether the same pattern reproduces at h=5/10/20**
+     — if it does consistently, that's stronger evidence it's a real property
+     of the shrinkage formula, not window-specific noise, and worth
+     prioritizing the root-cause investigation over continuing the horizon
+     sweep further.
    - Write-up: extend the "U2 vs. horizon" figure/table (item 7) with real,
-     post-fix numbers instead of the stale pre-fix ones; note in the text that
-     the hybrid isn't included at h>1 yet and why (cost, deferred per above).
+     post-fix numbers for every model including the hybrid variants, replacing
+     the stale pre-fix benchmark-only ones.
 
 ---
 
