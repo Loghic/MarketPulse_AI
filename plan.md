@@ -413,6 +413,30 @@ followed by `--days 100`** (per Loghi's direction — the 100-day leg supersedes
 the earlier pre-fix 100-day runs and, together with 50, becomes the baseline
 pair the 200/400/800 sweep diffs against):
 
+**Steps -1 and 0 — done (2026-09-30).** Both ran on the full 14-ticker
+universe, `--preset standard`, all variants (macro, hybrid+macro, adaptive-λ,
+dual vader/finbert sentiment) confirmed present in the output — the
+macro-hybrid skip fix worked at scale (14/14 trained, 0 skipped, both
+windows). Runs: `results/fc_custom_50d_h1_20260930-074808/`,
+`results/fc_custom_100d_h1_20260930-082911/`. Headline: still a clean
+negative — 0/266 DM cells significant after FDR at `--days 100` (identical
+conclusion to the pre-fix 25-ticker run). Median hybrid $U_2$: 1.225 (d50) →
+1.188 (d100); macro-hybrid direction flips between windows (1.117 at d50,
+1.230 at d100) — both differences read as noise on 14 tickers, not a real
+macro effect either way. **New finding, not yet explained:** the
+adaptive-$\lambda_t$ hybrid variant underperforms the fixed-weight hybrid
+substantially and consistently at both windows (U2 1.849 / 1.916 vs.\ 1.225 /
+1.188) — the Ljung-Box-driven shrinkage is hurting, not helping; flagged in
+`paper.tex` §Forecast Accuracy / §Hybrid Model, not root-caused here, a
+candidate follow-up. `paper.tex`'s Forecast Accuracy and Hybrid Model
+sections were updated with the new numbers; **stopped here per instruction —
+did not proceed to 200/400/800.** Also corrected a paper.tex inaccuracy while
+in that section: the LSTM residual learner's actual input is a window of
+past residuals (+ optional macro), not the full standalone-LSTM feature set
+as an earlier draft claimed — see §Hybrid Model.
+Items 7 (graphs) and 8 (promising-ticker case study) were not attempted this
+pass — text+tables only, per priority.
+
 -1. Retrain weights for `--days 50 --horizon 1` — **both**
     `train_lstm_regressor.py --days 50 --horizon 1` and
     `train_hybrid_residual.py --days 50 --horizon 1 --macro` (`--max-train`
