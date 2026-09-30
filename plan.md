@@ -332,14 +332,19 @@ tests/ -q` (349 tests, excluding the pre-existing unrelated
    `Prophet + LSTM-res (hybrid) + macro`, added alongside the plain hybrid,
    not replacing it. Smoke-tested on AAPL (`--days 5`/`10`, `--max-train
    504`): produces a genuinely different prediction from the plain hybrid
-   (not a silent no-op fallback). **Gotcha hit during testing:**
-   `train_hybrid_residual.py`'s `--max-train` defaults to `0` (uncapped) —
-   unlike the harness's own 504-row default — so training on AAPL's full
-   ~46-year history hits dates before the macro series (VIX/DXY/etc.) even
-   starts, and the alignment check correctly (not a bug) skips the macro
-   variant. **Pass `--max-train 504` (or similar) to `train_hybrid_residual.py
-   --macro` in the real sweep**, matching the harness's own cap, or the macro
-   hybrid will silently skip every long-history ticker.
+   (not a silent no-op fallback). **Gotcha hit during testing, now fixed:**
+   `train_hybrid_residual.py`'s `--max-train` used to default to `0`
+   (uncapped) — unlike the harness's own 504-row default — so training on
+   AAPL's full ~46-year history hit dates before the macro series (VIX/DXY/
+   etc.) even starts, and the alignment check correctly (not a bug) skipped
+   the macro variant, silently. **Fixed:** `--max-train` now defaults to `504`
+   automatically whenever `--macro` is passed (with an explicit `log.warning`
+   explaining why), and the script warns loudly — both up front if you
+   override to `--max-train 0` anyway, and in the final summary if any/all
+   tickers' macro variant ends up skipped (`trained_macro == 0` or
+   `skipped_macro > 0`) — so a doomed-to-skip run can no longer pass silently.
+   No manual `--max-train 504` reminder needed in the sweep steps below
+   anymore; left as a no-op if passed explicitly.
 3. **Per-asset regime labels (fixes the bull/bear gap). — done.**
    `scripts/paper_aggregate.py:per_asset_trend()` fetches each ticker's own
    10y history via yfinance and computes its own 50/200-day MA cross
@@ -409,9 +414,10 @@ runs and becomes the new baseline the 200/400/800 sweep diffs against):
 
 0. Retrain weights for `--days 100 --horizon 1` — **both**
    `train_lstm_regressor.py --days 100 --horizon 1` and
-   `train_hybrid_residual.py --days 100 --horizon 1 --macro --max-train 504`
-   (the `--max-train 504` is required, per prerequisite #2's gotcha, or the
-   macro variant silently skips every long-history ticker). Then rerun the
+   `train_hybrid_residual.py --days 100 --horizon 1 --macro` (`--max-train`
+   no longer needs to be passed manually — it now defaults to 504 whenever
+   `--macro` is set, per prerequisite #2's fix, and warns loudly if the macro
+   variant ends up skipped anyway). Then rerun the
    core config (`--tickers <the 14 above> --horizon 1 --macro --hybrid
    --hybrid-fit pretrained --sentiment`, which now automatically includes the
    hybrid+macro and adaptive-λ variants alongside the plain hybrid, and both
