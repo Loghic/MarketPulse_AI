@@ -239,7 +239,15 @@ class StockAppAPI:
                 needs_update = True
 
         if needs_update:
-            return self._refresh_data(ticker, period, asset_type)
+            fresh = self._refresh_data(ticker, period, asset_type)
+            if not fresh.empty:
+                return fresh
+            log.warning(
+                "%s: live refresh failed/empty; falling back to cached data (as of %s) "
+                "instead of returning nothing.",
+                ticker,
+                last_date,
+            )
         return df
 
     def _refresh_data(self, ticker: str, period: str, asset_type: str) -> pd.DataFrame:
