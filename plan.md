@@ -471,6 +471,30 @@ runs and becomes the new baseline the 200/400/800 sweep diffs against):
      y) — sells the "uncapping is catastrophic" finding visually.
    - **Sentiment ablation** — ΔU2 with vs. without news per ticker, centered near
      zero — sells the null result visually.
+8. **Flag a promising ticker (case study).** Post-hoc only — every window's
+   `_fc_summary.csv` is already ticker × model × horizon, so no new run is
+   needed once the `--days` sweep (100/200/400/800, whichever actually run) is
+   done. Any asset class is fair game (crypto/FX/commodity/stock/index — don't
+   pre-restrict to stocks). Selection criteria, applied across **every window
+   the sweep actually ran**, not just one:
+   - Hybrid Theil U2 < 1 (beats RW) in that window, ideally in **most/all**
+     windows run, not a single-window fluke.
+   - DM-significant vs. RW **and** vs. Prophet-alone (FDR-corrected), not just a
+     numerically lower U2 — the paper's own pass bar (`plan.md`'s Phase R2/R3
+     falsification criteria already say the same: a real result needs both).
+   - Prefer a ticker whose gain also shows up in the residual-structure cross-tab
+     (item 7's second figure) — a high Ljung-Box/ACF1 paired with a real ΔU2 is
+     the mechanistic story, not just a coincidence.
+   - If nothing clears this bar (plausible, given the current headline result is
+     a clean negative) — report the **closest call** honestly (e.g. "ticker X
+     came closest, U2=0.97 in 2/4 windows, but didn't survive FDR") rather than
+     manufacturing a win. A one-off "lucky ticker" call-out otherwise reads as
+     cherry-picking, which the paper's own statistical-testing section exists to
+     guard against.
+   - Add as a short "Case Study" paragraph (with one of the actual-vs-predicted
+     overlay plots from item 7 for that specific ticker) in Results — a nice
+     complement to the aggregate tables, not a replacement for the honest
+     overall median-U2 conclusion.
 
 ---
 
