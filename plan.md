@@ -528,28 +528,36 @@ pass — text+tables only, per priority.
      complement to the aggregate tables, not a replacement for the honest
      overall median-U2 conclusion.
 9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`, full
-   model set including the hybrid.** — **`--days 50` leg: DONE** (all 3
-   `(days, horizon)` pairs succeeded, ~115 min via
-   `run_horizon_sweep.py --days 50 --horizons 5 10 20`). Real findings:
-   Prophet and the hybrid both improve sharply with horizon (Prophet U2
-   3.214→1.5–1.8; hybrid 1.225→1.03–1.26), same "better suited to smoother
-   longer-horizon targets" story as the earlier pre-fix result, still never
-   crossing U2<1. **The adaptive-λ hybrid's regression reproduces at every
-   horizon tested** (worse than the fixed-weight hybrid at h=1/5/10/20 alike)
-   — strong evidence it's a real property of the shrinkage formula, not
-   window-specific noise; still not root-caused, now a priority before
-   trusting that variant further. **Data-gap caveat:** the h=20 training leg
-   hit a transient yfinance "no data" failure for 12/14 tickers (all but
-   BTC-USD/ETH-USD) despite their history being cached locally — LSTM-reg
-   at h=20 is n=2 (not n=14), and the hybrid's h=20 rows for those 12
-   tickers are really Prophet-alone under a hybrid label (graceful
-   base-fallback, not a crash, but less reliable than h=1/5/10). Not
-   re-run (transient, not a code bug, per instruction not to retry-loop).
-   `paper.tex`'s horizon table/paragraph updated with these real numbers,
-   explicitly scoped as the 50-day leg only. — **`--days 100` leg: still
-   open**, same 3 pairs, same script, run next when ready:
-   `run_horizon_sweep.py --tickers <the 14> --days 100 --horizons 5 10 20
-   --preset standard --no-refresh`.
+   model set including the hybrid.** — **`--days 50` leg: DONE and verified
+   clean** (all 3 `(days, horizon)` pairs succeeded, ~115 min via
+   `run_horizon_sweep.py --days 50 --horizons 5 10 20`, h=20 leg re-run once
+   more after the fix below, +42 min). Real findings: Prophet and the hybrid
+   both improve sharply with horizon (Prophet U2 3.214→1.5–1.8; hybrid
+   1.225→1.03–1.26), same "better suited to smoother longer-horizon targets"
+   story as the earlier pre-fix result, still never crossing U2<1. **The
+   adaptive-λ hybrid's regression reproduces at every horizon tested**
+   (worse than the fixed-weight hybrid at h=1/5/10/20 alike, on clean n=14
+   data throughout) — strong evidence it's a real property of the shrinkage
+   formula, not window-specific noise; still not root-caused, now a priority
+   before trusting that variant further. **Data-gap bug: found, fixed,
+   re-verified.** The first h=20 training pass hit a transient yfinance
+   "no data" failure for 12/14 tickers (all but BTC-USD/ETH-USD) despite
+   their history being cached locally. Root cause: `interface/api.py:
+   get_data()` ignores `--no-refresh` for its own per-ticker staleness
+   check and discarded good cached data when its live refresh attempt
+   failed, instead of falling back to it (fixed in `811698e` — falls back
+   to cached prices now). **Re-running showed the bug's actual blast radius
+   was narrower than first assessed**: it only ever degraded the
+   *standalone* `LSTM-reg` model (n=2→n=14 after the fix, median U2 0.995→
+   0.997, a negligible shift) — `train_hybrid_residual.py` is a separate
+   script with independent data-fetch timing and was **never actually
+   affected**, so the hybrid numbers reported above were correct all along,
+   not the "Prophet-alone under a hybrid label" fallback initially assumed
+   from the LSTM-reg failure alone. `paper.tex`'s horizon table/paragraphs
+   updated with the corrected, fully-verified n=14 numbers throughout. —
+   **`--days 100` leg: still open**, same 3 pairs, same script, run next
+   when ready: `run_horizon_sweep.py --tickers <the 14> --days 100
+   --horizons 5 10 20 --preset standard --no-refresh`.
 
    Superseded decision (Loghi, after
    reviewing the benchmark-only scope below): the hybrid **is** needed at
