@@ -1057,6 +1057,7 @@ viz = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1085,6 +1086,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'ai'", specifier = ">=2.0" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", marker = "extra == 'ai'", specifier = ">=4.40" },
+    { name = "typing-extensions", marker = "extra == 'web'", specifier = "<4.16" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.34" },
     { name = "xgboost", marker = "extra == 'forecast'", specifier = ">=2.0" },
     { name = "yfinance", specifier = ">=1.3" },
