@@ -363,45 +363,100 @@ Expected, consistent with everything else: macro shouldn't pull XGBoost's U2
 below 1 on daily levels — but the ablation has to be *run* for the paper to say
 "macro doesn't help" rather than assume it.
 
-## What's next (not yet implemented)
+## What's since been added (was "not yet implemented")
 
-- **Macro into the LSTM regressor + hybrid residual learner** (rest of R4.4) —
-  XGBoost and Prophet consume macro; the LSTM-reg (pretrained checkpoint) and the
-  hybrid's residual learner don't yet.
-- **Sentiment pos/neg split** (R4.3) — two separate sentiment signals as inputs.
-- **Multi-horizon / asset-class / regime slices** (R7) and **robustness** (R8 —
-  seed sweeps, lookback/refit sensitivity, level-vs-log-return).
-- Wiring the DM/Wilcoxon comparison and the residual cross-tab into the harness
-  output (both currently consume the per-step CSVs the harness already writes).
+- **Macro into the hybrid** (rest of R4.4) — done for both the hybrid's
+  internal Prophet base (`_build_hybrid(..., macro_panel=...)`) and its LSTM
+  residual learner (`LSTMResidualLearner`/`_ResNet` gained an optional exog
+  channel, `exog_dim=0` by default so old pretrained weights still load).
+  **Still not done:** macro into the plain (non-hybrid) `LSTM-reg` forecaster.
+- **Sentiment pos/neg split** (R4.3) — done, `engine/sentiment_data.py:
+  daily_sentiment_panel()`, plus a **dual-scorer comparison**
+  (`--sentiment-methods vader finbert`, default both) that wasn't originally
+  scoped: `XGBoost + sentiment (vader)`/`(finbert)` and the Prophet equivalents
+  run side by side against the plain (no-sentiment) rows in the same
+  `_fc_summary.csv`.
+- **Multi-horizon / regime slices** (R7) — done: h∈{1,5,10,20} run at both
+  `--days 50` and `--days 100` (14-ticker universe, full model set); regime
+  labels now include **per-asset** trend (each ticker's own 50/200-day MA
+  cross) alongside the original market-wide SPY-only split, which couldn't
+  distinguish a ticker's private bear stretch from a broad bull market.
+- **DM/Wilcoxon + residual cross-tab wiring** — done via
+  `scripts/paper_aggregate.py`, which consumes the per-step CSVs the harness
+  already writes (no harness changes needed).
+- **Confidence gating** (Prophet/ARIMA/hybrid only — the only models with a
+  native prediction interval) — `forecast_backtester.py` persists
+  `interval_width` per step; `paper_aggregate.py:confidence_gating_table()`
+  reports coverage/accuracy on the acted-on subset.
+- **Adaptive residual weight (λ_t)** — `ResidualHybrid(adaptive_lambda=True)`,
+  a rolling-Ljung-Box-driven shrinkage on the residual correction, added as a
+  new model variant alongside the fixed-λ=1 hybrid. **Currently underperforms**
+  the fixed hybrid at every window/horizon tested — flagged, not yet
+  root-caused.
+- **`scripts/run_horizon_sweep.py`** — drives the train→train→score sequence
+  across a list of `(--days, --horizon)` pairs (weights are horizon-specific,
+  so each pair needs its own retrain before scoring).
 
-See the forecasting plan for the full R0–R8 roadmap.
+## Still open
+
+- Macro into the plain `LSTM-reg` forecaster (only the hybrid's residual
+  learner got it).
+- Robustness: seed sweeps, level-vs-log-return native training (R0.1's
+  "native" variant — see below), hyperparameter sweeps beyond lookback/refit
+  cadence.
+- **Native log-return training** (R0.1) — `--target log-return` is currently
+  score-only (level forecasts converted at scoring time); training the ML
+  models directly on returns is still a TODO.
+- Root-causing the adaptive-λ regression above.
+
+See the forecasting plan (`plan.md`) for the full R0–R8 roadmap and current
+status.
 
 ## The paper draft
 
 `docs/paper/paper.tex` is a filled-in draft (compiles with `pdflatex`) of
 *"When Does Residual Learning Improve Financial Time-Series Forecasting:
-Evidence from Prophet–LSTM Hybrid Models"*, backed by an actual run of this
-pipeline (2026-09-29): all 25 tickers, $h=1$ core result in
-`results/fc_all_100d_h1_20260929-142930/` (plus its `_dm_wilcoxon.csv`,
-`_residual_structure_gain.csv`, `_regime_table.csv` from
-`scripts/paper_aggregate.py`), multi-horizon sweep in
-`results/fc_all_100d_h{5,10,20}_20260929-*/`, and the lookback/refit-cadence
-robustness sweep in `results/robust_lookback252/`,
-`results/robust_lookback_full/`, `results/robust_refitk5/`. Headline finding:
-a clean negative on the paper's own falsification criteria — the hybrid's
-residuals are structured everywhere (Ljung–Box rejects white noise on
-25/25 tickers) and the LSTM learner exploits nearly all of it, but the
-corrected series still doesn't cross the random-walk line (median hybrid
-$U_2 = 1.036$, 0/225 DM-significant vs.\ RW after FDR). `results/` and
-`models/` are gitignored, so the run directories above are local-only —
-regenerate with the commands in this doc's "Running it" section if they're
-missing.
+Evidence from Prophet–LSTM Hybrid Models"*. It went through several rounds:
 
-A later pass (2026-09-29, same day) wired sentiment in (`engine/sentiment_data.py`,
-`--sentiment` on `forecast_harness.py`, mirrors `--macro`) and reran the ablation —
-`results/fc_all_100d_h1_20260929-181225/` vs the baseline above, compared with
-`scripts/sentiment_ablation_compare.py`. Also a clean negative (2/100 DM cells
-survive FDR, both negligible), with a real caveat: GDELT/Yahoo have no
-point-in-time historical backfill, so news coverage only spans the first ~7 of
-the eval window's ~21 weeks for the best-covered tickers. See
-`docs/paper/paper.tex` §News/Sentiment Ablation.
+1. **First pass (2026-09-29)** — all 25 tickers (full `config.py` registry),
+   `--days 100`, h=1 core result plus a multi-horizon sweep (h=5/10/20,
+   benchmark models only) and a lookback/refit-cadence robustness sweep. A
+   clean negative on the paper's own falsification criteria: Prophet's
+   residuals were structured everywhere (Ljung–Box rejects white noise on
+   25/25 tickers) and the LSTM learner exploited nearly all of it, but the
+   corrected series still didn't cross the random-walk line (median hybrid
+   $U_2 \approx 1.04$, 0 DM-significant cells vs.\ RW after FDR). A same-day
+   follow-up wired sentiment in and reran the ablation on the same universe —
+   also a clean negative, with a real coverage caveat (GDELT/Yahoo have no
+   point-in-time historical backfill).
+2. **Trimmed universe + correctness fixes (2026-09-30)** — Loghi trimmed the
+   asset universe to 14 tickers across 6 stocks / 2 crypto / 2 commodities
+   (incl. new SLV) / 2 indices / 2 FX (incl. new FXY) — see `plan.md`'s
+   "Immediate action" section for the exact list and rationale. Before
+   rerunning, several real bugs were found and fixed (not just worked around):
+   a leakage risk where `--hybrid-fit pretrained` could silently score a
+   different `--days`/`--horizon` than the pretrained weights were trained
+   for (now guarded, warns + degrades gracefully instead of mis-scoring); the
+   `--macro` hybrid training silently skipping every ticker on an uncapped
+   `--max-train` (now auto-defaults sensibly, warns loudly if it still
+   happens); and a live-refresh failure in `interface/api.py:get_data()`
+   discarding good cached prices instead of falling back to them (this one
+   caused a real, caught, and corrected data loss during the h=20 sweep leg —
+   see `plan.md` item 9's notes for the full story). Macro was also wired into
+   the hybrid itself (base + residual learner, previously only XGBoost/Prophet
+   had it), and an adaptive-λ residual-shrinkage variant was added (currently
+   underperforms the fixed-weight hybrid — open question, not yet
+   root-caused).
+3. **`--days`/horizon sweep on the trimmed, fixed universe** — `--days`
+   50 and 100, each × h∈{1,5,10,20}, full model set (hybrid, hybrid+macro,
+   adaptive-λ, dual vader/finbert sentiment), via
+   `scripts/run_horizon_sweep.py`. See `plan.md` item 9 for the current
+   status and exact findings — check there rather than assuming this doc is
+   current, since the sweep may still be in progress.
+
+`results/` and `models/` are gitignored, so every run directory referenced
+above and in `plan.md` is local-only, not in git history — regenerate with
+the commands in this doc's "Running it" section (or `run_horizon_sweep.py`
+for a multi-`(days, horizon)` sweep) if they're missing. `docs/paper/` is
+itself gitignored (a working draft, not versioned) — `plan.md` is the durable
+record of what's been run and found.

@@ -575,6 +575,69 @@ Implemented so far (R0–R2 foundation):
   `[forecast]` extra. Tests: `tests/test_regression_metrics.py`,
   `test_naive_forecasters.py`, `test_forecast_backtester.py` (all pure, run
   without the optional libs).
+- **Macro into the hybrid.** `_build_hybrid()` in `forecast_harness.py` now
+  passes the aligned macro panel into both the hybrid's internal `ProphetModel
+  (macro_df=…)` base *and* the LSTM residual learner (as an exog channel — see
+  next bullet), when `--macro` is set. Separate pretrained weights
+  (`{ticker}_hybrid_res_macro.pt`, via `train_hybrid_residual.py --macro`) —
+  the macro-exog architecture isn't compatible with the univariate weights, so
+  the two never share a path. New model-name variant: `Prophet + LSTM-res
+  (hybrid) + macro`.
+- **Macro-aware residual learner.** `engine/residual_learners.py:
+  LSTMResidualLearner`/`_ResNet` gained an optional static exog input (lag-1
+  macro at the last in-window date, concatenated onto the LSTM's final hidden
+  state before the linear head). `exog_dim=0` (default) reproduces the
+  original univariate architecture exactly, so old pretrained weights still
+  load unchanged.
+- **Adaptive residual weight (λ_t).** `ResidualHybrid(adaptive_lambda=True)`
+  generalizes `P̂ = P̂^base + reŝ` to `P̂ = P̂^base + λ_t·reŝ`, `λ_t = clip(1 −
+  p/α, 0, 1)` from a rolling Ljung–Box p-value on recent residuals (shrinks
+  toward 0 when the residual looks like white noise). Opt-in, a **new** model
+  variant (`... (adaptive-λ)`) alongside the fixed-λ=1 hybrid, not a
+  replacement. **Known open issue:** consistently *worse* than the fixed-λ
+  hybrid across every window/horizon tested so far (`--days` 50/100, h=1/5/10/
+  20) — not yet root-caused; treat with suspicion until investigated.
+- **Confidence gating (Prophet/ARIMA/hybrid only).** `forecast_backtester.py`
+  now persists `interval_width` per step (from `ForecastResult.extra`'s
+  `yhat_lower/yhat_upper` for Prophet, `quantiles` for ARIMA; `None` for
+  XGBoost/LSTM-reg — no native interval, not faked). `scripts/paper_aggregate.
+  py:confidence_gating_table()` reports coverage/accuracy-on-acted-on-subset at
+  a few threshold levels for the models that have one.
+- **Dual sentiment scorer comparison.** `engine/sentiment_data.py:
+  daily_sentiment_panel()` builds a leakage-safe per-ticker
+  `(sentiment_pos, sentiment_neg)` panel from cached news (`db.get_news`,
+  `method`-filtered), same half-life-weighted-average shape as the macro
+  panel. `forecast_harness.py --sentiment` (optionally `--sentiment-methods
+  vader finbert`, default both) adds **separate** `XGBoost + sentiment (vader)`
+  / `(finbert)` and `Prophet + …` variants side by side — a with/without-news
+  comparison lives in one run's `_fc_summary.csv`, no separate run needed.
+  `scripts/sentiment_ablation_compare.py` pairs sentiment vs. no-sentiment rows
+  across two runs and runs DM tests.
+- **Per-asset regime labels.** `scripts/paper_aggregate.py:per_asset_trend()`
+  — each ticker's own 50/200-day MA cross (20-day return-sign fallback for
+  short windows), alongside the existing market-wide SPY-only bull/bear label.
+  The SPY-wide label can't distinguish a ticker's private bear stretch from a
+  broad bull market (hit the earlier 100-day run: the whole window read as
+  bull for every ticker); per-asset trend fixes that.
+- **`scripts/run_horizon_sweep.py`** — drives train→train→score across a list
+  of `--days`/`--horizons` pairs (LSTM-reg + hybrid weights are horizon-
+  specific — a different target per horizon — so each pair needs its own
+  retrain before `--hybrid-fit pretrained` can use it). Continues past a
+  failed pair rather than aborting the whole sweep; logs to
+  `results/sweep_logs/`.
+- **Stale-horizon-weights guard.** Weight files are keyed by ticker only, not
+  horizon (`models/{ticker}_reg.pt`, `models/{ticker}_hybrid_res*.pt`), so a
+  checkpoint trained for one `--horizon` used to be silently scored as if
+  correct for a different one. Fixed: both checkpoints now record their
+  trained horizon; a mismatch at load time warns loudly and degrades
+  gracefully (LSTM-reg skips the ticker, the hybrid falls back to its base)
+  instead of mis-scoring silently.
+- **`interface/api.py:get_data()` cached-data fallback.** A live
+  staleness-triggered refresh that fails (network hiccup, rate limit) used to
+  discard perfectly good cached prices and return an empty frame. Now falls
+  back to the cached data instead — this was the root cause of a real
+  training-data loss (12/14 tickers) during the h=20 sweep leg, traced and
+  fixed rather than papered over with a retry.
 - **Forecast-comparison stats (R5):** `engine/forecast_significance.py` — the
   regression analogue of `significance.py` (which is directional only). On
   per-step errors: `dm_test` = Diebold–Mariano on the loss differential
