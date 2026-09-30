@@ -545,6 +545,29 @@ pass — text+tables only, per priority.
      {5,10,20} --macro --hybrid --hybrid-fit pretrained --sentiment
      --no-refresh` — same full model set as the h=1 runs (plain hybrid,
      hybrid+macro, adaptive-λ, dual vader/finbert sentiment).
+   - **Infrastructure (built, tested):** `scripts/run_horizon_sweep.py` drives
+     the train→train→score sequence for a list of `--days`/`--horizons` pairs
+     automatically (e.g. `--days 50 100 --horizons 5 10 20`), one pair at a
+     time, continuing past a failed pair instead of aborting the whole sweep.
+     Verified end-to-end with a real smoke pair (all 3 steps succeeded, full
+     model set — including hybrid/hybrid+macro/adaptive-λ/dual sentiment —
+     confirmed present in the output).
+   - **Correctness fix (found + fixed while building this item):** weight
+     files are keyed by ticker only, not horizon (`models/{ticker}_reg.pt`,
+     `models/{ticker}_hybrid_res*.pt`), so training pair N's weights, scoring
+     with a stale pair-(N-1)-trained file (e.g. a manual rerun forgetting to
+     retrain first, or a per-ticker training failure leaving an old file
+     behind) used to **silently mis-score** — the loaded network would predict
+     as if forecasting its trained horizon while being labeled/scored as the
+     requested one. Fixed: both `LSTMRegressorForecaster` and the hybrid's
+     `LSTMResidualLearner` checkpoints now record the horizon they were
+     trained for; a mismatch at load time logs a clear warning and the model
+     is skipped (LSTM-reg) or falls back to the base (hybrid) instead of
+     silently scoring the wrong thing. Verified with a deliberate mismatch
+     (trained h=5, scored h=1) — both warnings fired, both fell back cleanly.
+     `run_horizon_sweep.py`'s own sequential train-then-score-immediately
+     order means this shouldn't normally trigger during the sweep itself, but
+     it's now a hard guarantee rather than an assumption.
    - **Cost:** 6 full train+harness passes, ~6–8 hours total per the
      linear-scaling estimate from the `--days` sweep (each pass roughly
      comparable to the h=1 100-day leg, ~85 min, times 6, plus some slack for
