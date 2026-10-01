@@ -461,18 +461,27 @@ pass — text+tables only, per priority.
 1. **`--days 200`, all 4 horizons (per Loghi's direction, extending beyond the
    original h=1-only scope to match item 9's completed 50/100-day grid).** One
    horizon at a time, smallest first (h=1 → 5 → 10 → 20), **each invoked
-   separately** (not via a single multi-horizon `run_horizon_sweep.py` call) —
-   **stop and ask Loghi before starting each next horizon**, don't run all 4
-   unattended. Each step: `scripts/run_horizon_sweep.py --tickers <the 14>
-   --days 200 --horizons <N> --preset standard --no-refresh`, full model set
-   each time (hybrid, hybrid+macro, adaptive-λ, dual vader/finbert sentiment).
-   Diff the h=1 result against the `--days 100` h=1 baseline from step 0 for
-   the actual convergence decision (the original point of this step); the
-   h=5/10/20 results extend item 9's grid to a third window rather than
-   feeding the convergence check directly. Then retrain + run `--days 400`,
-   diffing `400`
-   against `200` (scope for 400 — all 4 horizons too, or h=1-only — not yet
-   decided; revisit once 200 is done and Loghi weighs in).
+   separately** — **stop and ask Loghi before starting each next horizon**,
+   don't run all 4 unattended.
+   - **h=1 — done.** 14/14 tickers, 129 min. Verdict: **200 differs
+     meaningfully from 100 — not converged.** vs. the ≤0.02 retrain-noise
+     floor (from the h=1/100d re-verification in item 9): RW/ARIMA/LSTM-reg
+     flat (as expected), XGBoost barely moves, but Prophet improves sharply
+     (2.623→2.408, Δ−0.215; +macro 2.800→2.340, Δ−0.460) while the hybrid
+     gets measurably *worse* (1.207→1.363, Δ+0.156; +macro 1.225→1.399,
+     Δ+0.174) — opposite directions, both ≥5–10× the noise floor. Rankings
+     don't reorder (hybrid still beats Prophet-alone both windows) but the
+     *margin* is clearly window-dependent — a single-window hybrid-vs-base
+     gap isn't a window-independent property, worth stating explicitly
+     wherever that margin gets cited. Adaptive-λ still worse than fixed-λ
+     (1.792 vs 1.363) but the gap narrows vs. 100d (0.429 vs 0.732). DM: 0/266
+     significant after FDR, same as every other window. Written into
+     `paper.tex` (`tab:window200`), compiles clean.
+   - **h=5/10/20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead
+     per-horizon.
+   - **`--days 400` — not yet started.** Since 200 didn't converge, step 2
+     below says continue to 400. Scope (all 4 horizons vs. h=1-only) not yet
+     decided.
 2. If `200` differs meaningfully from `100` but `400` ≈ `200` → **stop**, `200`-ish
    is enough; optionally fill in `300` to locate the elbow more precisely.
 3. If `400` still differs meaningfully from `200` → the metric hasn't converged yet;
