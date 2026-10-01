@@ -522,6 +522,13 @@ pass — text+tables only, per priority.
    - **Residual structure vs. hybrid gain** — scatter of Ljung–Box stat (or
      |ACF1|) vs. ΔU2 per ticker, from `structure_vs_gain`. This *is* the paper's
      central "when does it help" figure per `docs/forecasting-regression.md`.
+     **Known bug, found 2026-10-01, not yet fixed:** `scripts/paper_aggregate.
+     py`'s cross-tab currently matches model names by exact string
+     (`'Prophet'`, `'Prophet+LSTM (hybrid)'`) that no longer match the actual
+     names the harness emits (`'Prophet + lstm-res'`, etc.) — it silently
+     skips on every post-trimmed-universe run. DM/Wilcoxon and the regime
+     table from the same script are unaffected (different code path). Fix
+     before relying on this figure.
    - **Actual vs. predicted overlay** — 2–3 representative tickers (e.g. TSLA for
      the bear stretch, AAPL for bull): true close vs. RW vs. Prophet vs. hybrid
      over the eval window.
