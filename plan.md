@@ -477,7 +477,16 @@ pass — text+tables only, per priority.
      (1.792 vs 1.363) but the gap narrows vs. 100d (0.429 vs 0.732). DM: 0/266
      significant after FDR, same as every other window. Written into
      `paper.tex` (`tab:window200`), compiles clean.
-   - **h=5/10/20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead
+   - **h=5 — done.** 14/14 tickers, 135 min. Pattern from h=1 reproduces:
+     Prophet improves (1.59→1.48, Δ≈−0.12 to −0.15 across macro/sentiment
+     variants), fixed-weight hybrid gets worse (1.06→1.12, Δ+0.06; +macro
+     1.08→1.12, Δ+0.04). RW/ARIMA/LSTM-reg flat. DM: 0/266 significant after
+     FDR. Adaptive-λ improves at h=5 too (1.34→1.27) but stays clearly worse
+     than fixed-λ in absolute terms at both windows (1.06–1.12 fixed vs.
+     1.27–1.34 adaptive) — confirms the regression isn't horizon-specific, now
+     checked at 2/4 horizons. Written into `paper.tex` (new paragraph after
+     `tab:window200`), compiles clean, 13 pages.
+   - **h=10/h=20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead
      per-horizon.
    - **`--days 400` — not yet started.** Since 200 didn't converge, step 2
      below says continue to 400. Scope (all 4 horizons vs. h=1-only) not yet
