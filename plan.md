@@ -486,8 +486,19 @@ pass — text+tables only, per priority.
      1.27–1.34 adaptive) — confirms the regression isn't horizon-specific, now
      checked at 2/4 horizons. Written into `paper.tex` (new paragraph after
      `tab:window200`), compiles clean, 13 pages.
-   - **h=10/h=20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead
-     per-horizon.
+   - **h=10 — done.** 14/14 tickers, 131 min. Same direction a third time:
+     Prophet improves (1.508→1.349, Δ−0.159; +macro 1.503→1.323, Δ−0.180),
+     fixed-weight hybrid gets worse (1.092→1.151, Δ+0.059; +macro
+     1.096→1.132, Δ+0.036), adaptive-λ improves in absolute terms
+     (1.297→1.225) but stays behind fixed-λ — same regression, now 3/4
+     horizons confirmed. RW/ARIMA/LSTM-reg flat. **First DM-significant
+     cells in the entire sweep:** 3/266 survive FDR, all `LSTM-reg` vs. RW —
+     NVDA (p=0.0026), QQQM (p=0.0059), VOO (p=0.0011), all genuine wins (not
+     noise surviving by chance direction). A concrete counter-example to the
+     paper's otherwise clean null, worth it as the promising-ticker case
+     study (item 8) candidate. Written into `paper.tex` (new paragraph after
+     the h=5 one), compiles clean, 13 pages, 0 errors.
+   - **h=20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead.
    - **`--days 400` — not yet started.** Since 200 didn't converge, step 2
      below says continue to 400. Scope (all 4 horizons vs. h=1-only) not yet
      decided.
