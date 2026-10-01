@@ -498,10 +498,27 @@ pass — text+tables only, per priority.
      paper's otherwise clean null, worth it as the promising-ticker case
      study (item 8) candidate. Written into `paper.tex` (new paragraph after
      the h=5 one), compiles clean, 13 pages, 0 errors.
-   - **h=20 at `--days 200` — not yet run**, awaiting Loghi's go-ahead.
-   - **`--days 400` — not yet started.** Since 200 didn't converge, step 2
-     below says continue to 400. Scope (all 4 horizons vs. h=1-only) not yet
-     decided.
+   - **h=20 — done. Full `--days 200` × h∈{1,5,10,20} grid now complete.**
+     14/14 tickers, 136 min, no repeat of the earlier data-loss bug.
+     **Pattern breaks here:** unlike h=1/5/10, both Prophet (1.418→1.409,
+     Δ−0.009) *and* the hybrid improve with more history at h=20 (fixed-λ
+     1.209→1.195, Δ−0.014; +macro 1.220→1.162, Δ−0.058, the largest hybrid
+     improvement seen anywhere in the sweep) — the Prophet-vs-hybrid
+     divergence is confirmed real but **not universal**, holding at 3/4
+     horizons, not 4/4. Adaptive-λ still worse than fixed-λ at this horizon
+     too — confirmed at all 4 horizons now, strong evidence it's a genuine
+     bug, not noise. **The h=10 DM-significant finding reproduces and
+     strengthens:** 11/266 cells survive FDR (vs. 3 at h=10) — same NVDA/
+     QQQM/VOO `LSTM-reg` wins, plus BTC-USD/ETH-USD `LSTM-reg` and NVDA
+     `XGBoost` (3 variants); `LSTM-reg` now has a real edge on 5 distinct
+     tickers at this window/horizon, the strongest positive result in the
+     whole sweep and the lead candidate for the promising-ticker case study
+     (item 8). Written into `paper.tex` (two new paragraphs + the full
+     3-window × 4-horizon summary table, `tab:fullgrid`), compiles clean,
+     14 pages, 0 errors.
+   - **`--days 400` — not yet started.** Since 200 didn't converge at h=1,
+     step 2 below says continue to 400. Scope (all 4 horizons vs. h=1-only)
+     not yet decided — Loghi's call.
 2. If `200` differs meaningfully from `100` but `400` ≈ `200` → **stop**, `200`-ish
    is enough; optionally fill in `300` to locate the elbow more precisely.
 3. If `400` still differs meaningfully from `200` → the metric hasn't converged yet;
