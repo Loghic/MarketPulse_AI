@@ -516,9 +516,27 @@ pass — text+tables only, per priority.
      (item 8). Written into `paper.tex` (two new paragraphs + the full
      3-window × 4-horizon summary table, `tab:fullgrid`), compiles clean,
      14 pages, 0 errors.
-   - **`--days 400` — not yet started.** Since 200 didn't converge at h=1,
-     step 2 below says continue to 400. Scope (all 4 horizons vs. h=1-only)
-     not yet decided — Loghi's call.
+   - **`--days 400`, h=1 — done.** 14/14 tickers, 0/266 DM-significant,
+     274.6 min (nearly double the 200-day leg's ~123 min). **Decelerating,
+     not converged by the letter of the rule:** every model's Δ(200→400)
+     shrank sharply vs. Δ(100→200) — Prophet −0.110 (was −0.215),
+     Prophet+macro −0.026 (was −0.460, a 17× drop — that 100→200 jump looks
+     in retrospect like it hadn't settled yet), hybrid +0.038 (was +0.156),
+     hybrid+macro +0.058 (was +0.174). None of these clears the ≤0.02
+     noise floor, so strictly `--days 800` is still warranted — but the
+     magnitude drop (2–4×, one 17×) is real evidence of convergence
+     *toward* something in the 200–400 range, not a clean "keep going"
+     signal either. Prophet-worsens/hybrid-improves direction unchanged
+     (confirms it's not a 100→200 artifact). Adaptive-λ's gap to
+     fixed-weight narrows further (0.355, was 0.429 at 200d, 0.732 at
+     100d) while still losing — the regression itself looks stable even as
+     everything else moves. Written into `paper.tex` (new `tab:window400`
+     + verdict paragraph), compiles clean, 15 pages, 0 errors.
+   - **h=5/10/20 at `--days 400`, and whether to continue to `--days 800`**
+     (at h=1 or any horizon) — both open, Loghi's call. `--days 800` would
+     roughly double this leg's cost again (~4.5–5 hours per horizon), so
+     worth weighing the shrinking marginal movement above against that
+     cost before committing.
 2. If `200` differs meaningfully from `100` but `400` ≈ `200` → **stop**, `200`-ish
    is enough; optionally fill in `300` to locate the elbow more precisely.
 3. If `400` still differs meaningfully from `200` → the metric hasn't converged yet;
