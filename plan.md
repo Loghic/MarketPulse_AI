@@ -557,58 +557,61 @@ pass — text+tables only, per priority.
    from the best at each ticker/horizon — a cleaner summary than a 200-cell p-value
    table. Add wherever `compare_to_reference` results are already reported (the
    Forecast Accuracy / Statistical Testing sections of `paper.tex`).
-7. **Graphs.** Entirely producible from already-saved CSVs (`results/fc_*`,
-   `results/robust_*`, the residual-diagnostics and sentiment-ablation outputs) —
-   no pipeline changes needed, run this after the reruns above land so the
-   numbers match the final tables (matplotlib, already a transitive dep via the
-   forecast extras). Minimum set, into `docs/paper/figures/`, referenced from the
-   matching `paper.tex` subsection:
-   - **U2 by model** — box/strip plot across all 14 tickers, reference line at
-     U2=1. The headline Forecast Accuracy figure.
-   - **Residual structure vs. hybrid gain** — scatter of Ljung–Box stat (or
-     |ACF1|) vs. ΔU2 per ticker, from `structure_vs_gain`. This *is* the paper's
-     central "when does it help" figure per `docs/forecasting-regression.md`.
-     **Known bug, found 2026-10-01, not yet fixed:** `scripts/paper_aggregate.
-     py`'s cross-tab currently matches model names by exact string
-     (`'Prophet'`, `'Prophet+LSTM (hybrid)'`) that no longer match the actual
-     names the harness emits (`'Prophet + lstm-res'`, etc.) — it silently
-     skips on every post-trimmed-universe run. DM/Wilcoxon and the regime
-     table from the same script are unaffected (different code path). Fix
-     before relying on this figure.
-   - **Actual vs. predicted overlay** — 2–3 representative tickers (e.g. TSLA for
-     the bear stretch, AAPL for bull): true close vs. RW vs. Prophet vs. hybrid
-     over the eval window.
-   - **U2 vs. horizon** — line plot per model across h∈{1,5,10,20}.
-   - **Regime bar chart** — median U2 by vol tercile (and the new per-asset
-     bull/bear split), grouped by model.
-   - **Robustness lookback plot** — U2 vs `--max-train` (252/504/full, log-scale
-     y) — sells the "uncapping is catastrophic" finding visually.
-   - **Sentiment ablation** — ΔU2 with vs. without news per ticker, centered near
-     zero — sells the null result visually.
-8. **Flag a promising ticker (case study).** Post-hoc only — every window's
-   `_fc_summary.csv` is already ticker × model × horizon, so no new run is
-   needed once the `--days` sweep (100/200/400/800, whichever actually run) is
-   done. Any asset class is fair game (crypto/FX/commodity/stock/index — don't
-   pre-restrict to stocks). Selection criteria, applied across **every window
-   the sweep actually ran**, not just one:
-   - Hybrid Theil U2 < 1 (beats RW) in that window, ideally in **most/all**
-     windows run, not a single-window fluke.
-   - DM-significant vs. RW **and** vs. Prophet-alone (FDR-corrected), not just a
-     numerically lower U2 — the paper's own pass bar (`plan.md`'s Phase R2/R3
-     falsification criteria already say the same: a real result needs both).
-   - Prefer a ticker whose gain also shows up in the residual-structure cross-tab
-     (item 7's second figure) — a high Ljung-Box/ACF1 paired with a real ΔU2 is
-     the mechanistic story, not just a coincidence.
-   - If nothing clears this bar (plausible, given the current headline result is
-     a clean negative) — report the **closest call** honestly (e.g. "ticker X
-     came closest, U2=0.97 in 2/4 windows, but didn't survive FDR") rather than
-     manufacturing a win. A one-off "lucky ticker" call-out otherwise reads as
-     cherry-picking, which the paper's own statistical-testing section exists to
-     guard against.
-   - Add as a short "Case Study" paragraph (with one of the actual-vs-predicted
-     overlay plots from item 7 for that specific ticker) in Results — a nice
-     complement to the aggregate tables, not a replacement for the honest
-     overall median-U2 conclusion.
+7. **Graphs. — DONE.** 8 figures in `docs/paper/figures/`, all referenced from
+   `paper.tex`: `u2_by_model.png`, `structure_vs_gain.png`, `overlay_TSLA.png` +
+   `overlay_AAPL.png`, `u2_vs_horizon.png`, `regime_bars.png`,
+   `sentiment_ablation.png`, `case_study_nvda.png` (item 8). Built from
+   already-saved CSVs, no new runs. Fixed the `scripts/paper_aggregate.py`
+   model-name bug first (one-line: `--hybrid-model` default was
+   `'Prophet+LSTM (hybrid)'`, actual name is `'Prophet + lstm-res'` — commit
+   `e2daa37`) so the structure-vs-gain cross-tab now produces real output
+   (14/14 tickers, all structured, monotone relationship with ΔU2 — the central
+   figure now actually shows what the text claims). **One honest gap, not
+   produced:** the robustness lookback plot (U2 vs `--max-train`) — the
+   source data (`results/robust_*`) was deleted as stale earlier this
+   session and hasn't been rerun on the trimmed universe; `paper.tex`'s
+   Robustness Checks section says so plainly instead of faking it or
+   silently omitting it.
+   **Also fixed while in `paper.tex`:** swept every remaining reference to
+   the old 25-ticker pre-trim universe and relabeled/recomputed anything
+   presented as a current result on stale data — Residual Predictability's
+   table (was literally the old 25-ticker numbers, SOL-USD/BNB-USD/TSM
+   included; now the real 14-ticker table, mean ΔU2 1.80→1.61, all 14/14
+   positive), Asset-Class Analysis (recomputed on 5 current classes, dropped
+   the no-longer-present small-cap/sector column), Regime Analysis (added the
+   per-asset bull/bear split alongside market-wide vol-tercile; the old
+   "XGBoost 0.62 vs 1.56" headline regime finding **did not replicate** on
+   current data — 1.35 vs 1.02, direction reversed — flagged explicitly as a
+   likely small-sample artifact of the old universe, not carried forward),
+   News/Sentiment Ablation (recomputed DM/Wilcoxon on the current 14-ticker
+   universe: 4/112 cells significant after FDR vs. the old 2/100, still a
+   clean null), and the LSTM Residual Predictor subsection (was still
+   claiming the "same feature set as standalone LSTM" input description that
+   had already been corrected one section later in Hybrid Model — now
+   consistent). Recompiles clean, 20 pages, 0 errors, 0 undefined refs.
+8. **Flag a promising ticker (case study). — DONE.** NVDA, per the exact
+   selection criteria below — a new `\subsection{Case Study: NVDA}` in
+   `paper.tex` between Regime Analysis and News/Sentiment Ablation, plus
+   `figures/case_study_nvda.png`.
+   - **Why NVDA, not the hybrid:** the only real DM-significant cluster in
+     the whole project is at `--days 200`, h∈{10,20} — and it's
+     **`LSTM-reg`, not the hybrid**, beating the random walk. NVDA is
+     significant via `LSTM-reg` at *both* h=10 (p=0.0026) and h=20
+     (p=0.000066), plus via 3 `XGBoost` variants at h=20 (p=0.012–0.035) —
+     the only ticker significant across more than one model/horizon.
+     QQQM/VOO (LSTM-reg, both horizons) and BTC-USD/ETH-USD (LSTM-reg,
+     h=20 only) also clear the bar but on a single model each.
+   - **Honest about magnitude:** LSTM-reg's edge is tiny in absolute terms
+     (U2=0.9989 vs 1.0 at h=20 — statistically real, not tradeable).
+     XGBoost's edge is practically larger (U2=0.934, ~6.6% reduction) but
+     slightly less significant (p=0.012 vs 0.00007). Both numbers are in
+     the write-up, not just the flattering one.
+   - **No forced mechanism:** NVDA's residual-structure numbers (ACF(1)=0.90,
+     hybrid gain=1.26) sit in the middle of the 14-ticker distribution, not
+     an extreme — and the significant result is on LSTM-reg/XGBoost, not
+     the Prophet-based hybrid, so `structure_vs_gain` doesn't directly
+     explain it. Reported as a real, unexplained result worth follow-up,
+     not dressed up with a story the data doesn't support.
 9. **Multi-horizon rerun (h∈{5,10,20}) for `--days 50` and `--days 100`, full
    model set including the hybrid. — DONE, fully closed out.** All 6
    `(days, horizon)` pairs run via `scripts/run_horizon_sweep.py`, all
