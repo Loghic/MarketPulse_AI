@@ -83,6 +83,43 @@ later number:
   ~monthly), predicting the in-between steps from the frozen fit. Expose `K` as a
   config knob and sweep it in R8. Log `elapsed_seconds` per refit (engine already
   supports this).
+  - **PERFORMANCE GAP, found 2026-10-02, not yet fixed: this was never actually
+    implemented for Prophet/ARIMA.** `engine/forecast_backtester.py`'s
+    `ForecastBacktester.__init__` takes `refit_k` (default 21) and the CLI's
+    `--refit-k`/`--hybrid-refit-k` flags exist and are documented as "a cost
+    knob" — but the walk-forward loop (`ForecastBacktester.run`) calls
+    `model.forecast(window, horizon=h)` **unconditionally on every step**;
+    `self.refit_k` is only stored into `ForecastRun` for bookkeeping, never
+    used to skip a refit. Neither `ProphetModel` nor `ARIMAForecaster` has any
+    internal fit-caching — they refit from scratch on every call, independently
+    inside the standalone forecaster **and** inside every hybrid variant that
+    wraps its own `ProphetModel()` (plain/macro/sentiment/macro+sentiment/
+    adaptive-λ each refit separately). This is the dominant cost in every sweep
+    run so far — confirmed empirically: trimming a `--days 50, h=1` run from
+    the full ~10-model set down to 3 (RW + 2 hybrid variants, via the new
+    `--hybrid-sentiment-only` flag) cut the harness runtime from ~32 min to
+    ~7-8 min, a model-count-proportional speedup consistent with "every
+    Prophet-wrapping model refits independently every step" being the cost
+    driver, not horizon count or training time (training is seconds, never the
+    bottleneck).
+  - **The fix (not yet done):** give `ProphetModel`/`ARIMAForecaster` (or the
+    `ResidualHybrid`'s base-call site) actual refit-cadence logic — cache the
+    last fit, only refit every `refit_k` steps, predict from the cached fit on
+    the steps in between — mirroring the pattern `ResidualHybrid`'s *residual
+    learner* already implements correctly (`fit_mode="refit_k"`, see R3.2).
+    Potential win: up to the already-configured `refit_k=21`×, i.e. refitting
+    ~5 times instead of ~100 on a `--days 100` run — a much bigger lever than
+    trimming model count or sharing fits across horizons (horizon-sharing was
+    considered and rejected as the next move: Prophet *can* natively predict
+    multiple horizons from one fit, but the dominant cost multiplier is
+    `--days` steps, not horizon count, so fixing refit cadence subsumes most of
+    that benefit anyway and is the higher-leverage fix). Scope note: this
+    touches a core walk-forward contract (`ForecastBacktester.run`'s per-step
+    loop) shared by every forecaster, not a quick flag — plan for a real
+    change, not a toggle, and re-verify leakage (R0.2) still holds with a
+    cached fit (the cached fit must never have seen past the step it's being
+    reused for — true by construction if the cache is only refreshed forward
+    in time, but worth a unit test like the existing leakage spy).
 - **R0.4 Multi-horizon convention.** Use **direct-h** (a separate model/forecast per
   horizon) for `h ∈ {1, 5, 10, 20}`. Prophet forecasts h-ahead natively; the residual
   learner gets a per-horizon target. Avoid recursive multi-step (error compounding
