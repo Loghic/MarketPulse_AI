@@ -687,6 +687,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--hybrid-sentiment-only",
+        action="store_true",
+        help=(
+            "With --hybrid --sentiment, build ONLY the sentiment/macro+"
+            "sentiment hybrid variants, skipping the plain/adaptive-λ/macro-"
+            "only hybrid builds. Each hybrid variant wraps its own fresh "
+            "ProphetModel that refits every walk-forward step, so dropping "
+            "unneeded variants is a real speedup, not just a shorter table."
+        ),
+    )
+    parser.add_argument(
         "--hybrid-fit",
         choices=["pretrained", "refit_k", "per_step"],
         default="pretrained",
@@ -715,7 +726,7 @@ def main() -> int:
     labels = ", ".join(label for _, label in forecasters)
     if not args.no_lstm:
         labels += ", LSTM-reg (per-ticker, when weights exist)"
-    if args.hybrid:
+    if args.hybrid and not args.hybrid_sentiment_only:
         labels += f", Prophet+LSTM-res (hybrid, {args.hybrid_fit})"
         labels += ", Prophet+LSTM-res (hybrid, adaptive-λ)"
         if args.macro:
@@ -850,7 +861,7 @@ def main() -> int:
 
             ticker_models.append((LSTMRegressorForecaster(ticker), "LSTM-reg"))
 
-        if args.hybrid:
+        if args.hybrid and not args.hybrid_sentiment_only:
             hyb = _build_hybrid(ticker, args)
             if hyb is not None:
                 ticker_models.append((hyb, "Prophet + LSTM-res"))
