@@ -225,7 +225,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir", type=Path)
     ap.add_argument("--base-model", default="Prophet")
-    ap.add_argument("--hybrid-model", default="Prophet+LSTM (hybrid)")
+    ap.add_argument("--hybrid-model", default="Prophet + lstm-res")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
