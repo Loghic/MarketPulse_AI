@@ -43,19 +43,26 @@ except ImportError:
     _TORCH_AVAILABLE = False
 
 
-def hybrid_residual_path(ticker: str, models_dir="models", macro: bool = False):
+def hybrid_residual_path(
+    ticker: str, models_dir="models", macro: bool = False, sentiment: bool = False
+):
     """Weights path for a ticker's pretrained hybrid residual learner.
 
     ``{ticker}_hybrid_res.pt`` — distinct from the LSTM-reg (`_reg.pt`) and the
-    directional classifiers (`{ticker}_{period}_{preset}.pt`). ``macro=True``
-    uses a separate ``_hybrid_res_macro.pt`` file — the macro-exog architecture
-    (wider input to the linear head) isn't compatible with the univariate
-    weights, so the two must never share a path.
+    directional classifiers (`{ticker}_{period}_{preset}.pt`). ``macro``/
+    ``sentiment`` each widen the exog input, so a checkpoint trained with one
+    combination isn't compatible with another — every combination gets its
+    own suffix (``_macro``, ``_sentiment``, ``_macro_sentiment``) so they can
+    never collide.
     """
     from pathlib import Path
 
-    suffix = "_hybrid_res_macro.pt" if macro else "_hybrid_res.pt"
-    return Path(models_dir) / f"{ticker}{suffix}"
+    suffix = "_hybrid_res"
+    if macro:
+        suffix += "_macro"
+    if sentiment:
+        suffix += "_sentiment"
+    return Path(models_dir) / f"{ticker}{suffix}.pt"
 
 
 class ZeroResidualLearner:

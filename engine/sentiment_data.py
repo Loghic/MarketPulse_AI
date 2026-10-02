@@ -15,6 +15,10 @@ import math
 
 import pandas as pd
 
+from engine.logger import get_logger
+
+log = get_logger(__name__)
+
 
 def daily_sentiment_panel(
     ticker_dates: pd.Index | list[str],
@@ -73,6 +77,57 @@ def _weighted_pos_neg(scores, ages, half_life_days: float) -> tuple[float, float
     pos = pos_num / pos_den if pos_den > 0 else 0.0
     neg = neg_num / neg_den if neg_den > 0 else 0.0
     return pos, neg
+
+
+def fetch_sentiment_panel(
+    api,
+    ticker: str,
+    df: pd.DataFrame,
+    *,
+    method: str = "vader",
+    source: str = "gdelt",
+    lookback_days: int = 180,
+) -> pd.DataFrame | None:
+    """Build ``ticker``'s leakage-safe daily sentiment panel for one scorer.
+
+    Shared by ``scripts/forecast_harness.py`` and
+    ``scripts/train_hybrid_residual.py`` so both the scoring and the
+    pretraining path fetch sentiment identically. Uses whatever news is
+    already in the DB, filtered to rows scored with ``method`` (this
+    pipeline has no arbitrary historical-date backfill — GDELT/Yahoo only
+    return recent news relative to "now", so old cached rows are the only
+    real historical coverage available; see docs/forecasting-regression.md
+    and plan.md R4.3). If nothing is cached for this method, one
+    best-effort live top-up scores fresh headlines with it (never blocks
+    the run on failure). Coverage may be partial (only the dates real news
+    exists for) — days with no qualifying news get 0.0, not a fabricated
+    value; report the coverage window honestly.
+    """
+    try:
+        news_df = api.db.get_news(ticker)
+        if news_df is not None and not news_df.empty and "method" in news_df.columns:
+            news_df = news_df[news_df["method"] == method]
+        if news_df is None or news_df.empty:
+            try:
+                api._process_news_with_db(
+                    ticker,
+                    method=method,
+                    source=source,
+                    lookback_days=lookback_days,
+                    force_refresh=True,
+                )
+                news_df = api.db.get_news(ticker)
+                if news_df is not None and not news_df.empty and "method" in news_df.columns:
+                    news_df = news_df[news_df["method"] == method]
+            except Exception as e:  # noqa: BLE001 — network/rate-limit; proceed with no news
+                log.debug(
+                    "%s: live news top-up (%s) failed (%s); using cache only.", ticker, method, e
+                )
+        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
+        return daily_sentiment_panel(dates, news_df)
+    except Exception as e:  # noqa: BLE001 — one ticker's news failure shouldn't kill the run
+        log.warning("%s: sentiment (%s) fetch/panel failed (%s); skipping.", ticker, method, e)
+        return None
 
 
 def demo() -> None:

@@ -217,45 +217,17 @@ _SENTIMENT_LOOKBACK_DAYS = 180
 
 
 def _fetch_sentiment_panel(api, ticker: str, df, method: str = "vader"):
-    """Build ``ticker``'s leakage-safe daily sentiment panel for one scorer.
+    """Thin wrapper: see ``engine.sentiment_data.fetch_sentiment_panel``."""
+    from engine.sentiment_data import fetch_sentiment_panel
 
-    Uses whatever news is already in the DB, filtered to rows scored with
-    ``method`` (this pipeline has no arbitrary historical-date backfill —
-    GDELT/Yahoo only return recent news relative to "now", so old cached rows
-    are the only real historical coverage available; see
-    docs/forecasting-regression.md and plan.md R4.3). If nothing is cached for
-    this method, one best-effort live top-up scores fresh headlines with it
-    (never blocks the run on failure). Coverage may be partial (only the
-    dates real news exists for) — days with no qualifying news get 0.0, not a
-    fabricated value; report the coverage window honestly.
-    """
-    try:
-        from engine.sentiment_data import daily_sentiment_panel
-
-        news_df = api.db.get_news(ticker)
-        if news_df is not None and not news_df.empty and "method" in news_df.columns:
-            news_df = news_df[news_df["method"] == method]
-        if news_df is None or news_df.empty:
-            try:
-                api._process_news_with_db(
-                    ticker,
-                    method=method,
-                    source=_SENTIMENT_SOURCE,
-                    lookback_days=_SENTIMENT_LOOKBACK_DAYS,
-                    force_refresh=True,
-                )
-                news_df = api.db.get_news(ticker)
-                if news_df is not None and not news_df.empty and "method" in news_df.columns:
-                    news_df = news_df[news_df["method"] == method]
-            except Exception as e:  # noqa: BLE001 — network/rate-limit; proceed with no news
-                log.debug(
-                    "%s: live news top-up (%s) failed (%s); using cache only.", ticker, method, e
-                )
-        dates = df["date"].astype(str) if "date" in df.columns else [str(i) for i in range(len(df))]
-        return daily_sentiment_panel(dates, news_df)
-    except Exception as e:  # noqa: BLE001 — one ticker's news failure shouldn't kill the run
-        log.warning("%s: sentiment (%s) fetch/panel failed (%s); skipping.", ticker, method, e)
-        return None
+    return fetch_sentiment_panel(
+        api,
+        ticker,
+        df,
+        method=method,
+        source=_SENTIMENT_SOURCE,
+        lookback_days=_SENTIMENT_LOOKBACK_DAYS,
+    )
 
 
 def _build_sentiment_xgb(df, sentiment_panel, method: str = "vader"):
@@ -339,7 +311,14 @@ def _build_macro_sentiment_prophet(df, macro_panel, sentiment_panel, method: str
         return None
 
 
-def _build_hybrid(ticker: str, args, df=None, macro_panel=None, adaptive_lambda: bool = False):
+def _build_hybrid(
+    ticker: str,
+    args,
+    df=None,
+    macro_panel=None,
+    sentiment_panel=None,
+    adaptive_lambda: bool = False,
+):
     """Construct the per-ticker Prophet + LSTM-res hybrid, or None if unavailable.
 
     In ``pretrained`` mode the residual learner loads
@@ -351,7 +330,11 @@ def _build_hybrid(ticker: str, args, df=None, macro_panel=None, adaptive_lambda:
     Prophet base gets ``macro_df`` (like ``_build_macro_prophet``) and the LSTM
     residual learner gets the same lag-1-aligned panel as exog, loading its
     separate ``_hybrid_res_macro.pt`` weights (train with
-    ``train_hybrid_residual.py --macro``).
+    ``train_hybrid_residual.py --macro``). Pass ``sentiment_panel`` (from
+    ``engine.sentiment_data.fetch_sentiment_panel``, already leakage-safe —
+    no further lag needed) the same way for the sentiment-aware variant;
+    pass both for the combined macro+sentiment variant. Weights load from
+    ``hybrid_residual_path(macro=.., sentiment=..)``'s matching file.
     """
     try:
         from engine.prophet_model import _PROPHET_AVAILABLE, ProphetModel
@@ -375,11 +358,24 @@ def _build_hybrid(ticker: str, args, df=None, macro_panel=None, adaptive_lambda:
 
         macro_aligned = align_macro(list(df["date"].astype(str)), macro_panel, lag=1)
 
-    base = ProphetModel(macro_df=macro_aligned) if macro_aligned is not None else ProphetModel()
+    exog = None
+    has_sentiment = sentiment_panel is not None
+    if macro_aligned is not None and sentiment_panel is not None:
+        import pandas as pd
+
+        exog = pd.concat([macro_aligned, sentiment_panel.reindex(macro_aligned.index)], axis=1)
+    elif macro_aligned is not None:
+        exog = macro_aligned
+    elif sentiment_panel is not None:
+        exog = sentiment_panel
+
+    base = ProphetModel(macro_df=exog) if exog is not None else ProphetModel()
 
     learner = LSTMResidualLearner()
     if args.hybrid_fit == "pretrained":
-        path = hybrid_residual_path(ticker, "models", macro=macro_aligned is not None)
+        path = hybrid_residual_path(
+            ticker, "models", macro=macro_aligned is not None, sentiment=has_sentiment
+        )
         loaded = learner.load(path)
         if loaded and learner.trained_horizon not in (None, args.horizon):
             # Weight files are keyed by ticker only, not horizon — a stale
@@ -410,11 +406,17 @@ def _build_hybrid(ticker: str, args, df=None, macro_panel=None, adaptive_lambda:
         learner,
         fit_mode=args.hybrid_fit,
         refit_k=args.hybrid_refit_k,
-        macro_df=macro_aligned,
+        macro_df=exog,
         adaptive_lambda=adaptive_lambda,
     )
-    if macro_aligned is not None:
-        hyb.name = "Prophet + LSTM-res (hybrid) + macro" + (
+    if macro_aligned is not None or has_sentiment:
+        tag = "".join(
+            [
+                " + macro" if macro_aligned is not None else "",
+                " + sentiment" if has_sentiment else "",
+            ]
+        )
+        hyb.name = f"Prophet + LSTM-res (hybrid){tag}" + (
             " (adaptive-λ)" if adaptive_lambda else ""
         )
     return hyb
@@ -740,11 +742,15 @@ def main() -> int:
             else:
                 log.warning("--macro: prophet not installed; Prophet + macro skipped.")
     if args.sentiment:
-        for m in args.sentiment_methods:
+        for i, m in enumerate(args.sentiment_methods):
             if "xgboost" in model_keys:
                 labels += f", XGBoost + sentiment ({m})"
             if "prophet" in model_keys:
                 labels += f", Prophet + sentiment ({m})"
+            if args.hybrid and i == 0:
+                labels += f", Prophet+LSTM-res (hybrid) + sentiment ({m})"
+                if args.macro:
+                    labels += f", Prophet+LSTM-res (hybrid) + macro + sentiment ({m})"
 
     print("=" * 92)
     print(
@@ -877,6 +883,36 @@ def main() -> int:
                 sentiment_panel = _fetch_sentiment_panel(api, ticker, df, method=method)
                 if sentiment_panel is None:
                     continue
+                # Hybrid + sentiment: only for the FIRST method, not every
+                # one in --sentiment-methods. Unlike XGBoost/Prophet (which
+                # get a fresh fit per call, so each method's panel trains
+                # its own model), the hybrid's residual learner is
+                # *pretrained* on one fixed exog distribution — scoring it
+                # with a different method's panel than it was trained on
+                # would silently feed out-of-distribution exog into the
+                # network. One hybrid+sentiment variant, matching the
+                # single-macro-panel precedent, avoids that mismatch.
+                if args.hybrid and method == args.sentiment_methods[0]:
+                    hyb_s = _build_hybrid(ticker, args, df=df, sentiment_panel=sentiment_panel)
+                    if hyb_s is not None:
+                        ticker_models.append(
+                            (hyb_s, f"Prophet + LSTM-res (hybrid) + sentiment ({method})")
+                        )
+                    if macro_panel is not None:
+                        hyb_ms = _build_hybrid(
+                            ticker,
+                            args,
+                            df=df,
+                            macro_panel=macro_panel,
+                            sentiment_panel=sentiment_panel,
+                        )
+                        if hyb_ms is not None:
+                            ticker_models.append(
+                                (
+                                    hyb_ms,
+                                    f"Prophet + LSTM-res (hybrid) + macro + sentiment ({method})",
+                                )
+                            )
                 if "xgboost" in model_keys:
                     sent = _build_sentiment_xgb(df, sentiment_panel, method=method)
                     if sent is not None:

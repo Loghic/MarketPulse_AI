@@ -108,6 +108,27 @@ def main() -> int:
             "fetch (engine.macro_data); skipped per-ticker on any gap."
         ),
     )
+    parser.add_argument(
+        "--sentiment",
+        action="store_true",
+        help=(
+            "Also train a sentiment-aware residual learner (leakage-safe "
+            "per-ticker pos/neg news panel alongside the residual window), "
+            "saved to a separate '_hybrid_res_sentiment.pt' path (or "
+            "'_hybrid_res_macro_sentiment.pt' when combined with --macro). "
+            "Single fixed scorer (--sentiment-method) — unlike the harness's "
+            "XGBoost/Prophet sentiment variants (fit fresh per call, one per "
+            "method), this network is pretrained once; scoring it with a "
+            "different method's panel than it trained on would feed "
+            "out-of-distribution exog, so only one method is supported here."
+        ),
+    )
+    parser.add_argument(
+        "--sentiment-method",
+        choices=["vader", "finbert", "naive"],
+        default="vader",
+        help="Sentiment scorer for --sentiment (default: vader).",
+    )
     parser.add_argument("--no-refresh", action="store_true")
     parser.add_argument("--models-dir", type=str, default="models")
     args = parser.parse_args()
@@ -156,6 +177,8 @@ def main() -> int:
 
     trained, skipped = 0, 0
     trained_macro, skipped_macro = 0, 0
+    trained_sentiment, skipped_sentiment = 0, 0
+    trained_macro_sentiment, skipped_macro_sentiment = 0, 0
     for ticker in progress_bar(tickers, desc="Train hybrid-res"):
         df = api.get_data(ticker, period="max")
         if df is None or df.empty:
@@ -215,22 +238,22 @@ def main() -> int:
             log.info("%s: trained hybrid residual learner (%s base) → %s", ticker, args.base, out)
             trained += 1
 
+        dates = train_df["date"].astype(str).to_numpy() if "date" in train_df.columns else None
+        macro_exog = None
         if macro_panel is not None:
             from engine.macro_data import align_macro
 
-            dates = train_df["date"].astype(str).to_numpy() if "date" in train_df.columns else None
-            exog = None
             if dates is not None:
                 aligned = align_macro(list(dates), macro_panel, lag=1)
                 rows = aligned.reindex(dates[finite_mask])
                 if not rows.isna().any().any():
-                    exog = rows.to_numpy(dtype=float)
-            if exog is None:
+                    macro_exog = rows.to_numpy(dtype=float)
+            if macro_exog is None:
                 log.info("%s: macro unavailable/misaligned; skipping macro variant.", ticker)
                 skipped_macro += 1
             else:
                 learner_m = _new_learner()
-                learner_m.fit(residuals, exog)
+                learner_m.fit(residuals, macro_exog)
                 if not learner_m.is_trained:
                     log.info("%s: macro residual learner couldn't train; skipping.", ticker)
                     skipped_macro += 1
@@ -239,6 +262,63 @@ def main() -> int:
                     learner_m.save(out_m, horizon=args.horizon)
                     log.info("%s: trained macro hybrid residual learner → %s", ticker, out_m)
                     trained_macro += 1
+
+        if args.sentiment:
+            from engine.sentiment_data import fetch_sentiment_panel
+
+            sent_exog = None
+            if dates is not None:
+                panel = fetch_sentiment_panel(api, ticker, train_df, method=args.sentiment_method)
+                if panel is not None:
+                    rows = panel.reindex(dates[finite_mask])
+                    if not rows.isna().any().any():
+                        sent_exog = rows.to_numpy(dtype=float)
+            if sent_exog is None:
+                log.info(
+                    "%s: sentiment unavailable/misaligned; skipping sentiment variant.", ticker
+                )
+                skipped_sentiment += 1
+            else:
+                learner_s = _new_learner()
+                learner_s.fit(residuals, sent_exog)
+                if not learner_s.is_trained:
+                    log.info("%s: sentiment residual learner couldn't train; skipping.", ticker)
+                    skipped_sentiment += 1
+                else:
+                    out_s = hybrid_residual_path(ticker, models_dir, sentiment=True)
+                    learner_s.save(out_s, horizon=args.horizon)
+                    log.info("%s: trained sentiment hybrid residual learner → %s", ticker, out_s)
+                    trained_sentiment += 1
+
+            if macro_exog is not None:
+                combined = (
+                    np.concatenate([macro_exog, sent_exog], axis=1)
+                    if sent_exog is not None
+                    else None
+                )
+                if combined is None:
+                    log.info("%s: sentiment unavailable; skipping macro+sentiment variant.", ticker)
+                    skipped_macro_sentiment += 1
+                else:
+                    learner_ms = _new_learner()
+                    learner_ms.fit(residuals, combined)
+                    if not learner_ms.is_trained:
+                        log.info(
+                            "%s: macro+sentiment residual learner couldn't train; skipping.",
+                            ticker,
+                        )
+                        skipped_macro_sentiment += 1
+                    else:
+                        out_ms = hybrid_residual_path(
+                            ticker, models_dir, macro=True, sentiment=True
+                        )
+                        learner_ms.save(out_ms, horizon=args.horizon)
+                        log.info(
+                            "%s: trained macro+sentiment hybrid residual learner → %s",
+                            ticker,
+                            out_ms,
+                        )
+                        trained_macro_sentiment += 1
 
     print(f"\nDone. Trained {trained}, skipped {skipped}.")
     if args.macro:
@@ -257,6 +337,23 @@ def main() -> int:
                 "fall back to the plain hybrid in the harness run.",
                 skipped_macro,
                 trained_macro + skipped_macro,
+            )
+    if args.sentiment:
+        print(
+            f"Sentiment variant ({args.sentiment_method}): trained {trained_sentiment}, "
+            f"skipped {skipped_sentiment}."
+        )
+        if trained_sentiment == 0:
+            log.warning(
+                "Sentiment variant: 0 tickers trained — the harness's '+ "
+                "sentiment' hybrid run will silently fall back to the plain "
+                "hybrid for all of them. Check news coverage before spending "
+                "time on the real run."
+            )
+        if args.macro:
+            print(
+                f"Macro+sentiment variant: trained {trained_macro_sentiment}, "
+                f"skipped {skipped_macro_sentiment}."
             )
     print("Run the harness with: --hybrid --hybrid-fit pretrained (same --days/--horizon).")
     return 0
